@@ -476,6 +476,7 @@ class ProResearchService {
     const engine = this.engineFor(entry.root)
     if (action === 'resume') return this.view(await engine.resume(id))
     if (action === 'cancel') return this.view(await engine.cancel(id))
+    if (action === 'accept') return this.view(await engine.accept(id))
     if (action === 'human_check') {
       if (conclusion === undefined) throw new Error('conclusion is required')
       const reason = note ?? ''
@@ -483,7 +484,7 @@ class ProResearchService {
       return this.view(await engine.humanCheck(id, conclusion, reason))
     }
     if (action === 'regenerate') {
-      const topic = await (await this.storeFor(entry.root)).load(id)
+      const topic = await this.storeFor(entry.root).load(id)
       if (topic.status !== 'completed' && topic.status !== 'capped') {
         throw new Error(`topic ${id} is ${topic.status}; regenerate needs completed or capped`)
       }
@@ -497,7 +498,7 @@ class ProResearchService {
       ].join('\n\n')
       return this.view(await engine.continue(id, brief))
     }
-    throw new Error('action must be resume, cancel, human_check or regenerate')
+    throw new Error('action must be resume, cancel, accept, human_check or regenerate')
   }
 
   async handle(args: Record<string, unknown>, exec: ToolRunContext): Promise<Record<string, unknown>> {

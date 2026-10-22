@@ -130,6 +130,15 @@ export class ResearchEngine {
     return topic
   }
 
+  /** Human accepts a capped result: the only path from capped to completed. */
+  async accept(id: string): Promise<Topic> {
+    const topic = await this.options.store.load(id)
+    if (topic.status === 'completed') return topic
+    if (topic.status !== 'capped') throw new Error(`topic ${id} is ${topic.status}; only capped can be accepted`)
+    await this.transition(topic, 'completed', { stopReason: '人工接受结果' })
+    return topic
+  }
+
   /** Mark an interrupted active topic for human review without resubmitting. */
   async interrupt(id: string, reason: string): Promise<Topic> {
     const topic = await this.options.store.load(id)

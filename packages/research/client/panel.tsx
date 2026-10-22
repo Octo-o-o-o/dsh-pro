@@ -248,6 +248,9 @@ function Panel(): ReturnType<typeof createElement> {
           detail.updated !== undefined ? createElement('span', {}, `更新 ${formatTime(detail.updated)}`) : undefined),
         detail.stall_reason !== null ? createElement('div', { style: { color: '#ed6c02', marginBottom: 8, fontSize: 12 } }, `卡住原因：${detail.stall_reason}`) : undefined,
         detail.stop_reason !== null ? createElement('div', { style: { marginBottom: 8, fontSize: 12, opacity: 0.72 } }, `停止依据：${detail.stop_reason}`) : undefined,
+        detail.status === 'capped' && (detail.stop_reason ?? '').includes('未配置裁决模型')
+          ? createElement('div', { style: { marginBottom: 8, fontSize: 11, color: '#ed6c02' } }, '未配置自动裁决：跑满轮次不会自动判定成功；请接受结果或重新生成。')
+          : undefined,
         detail.path !== undefined ? createElement('div', { style: { opacity: 0.5, marginBottom: 10, wordBreak: 'break-all', fontSize: 11 } }, detail.path) : undefined,
         createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 } },
           ACTIVE.has(detail.status) ? createElement('button', { onClick: () => void act('cancel'), style: buttonStyle() }, '取消') : undefined,
@@ -256,6 +259,9 @@ function Panel(): ReturnType<typeof createElement> {
             : undefined,
           detail.status === 'completed' || detail.status === 'capped'
             ? createElement('button', { onClick: () => void regenerate(), style: buttonStyle() }, '重新生成')
+            : undefined,
+          detail.status === 'capped'
+            ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, '接受结果')
             : undefined,
           detail.status === 'stalled'
             ? createElement('span', { style: { display: 'flex', gap: 8 } },

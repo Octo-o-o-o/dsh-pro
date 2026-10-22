@@ -17,6 +17,7 @@ export interface SidebarStatusOptions {
 interface Counts {
   active: number
   completed: number
+  incomplete: number
   failed: number
 }
 
@@ -26,7 +27,7 @@ function countTopics(
   topics: Array<{ id?: string; status?: string; updated?: string }>,
   isSeen: (topic: { id?: string; status?: string; updated?: string }) => boolean,
 ): Counts {
-  const counts: Counts = { active: 0, completed: 0, failed: 0 }
+  const counts: Counts = { active: 0, completed: 0, incomplete: 0, failed: 0 }
   for (const topic of topics) {
     switch (topic.status) {
       case 'queued':
@@ -38,8 +39,10 @@ function countTopics(
         counts.active += 1
         break
       case 'completed':
-      case 'capped':
         if (!isSeen(topic)) counts.completed += 1
+        break
+      case 'capped':
+        counts.incomplete += 1
         break
       case 'failed':
       case 'stalled':
@@ -55,6 +58,7 @@ function countTopics(
 function badgeText(counts: Counts): string {
   const parts: string[] = []
   if (counts.active > 0) parts.push(`${counts.active} 进行`)
+  if (counts.incomplete > 0) parts.push(`${counts.incomplete} 未完成`)
   if (counts.completed > 0) parts.push(`${counts.completed} 完成`)
   if (counts.failed > 0) parts.push(`${counts.failed} 失败`)
   return parts.join(' · ')
