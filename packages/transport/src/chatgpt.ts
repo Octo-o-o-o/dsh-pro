@@ -61,6 +61,8 @@ export class ChatGptWebTransport implements Transport {
   private context?: BrowserContext
   private launching?: Promise<BrowserContext>
   private readonly submissions = new Map<string, Submission>()
+  /** One visible tab per topic so later rounds update the same conversation. */
+  private readonly topicPages = new Map<string, Page>()
   private readonly options: ChatGptTransportOptions
 
   constructor(options: ChatGptTransportOptions) {
@@ -139,7 +141,9 @@ export class ChatGptWebTransport implements Transport {
 
   async submit(request: SubmitRequest): Promise<SubmitResult> {
     const context = await this.ensureContext()
-    const page = await context.newPage()
+    const existing = this.topicPages.get(request.topicId)
+    const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
+    this.topicPages.set(request.topicId, page)
     try {
       const target = request.session?.conversationUrl ?? this.appUrl
       let reused = request.session?.conversationUrl !== undefined
@@ -319,10 +323,15 @@ export class ChatGptWebTransport implements Transport {
   }
 
   async cancel(): Promise<void> {
-    for (const submission of this.submissions.values()) {
-      await submission.page.close().catch(() => undefined)
+    const pages = new Set<Page>([
+      ...[...this.submissions.values()].map(submission => submission.page),
+      ...this.topicPages.values(),
+    ])
+    for (const page of pages) {
+      await page.close().catch(() => undefined)
     }
     this.submissions.clear()
+    this.topicPages.clear()
   }
 
   async close(): Promise<void> {
