@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import { apply, resolveResearchConfig } from '../src/index.ts'
+
+const cleanups: string[] = []
+
+afterEach(async () => {
+  await Promise.all(cleanups.splice(0).map(path => rm(path, { recursive: true, force: true })))
+})
 
 interface Captured {
   tools: Array<Record<string, unknown>>
@@ -79,5 +88,22 @@ describe('plugin wiring', () => {
     expect(resolved.browser.headless).toBe(true)
     expect(resolved.rawAnswers).toBe('local')
     expect(resolved.maxFiles).toBe(12)
+  })
+
+  it('lists an empty project without starting the browser', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-pro-plugin-'))
+    cleanups.push(cwd)
+    const captured: Captured = { tools: [], routes: [], skills: [] }
+    apply(fakeContext(captured) as never, { store: 'project' })
+    const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<unknown> }
+    const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal }
+    await expect(tool.execute({ action: 'list' }, exec)).resolves.toEqual({ topics: [] })
+  })
+
+  it('refuses to start without the research-card confirmation', async () => {
+    const captured: Captured = { tools: [], routes: [], skills: [] }
+    apply(fakeContext(captured) as never, {})
+    const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<unknown> }
+    await expect(tool.execute({ action: 'start' }, { agent: undefined })).rejects.toThrow(/confirmed=true/)
   })
 })
