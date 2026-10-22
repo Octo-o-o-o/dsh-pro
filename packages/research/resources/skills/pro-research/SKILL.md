@@ -45,6 +45,14 @@ short-description: Bounded, resumable web-Pro research with local records
 
 `final.md` 是机械汇总，不是交付物；真正的方案由宿主按项目规范落盘。
 
+## 追问
+
+在同一主题上追加一轮用：
+
+`pro_research(action="continue", topic_id=..., brief=..., confirmed=true)`
+
+只送变化：上一轮裁决 + 新 brief + 新增/修改的材料。原会话丢了由宿主生成 `context.md` 重开；不要新建平行主题。已达轮次上限的主题，`continue` 会显式加一并留下记录；先向用户说明这是加轮。
+
 ## 边界
 
 - 不自动 push，不把 GitHub 当唯一材料通道；已提交内容可给提交号 + 路径，让 Pro 自己决定要不要读。

@@ -229,6 +229,21 @@ describe('engine', () => {
     expect(await readFile(join(dir, 'rounds', '02-question.md'), 'utf8')).toContain('follow-up brief')
   })
 
+  it('raises the cap when a capped topic is continued', async () => {
+    const { engine, transport } = await harness({ doneAt: 99, rounds: 2 })
+    const topic = await engine.start(card({ rounds: 2 }))
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('capped')
+
+    await engine.continue(topic.id, 'one more question')
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.roundsCap).toBe(3)
+    expect(final.rounds).toHaveLength(3)
+    expect(final.status).toBe('capped')
+    expect(transport.submits).toHaveLength(3)
+  })
+
   it('cancels an in-flight run', async () => {
     const transport = new FakeTransport(['first answer'])
     transport.hang = true
