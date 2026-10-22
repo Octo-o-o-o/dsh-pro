@@ -5,6 +5,7 @@ import type { CodeBlock, ImageAsset, PollResult, SubmitRequest, SubmitResult, Tr
 import { TransportError } from 'dsh-pro-core'
 import { SELECTORS } from './selectors.ts'
 import { advanceCompletion } from './completion.ts'
+import { parseDataUrlImage } from './assets.ts'
 
 export interface ChatGptTransportOptions {
   profileDir: string
@@ -259,6 +260,18 @@ export class ChatGptWebTransport implements Transport {
     const images: ImageAsset[] = []
     for (const [index, source] of sources.slice(0, 8).entries()) {
       try {
+        if (source.startsWith('data:')) {
+          const parsed = parseDataUrlImage(source)
+          if (parsed === undefined) continue
+          // Tiny data URLs are page chrome/file thumbnails, not generated art.
+          if (Buffer.from(parsed.base64, 'base64').byteLength < 20_000) continue
+          images.push({
+            name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(parsed.mime)}`,
+            mime: parsed.mime,
+            base64: parsed.base64,
+          })
+          continue
+        }
         if (source.startsWith('blob:')) {
           const dataUrl = await page.evaluate(async (src) => {
             const response = await fetch(src)
@@ -372,12 +385,12 @@ export class ChatGptWebTransport implements Transport {
   private async richAnswerText(page: Page): Promise<string> {
     const text = await this.lastAssistantText(page)
     if (text !== '') return text
-    // Image-only answers have no text; use the produced image URLs as the
-    // stability fingerprint so a gallery response still completes.
+    // Image-only answers have no text; use a short count/dimension fingerprint
+    // (never the base64 payload) so a gallery response still completes.
     const images: string[] = await page.evaluate(() => [...document.querySelectorAll('main img')]
       .filter(image => (image as HTMLImageElement).naturalWidth >= 300)
-      .map(image => (image as HTMLImageElement).src))
-    return images.length > 0 ? `image:${images.join('|')}` : ''
+      .map(image => `${(image as HTMLImageElement).naturalWidth}x${(image as HTMLImageElement).naturalHeight}`))
+    return images.length > 0 ? `image:${images.length}:${images.join(',')}` : ''
   }
 
   private async lastAssistantText(page: Page): Promise<string> {

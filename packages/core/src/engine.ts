@@ -302,7 +302,9 @@ export class ResearchEngine {
           return await this.options.transport.fetch({ submissionId })
         } catch (error) {
           // Text-only fallback keeps older transports (and partial pages) usable.
-          if (polled.answer !== undefined) return { answer: polled.answer }
+          if (polled.answer !== undefined) {
+            return { answer: polled.answer.startsWith('image:') ? '' : polled.answer }
+          }
           throw error
         }
       }

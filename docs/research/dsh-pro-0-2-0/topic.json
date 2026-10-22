@@ -5,7 +5,7 @@
   "type": "research",
   "parent": null,
   "created": "2026-10-22T14:18:10.131Z",
-  "updated": "2026-10-22T14:50:34.909Z",
+  "updated": "2026-10-22T15:03:07.382Z",
   "status": "waiting",
   "roundsCap": 2,
   "rounds": [
@@ -14,7 +14,17 @@
       "files": 12,
       "submissionId": "41b43529-9ad5-44fc-8804-569e9ff6c4b3",
       "fingerprint": "325041bf9a6820cbe270a7be11aac585d970d0b8f1caaa4ca662aeb6d55b2385",
-      "submittedAt": "2026-10-22T14:50:34.904Z"
+      "submittedAt": "2026-10-22T14:50:34.904Z",
+      "answeredAt": "2026-10-22T15:02:57.526Z",
+      "verdict": "partial",
+      "done": false
+    },
+    {
+      "n": 2,
+      "files": 0,
+      "submissionId": "caf30c30-4df5-41cf-a0a8-4186b7435042",
+      "fingerprint": "9373be9d686fd4b9ca5c5fd6b02eeb5f40020892e38a715388a70d48635e9b20",
+      "submittedAt": "2026-10-22T15:03:07.376Z"
     }
   ],
   "channel": "web-pro",
