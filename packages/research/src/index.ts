@@ -81,6 +81,11 @@ interface RegistryEntry {
   mode: 'project' | 'local'
   title: string
   updated: string
+  sessionId?: string
+}
+
+interface LiveAgent {
+  inject(message: unknown): void
 }
 
 function homeDir(): string {
@@ -139,6 +144,7 @@ function parseJudge(text: string): Omit<JudgeResult, 'nextBrief'> & { nextBrief?
 class ProResearchService {
   private readonly engines = new Map<string, ResearchEngine>()
   private readonly stores = new Map<string, ResearchStore>()
+  private readonly topicSessions = new Map<string, string>()
   private transport?: ChatGptWebTransport
 
   constructor(
@@ -233,6 +239,7 @@ class ProResearchService {
       onEvent: event => {
         if (event.type === 'status' && (event.status === 'stalled' || event.status === 'failed')) {
           this.log(`topic ${event.topicId} ${event.status}${event.reason !== undefined ? ` (${event.reason})` : ''}`)
+          void this.notifyStalled(event.topicId, event.reason)
         }
       },
     })
@@ -282,7 +289,8 @@ class ProResearchService {
     await writeFile(this.registryFile, `${JSON.stringify({ version: 1, topics: entries }, null, 2)}\n`, 'utf8')
   }
 
-  private async record(topic: Topic, root: string): Promise<void> {
+  private async record(topic: Topic, root: string, sessionId?: string): Promise<void> {
+    if (sessionId !== undefined && sessionId !== '') this.topicSessions.set(topic.id, sessionId)
     const entries = (await this.readRegistry()).filter(entry => entry.id !== topic.id)
     entries.push({
       id: topic.id,
@@ -290,8 +298,37 @@ class ProResearchService {
       mode: this.config.store,
       title: topic.title,
       updated: topic.updated,
+      ...(sessionId !== undefined && sessionId !== '' ? { sessionId } : {}),
     })
     await this.writeRegistry(entries)
+  }
+
+  /**
+   * One quiet reminder in the originating session when a run stalls or fails.
+   * `agent.inject` is model-facing context that does not wake the driver; when
+   * the session is no longer live the sidebar still shows the state, so a
+   * missing agent is not an error.
+   */
+  private async notifyStalled(id: string, reason: string | undefined): Promise<void> {
+    try {
+      const entry = await this.entryFor(id)
+      const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
+      if (sessionId === undefined) return
+      const agents = this.ctx.get('agents') as { get(id: string): LiveAgent | undefined } | undefined
+      const agent = agents?.get(sessionId)
+      if (agent === undefined) return
+      const topic = entry === undefined ? undefined : await this.storeAt(entry.root, entry.mode).load(id).catch(() => undefined)
+      const title = topic?.title ?? id
+      agent.inject(createUserMessage({
+        content: [{
+          type: 'text',
+          text: `<system-reminder>Pro 研究「${title}」卡住了${reason === undefined ? '' : `（${reason}）`}。在侧边栏「Pro」里查看现场，然后恢复、取消或人工核对。</system-reminder>`,
+        }],
+        source: { kind: 'plugin', plugin: 'dsh-pro-research' },
+      }))
+    } catch {
+      // Notification is best-effort; the sidebar and records remain the truth.
+    }
   }
 
   private async entryFor(id: string): Promise<RegistryEntry | undefined> {
@@ -346,7 +383,7 @@ class ProResearchService {
     const cwd = exec.agent?.session.header.cwd ?? process.cwd()
     switch (action) {
       case 'start':
-        return await this.start(args, cwd)
+        return await this.start(args, cwd, exec.agent?.session.id)
       case 'status': {
         const id = this.requireId(args)
         const { topic } = await this.find(cwd, id)
@@ -398,7 +435,7 @@ class ProResearchService {
     }
   }
 
-  private async start(args: Record<string, unknown>, cwd: string): Promise<Record<string, unknown>> {
+  private async start(args: Record<string, unknown>, cwd: string, sessionId?: string): Promise<Record<string, unknown>> {
     const title = this.requireString(args, 'title')
     const question = this.requireString(args, 'question')
     const brief = this.requireString(args, 'brief')
@@ -421,7 +458,7 @@ class ProResearchService {
     }
     const engine = this.engineFor(cwd)
     const topic = await engine.start(card)
-    await this.record(topic, this.rootFor(cwd))
+    await this.record(topic, this.rootFor(cwd), sessionId)
     return this.view(topic)
   }
 
