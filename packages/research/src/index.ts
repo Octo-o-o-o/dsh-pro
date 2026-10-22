@@ -365,8 +365,13 @@ class ProResearchService {
       case 'continue': {
         const id = this.requireId(args)
         const brief = this.requireString(args, 'brief')
+        const paths = Array.isArray(args.materials) && args.materials.length > 0
+          ? this.stringArray(args.materials, 'materials')
+          : []
+        const refs = paths.length > 0 ? await buildManifest(cwd, paths) : []
+        assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
         const { engine } = await this.find(cwd, id)
-        return this.view(await engine.continue(id, brief))
+        return this.view(await engine.continue(id, brief, refs))
       }
       case 'cancel': {
         const id = this.requireId(args)

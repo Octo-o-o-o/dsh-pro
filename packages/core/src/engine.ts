@@ -1,6 +1,7 @@
 import type {
   EngineEvent,
   Judge,
+  MaterialRef,
   PollResult,
   ResearchCard,
   RoundRecord,
@@ -94,7 +95,7 @@ export class ResearchEngine {
    * The round limit grows when the follow-up would exceed it, because this is
    * the user-confirmed "+1 round" the design requires.
    */
-  async continue(id: string, brief: string): Promise<Topic> {
+  async continue(id: string, brief: string, materials?: MaterialRef[]): Promise<Topic> {
     const topic = await this.options.store.load(id)
     if (brief.trim() === '') throw new Error('brief is required')
     if (topic.status !== 'completed' && topic.status !== 'capped') {
@@ -103,6 +104,7 @@ export class ResearchEngine {
     const next = topic.rounds.length + 1
     if (next > topic.roundsCap) topic.roundsCap = next
     await this.options.store.writeQuestion(topic, next, brief)
+    await this.options.store.addMaterials(topic, materials ?? [])
     delete topic.stopReason
     await this.transition(topic, 'queued')
     this.enqueue(id)

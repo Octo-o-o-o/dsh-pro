@@ -196,6 +196,23 @@ export class ResearchStore {
     }
   }
 
+  /** Merge new material references into the topic manifest (follow-up rounds). */
+  async addMaterials(topic: Topic, refs: readonly MaterialRef[]): Promise<void> {
+    if (refs.length === 0) return
+    const dir = await this.dirOf(topic.id)
+    const file = join(dir, 'materials', 'manifest.json')
+    let existing: MaterialRef[] = []
+    try {
+      const parsed = JSON.parse(await readFile(file, 'utf8')) as { materials?: MaterialRef[] }
+      if (Array.isArray(parsed.materials)) existing = parsed.materials
+    } catch {
+      // No manifest yet: the merge starts from the new refs alone.
+    }
+    const byPath = new Map(existing.map(item => [item.path, item]))
+    for (const ref of refs) byPath.set(ref.path, ref)
+    await this.atomic(file, `${JSON.stringify({ materials: [...byPath.values()] }, null, 2)}\n`)
+  }
+
   async writeAnswer(topic: Topic, round: number, answer: string): Promise<void> {
     await this.atomic(join(this.rawTopicDir(topic.id), `${pad(round)}-answer.md`), answer)
     if (this.options.rawAnswers === 'repo' && this.options.mode === 'project') {

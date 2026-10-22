@@ -82,7 +82,7 @@ pro_research(action="continue", topic_id="topic-xxxx",
              confirmed=true)
 ```
 
-如果原轮次已经到顶，`continue` 会把上限加一并记录为显式加轮。下一轮只送变化：上一轮裁决 + 新 brief + 新增/修改的材料；原会话丢了由宿主生成 `context.md` 重开。
+如果原轮次已经到顶，`continue` 会把上限加一并记录为显式加轮。新加的材料用 `materials=[...]` 传入，会并入主题清单；当前版本这一轮仍会带上清单里的全部文件，只送变化的增量附件留到后续版本。
 
 新建主题时可以用 `parent` 指向父主题，把 follow-up 串成同一棵树。
 
