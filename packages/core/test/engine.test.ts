@@ -77,7 +77,13 @@ function card(overrides: Partial<ResearchCard> = {}): ResearchCard {
   }
 }
 
-async function harness(options: { doneAt: number; rounds?: number; answers?: string[]; transport?: FakeTransport }) {
+async function harness(options: {
+  doneAt: number
+  rounds?: number
+  answers?: string[]
+  transport?: FakeTransport
+  judge?: Judge
+}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-pro-engine-'))
   cleanups.push(root)
   const config = {
@@ -97,7 +103,7 @@ async function harness(options: { doneAt: number; rounds?: number; answers?: str
   const engine = new ResearchEngine({
     store,
     transport,
-    judge: judgeWith(options.doneAt),
+    judge: options.judge ?? judgeWith(options.doneAt),
     config,
     pollIntervalMs: 10,
   })
@@ -169,6 +175,41 @@ describe('engine', () => {
     const final = await engine.status(topic.id)
     expect(final.status).toBe('completed')
     expect(transport.submits).toHaveLength(2)
+  })
+
+  it('continues polling after a human confirms the submission was made', async () => {
+    const transport = new FakeTransport(['first answer'])
+    transport.fail = new TransportError('page changed', 'ui')
+    const { engine } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('stalled')
+
+    await engine.humanCheck(topic.id, 'submitted', 'saw the message in the conversation')
+    transport.fail = undefined
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.status).toBe('completed')
+    expect(transport.submits).toHaveLength(1)
+  })
+
+  it('resumes adjudication without resubmitting when the judge fails', async () => {
+    let calls = 0
+    const judge: Judge = async () => {
+      calls += 1
+      if (calls === 1) throw new Error('judge unavailable')
+      return { verdict: 'accepted', reason: 'ok', done: true, summary: 'done' }
+    }
+    const { engine, transport } = await harness({ doneAt: 1, judge })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('failed')
+
+    await engine.resume(topic.id)
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.status).toBe('completed')
+    expect(transport.submits).toHaveLength(1)
   })
 
   it('cancels an in-flight run', async () => {

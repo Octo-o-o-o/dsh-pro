@@ -4,6 +4,7 @@ import { chromium, type BrowserContext, type Locator, type Page } from 'playwrig
 import type { PollResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
 import { TransportError } from 'dsh-pro-core'
 import { SELECTORS } from './selectors.ts'
+import { advanceCompletion } from './completion.ts'
 
 export interface ChatGptTransportOptions {
   profileDir: string
@@ -166,19 +167,15 @@ export class ChatGptWebTransport implements Transport {
       if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
       if (page.isClosed()) return { state: 'unknown' }
       const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
-      if (!streaming) {
-        const text = await this.lastAssistantText(page)
-        if (text !== '') {
-          if (text === submission.lastText) submission.stable += 1
-          else {
-            submission.lastText = text
-            submission.stable = 1
-          }
-          if (submission.stable >= 2) return { state: 'answered', answer: text }
-        }
-      } else {
-        submission.stable = 0
-      }
+      const text = streaming ? '' : await this.lastAssistantText(page)
+      const next = advanceCompletion(
+        { lastText: submission.lastText, stable: submission.stable },
+        text,
+        streaming,
+      )
+      submission.lastText = next.lastText
+      submission.stable = next.stable
+      if (next.answered) return { state: 'answered', answer: next.lastText }
       await page.waitForTimeout(3_000)
     }
     return { state: 'waiting' }

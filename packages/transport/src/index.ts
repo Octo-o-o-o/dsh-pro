@@ -1,3 +1,5 @@
 export { ChatGptWebTransport } from './chatgpt.ts'
 export type { ChatGptTransportOptions } from './chatgpt.ts'
 export { SELECTORS } from './selectors.ts'
+export { advanceCompletion } from './completion.ts'
+export type { CompletionState } from './completion.ts'

@@ -245,7 +245,7 @@ export class ResearchEngine {
     if (submissionId === undefined) throw new Error('round has no submission')
     const deadline = this.now() + this.options.config.maxRoundMinutes * 60_000
     while (this.now() < deadline) {
-      if (signal.aborted) return undefined
+      if (signal.aborted) throw new DOMException('aborted', 'AbortError')
       const polled: PollResult = await this.options.transport.poll({
         submissionId,
         timeoutMs: this.options.pollIntervalMs ?? 60_000,

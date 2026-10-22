@@ -2,7 +2,7 @@ import type { Status } from './types.ts'
 
 const TRANSITIONS: Record<Status, readonly Status[]> = {
   draft: ['queued', 'cancelled'],
-  queued: ['uploading', 'stalled', 'capped', 'failed', 'cancelled'],
+  queued: ['uploading', 'adjudicating', 'stalled', 'capped', 'failed', 'cancelled'],
   uploading: ['submitted', 'stalled', 'failed', 'cancelled'],
   submitted: ['waiting', 'stalled', 'failed', 'cancelled'],
   waiting: ['answered', 'stalled', 'failed', 'cancelled'],
