@@ -28,10 +28,10 @@ describe('client panel', () => {
     apply(ctx as never)
 
     expect(registrations.map(item => item.options.name)).toEqual(['main', 'sidebar.panellist'])
-    expect(registrations[0]?.options.key).toBe('pro-research')
-    expect(registrations[1]?.options.id).toBe('pro-research')
+    expect(registrations[0]?.options.key).toBe('chatgpt-pro-research')
+    expect(registrations[1]?.options.id).toBe('chatgpt-pro-research')
     expect(registrations[1]?.options.order).toBe(21)
-    expect((registrations[1]?.options.label as () => string)()).toBe('Pro')
+    expect((registrations[1]?.options.label as () => string)()).toBe('Pro Research')
 
     const icon = registrations[1]?.render()
     expect(icon).toBeTruthy()
@@ -79,7 +79,7 @@ describe('client panel', () => {
     const main = registrations[0]?.render()
     expect(main).toBeTruthy()
     const html = renderToString(main as Parameters<typeof renderToString>[0])
-    expect(html).toContain('Pro 研究')
+    expect(html).toContain('ChatGPT Pro Research')
     expect(html).toContain('还没有研究任务')
   })
 })

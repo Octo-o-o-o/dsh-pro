@@ -1,33 +1,39 @@
 # dsh-pro
 
-用 ChatGPT Pro 网页会话做**无人值守的多轮调研与设计**的 DeepSeek Harness 插件。
+两个 DeepSeek Harness 插件，共享同一套网页传输与本地记录：
 
-状态：**v0.1 开发中**。核心引擎、网页传输、host 插件、侧边栏与研究记录已落地；真实网页的单轮、附件与同会话两轮，以及本机桌面 DSH 的加载已验证，npm 发布还没完成。
+| 插件 | npm 包 | 做什么 |
+|---|---|---|
+| **ChatGPT Pro Research** | `chatgpt-pro-research` | 用 ChatGPT Pro 网页会话做无人值守多轮调研；按项目/主题记录问题、轮次、裁决和最终文档。 |
+| **GPT-Image Design** | `gpt-image-design` | 用同一个网页会话生成设计图与前端 HTML demo；图片和代码保存到本地，在设计面板里画廊预览、iframe 打开 demo。 |
 
-> ⚠️ 风险提示：本插件驱动的是 ChatGPT 网页（订阅额度），不是官方 API。自动化网页可能违反服务条款、触发风控或导致账号受限；页面改版也会让它失效。请自行评估账号风险，不要把凭据写进仓库或日志。
+> ⚠️ 两者驱动的是 ChatGPT 网页（订阅额度），不是官方 API。自动化网页可能违反服务条款、触发风控或导致账号受限；页面改版也会让它失效。请自行评估账号风险，不要把凭据写进仓库或日志。
 
-## 目前能做什么
+## 安装
 
-- **引擎**：主题/轮次/状态机/队列、两种记录位置（project / local）、原始答复本机保存、材料清单与密钥扫描、卡住判定、人工核对、恢复。
-- **传输**：Playwright 驱动独立 Chrome profile；登录、自检、提交、附件逐文件核对、轮询、取回答复。可用独立 CLI 先跑通。
-- **DSH host 插件**：`pro_research` 工具（start/continue/status/list/resume/cancel/human_check/probe/login）、设置 schema、`pro-research` / `pro-design` 两个技能、只读 HTTP 路由。
-- **侧边栏**：「Pro」面板列出主题、状态、轮次、记录路径；可恢复、取消、人工核对。卡住或失败时向发起会话注入一条安静的提醒（会话已关闭时只更新侧边栏）。
-- **测试**：39 个单测覆盖状态机、材料、记录布局、引擎（多轮/提前停止/到顶/卡住/恢复/取消/追问）、插件装配（工具、路由、技能、client 槽位）与真实 Cordis 上下文加载；构建后另检验前端脚本和惰性模块加载。
+```bash
+dsh plugin --profile desktop add chatgpt-pro-research
+dsh plugin --profile desktop add gpt-image-design
+```
 
-## 真实网页验证（2026-10-22）
+两个插件共用 `~/.dsh/pro-research/browser` 登录态，只需登录一次：
 
-在已登录的 ChatGPT 页面上实跑通过：
+```text
+pro_research(action="login")        # 或 gpt_image_design(action="login")
+```
 
-- `login` / `probe`：`{ok:true, loggedIn:true}`。
-- 单轮提交并取回：回答 `REAL-CONNECT-OK`。
-- 附件上传：发送 `README.md`，回答 `FILE-OK README(2).md`。
-- 同一会话两轮：第二轮正确复述第一轮约定的 `7391`，两轮 URL 相同。
+## 结构
 
-未覆盖：账号风控/ToS、页面改版后的失效、超长回答与断线恢复。
-
-## 桌面 DSH 验证（2026-10-22）
-
-Windows 本机 DSH `0.2.1-rc.2` 已验证启动、「Pro」入口、研究面板和 `/pro-research/topics` 的 200 响应。修复了前端 ESM 产物无法作为普通脚本加载，以及布局槽位尚未声明就注册的启动故障；本次未重复发送真实 ChatGPT 调研请求。
+```text
+packages/
+  core/        # 引擎、状态机、记录、材料、产物（无浏览器依赖）
+  transport/   # chatgpt.com 驱动 + 图片/代码抓取 + CLI
+  research/    # ChatGPT Pro Research 插件入口
+  design/      # GPT-Image Design 插件入口（复用 research 的 host/client 工厂）
+docs/
+  design.md    # 原始设计文档
+  usage.md     # 研究插件的使用说明
+```
 
 ## 开发
 
@@ -39,45 +45,14 @@ npm run build
 node scripts/smoke-bundle.mjs
 ```
 
-前端产物按 DSH `0.2.1-rc.2` 的模块加载方式生成：普通脚本调用 `window.__ModuleLoader__.load()` 注册惰性的 CommonJS factory，React 从宿主共享，`slots.inject()` 等待布局声明槽位。冒烟检查同时加载 host 和前端产物，避免 ESM 文件进入 `/plugins` 或过早注册槽位阻断桌面启动。
+`smoke-bundle.mjs` 会按 DSH 的方式加载两个 host bundle 与两个前端 bundle（惰性 CJS factory、共享 React、等待槽位声明），断言每个插件 1 个工具、4 条路由、2 个前端槽位。
 
-独立跑一轮真实网页（需要本机 Chrome 和一个已登录的 ChatGPT 账号）：
+## 验证边界
 
-```bash
-node packages/transport/src/cli.ts login
-node packages/transport/src/cli.ts probe
-node packages/transport/src/cli.ts submit --brief-file brief.md --file README.md --out answer.md
-```
-
-浏览器冒烟（本地 fixture，不需要 ChatGPT 账号；默认跳过）：
-
-```bash
-DSH_PRO_TRANSPORT_SMOKE=1 npx vitest run packages/transport/test/transport.smoke.test.ts
-```
-
-## 结构
-
-```text
-packages/
-  core/        # 引擎、状态机、记录、材料（无浏览器依赖）
-  transport/   # chatgpt.com 驱动 + CLI
-  research/    # DSH host 插件 + pro-research 技能
-docs/
-  design.md    # 设计文档
-  usage.md     # 使用说明
-```
-
-## 文档
-
-- [使用说明](docs/usage.md)：一次性配置、四种日常用法、卡住与恢复、故障排查。
-- [设计文档](docs/design.md)：范围、架构、状态机、记录格式、里程碑。
-
-## 待办
-
-- npm 发布：`npm publish --dry-run` 已通过（23.3 kB，8 个文件）；`publish_plugin` 被本机临时目录的 `EPERM` 挡住，且当前没有 npm 登录凭据。
-- Pro 设计独立成包：当前是同一插件里的第二个技能，先观察使用反馈再拆。
-- 页面改版后的选择器维护：集中在 `packages/transport/src/selectors.ts`，最近一次按 2026-10-22 的真实页面校准。
+- 真实 ChatGPT 页面已验证：登录、单轮提交、附件、同会话两轮、图片生成抓取。
+- 本机桌面 DSH 已验证研究插件启动与面板；拆分后的两个插件已安装到 profile，等待重启后在 GUI 里确认两个入口。
+- 未覆盖：页面改版、超长回答、断线恢复、账号风控/ToS。
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。
+MIT。

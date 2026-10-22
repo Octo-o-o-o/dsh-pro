@@ -1,7 +1,7 @@
 {
-  "name": "dsh-pro-research",
+  "name": "chatgpt-pro-research",
   "version": "0.1.0",
-  "description": "Unattended multi-round research through a real ChatGPT Pro web session, with local records and a DSH sidebar.",
+  "description": "ChatGPT Pro Research: unattended multi-round research through a real ChatGPT Pro web session, with local records and a DSH sidebar.",
   "private": false,
   "type": "module",
   "main": "lib/index.js",

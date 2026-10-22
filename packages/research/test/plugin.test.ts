@@ -63,7 +63,7 @@ function fakeContext(captured: Captured) {
 }
 
 describe('plugin wiring', () => {
-  it('registers one tool, three routes and two skills', async () => {
+  it('registers one tool, four routes and one skill', async () => {
     const captured: Captured = { tools: [], routes: [], skills: [] }
     apply(fakeContext(captured) as never, { rounds: 2 })
     await Promise.resolve()
@@ -80,11 +80,12 @@ describe('plugin wiring', () => {
     expect(typeof tool.execute).toBe('function')
 
     expect(captured.routes.map(route => route.path).sort()).toEqual([
-      '/pro-research/action',
-      '/pro-research/topic',
-      '/pro-research/topics',
+      '/chatgpt-pro-research/action',
+      '/chatgpt-pro-research/asset',
+      '/chatgpt-pro-research/topic',
+      '/chatgpt-pro-research/topics',
     ])
-    expect(captured.skills.map(skill => skill.name).sort()).toEqual(['pro-design', 'pro-research'])
+    expect(captured.skills.map(skill => skill.name).sort()).toEqual(['pro-research'])
   })
 
   it('merges settings over defaults and keeps three-layer precedence', () => {
@@ -122,9 +123,9 @@ describe('plugin wiring', () => {
     try {
       const captured: Captured = { tools: [], routes: [], skills: [] }
       apply(fakeContext(captured) as never, { store: 'local' })
-      const route = captured.routes.find(item => item.path === '/pro-research/topics')
+      const route = captured.routes.find(item => item.path === '/chatgpt-pro-research/topics')
       expect(route).toBeDefined()
-      const response = await call(route as Route, { url: '/pro-research/topics', method: 'GET', headers: {} })
+      const response = await call(route as Route, { url: '/chatgpt-pro-research/topics', method: 'GET', headers: {} })
       expect(response.status).toBe(200)
       expect(response.json).toEqual({ topics: [] })
     } finally {
@@ -141,8 +142,8 @@ describe('plugin wiring', () => {
     try {
       const captured: Captured = { tools: [], routes: [], skills: [] }
       apply(fakeContext(captured) as never, { store: 'local' })
-      const route = captured.routes.find(item => item.path === '/pro-research/topic')
-      const response = await call(route as Route, { url: '/pro-research/topic?id=missing', method: 'GET', headers: {} })
+      const route = captured.routes.find(item => item.path === '/chatgpt-pro-research/topic')
+      const response = await call(route as Route, { url: '/chatgpt-pro-research/topic?id=missing', method: 'GET', headers: {} })
       expect(response.status).toBe(404)
       expect(response.json).toEqual({ error: 'unknown topic' })
     } finally {
@@ -161,7 +162,7 @@ describe('plugin wiring', () => {
       const store = new ResearchStore({
         mode: 'local',
         projectRoot: cwd,
-        localRoot: join(home, 'pro-research'),
+        localRoot: join(home, 'chatgpt-pro-research'),
         rawDir: join(home, 'raw'),
         rawAnswers: 'local',
       })
@@ -176,23 +177,23 @@ describe('plugin wiring', () => {
         store: 'local',
       }
       const { topic } = await store.create(card, 2, 'pro', 'web-pro')
-      await mkdir(join(home, 'pro-research'), { recursive: true })
-      await writeFile(join(home, 'pro-research', 'registry.json'), JSON.stringify({
+      await mkdir(join(home, 'chatgpt-pro-research'), { recursive: true })
+      await writeFile(join(home, 'chatgpt-pro-research', 'registry.json'), JSON.stringify({
         version: 1,
         topics: [{ id: topic.id, root: cwd, mode: 'local', title: topic.title, updated: topic.updated }],
       }), 'utf8')
 
       const captured: Captured = { tools: [], routes: [], skills: [] }
       apply(fakeContext(captured) as never, { store: 'local' })
-      const topicsRoute = captured.routes.find(item => item.path === '/pro-research/topics')
-      const listed = await call(topicsRoute as Route, { url: '/pro-research/topics', method: 'GET', headers: {} })
+      const topicsRoute = captured.routes.find(item => item.path === '/chatgpt-pro-research/topics')
+      const listed = await call(topicsRoute as Route, { url: '/chatgpt-pro-research/topics', method: 'GET', headers: {} })
       expect(listed.status).toBe(200)
       expect(listed.json.topics).toHaveLength(1)
       expect(listed.json.topics[0].topic_id).toBe(topic.id)
 
-      const detailRoute = captured.routes.find(item => item.path === '/pro-research/topic')
+      const detailRoute = captured.routes.find(item => item.path === '/chatgpt-pro-research/topic')
       const detail = await call(detailRoute as Route, {
-        url: `/pro-research/topic?id=${topic.id}`,
+        url: `/chatgpt-pro-research/topic?id=${topic.id}`,
         method: 'GET',
         headers: {},
       })

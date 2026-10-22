@@ -9,6 +9,8 @@ export interface StoreOptions {
   localRoot: string
   rawDir: string
   rawAnswers: 'local' | 'repo'
+  /** Project-relative docs folder: research or design. */
+  docsSubdir?: 'research' | 'design'
 }
 
 export interface IndexEntry {
@@ -88,7 +90,7 @@ export class ResearchStore {
     if (this.options.projectRoot === undefined || this.options.projectRoot === '') {
       throw new Error('project store requires a project root')
     }
-    return join(this.options.projectRoot, 'docs', 'research')
+    return join(this.options.projectRoot, 'docs', this.options.docsSubdir ?? 'research')
   }
 
   rawTopicDir(topicId: string): string {

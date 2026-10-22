@@ -31,6 +31,6 @@ describe('cordis load', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
 
     expect(captured.tools).toHaveLength(1)
-    expect(captured.routes).toHaveLength(3)
+    expect(captured.routes).toHaveLength(4)
   })
 })
