@@ -26,7 +26,8 @@ describe('cordis load', () => {
     ctx.provide('skills', { registerProvider: () => () => {} })
     ctx.provide('connection', { requestRejection: () => undefined })
 
-    ctx.plugin({ name, inject, apply } as never, { store: 'local' })
+    const mount = ctx.plugin as unknown as (plugin: unknown, config?: unknown) => unknown
+    mount({ name, inject, apply }, { store: 'local' })
     await new Promise(resolve => setTimeout(resolve, 100))
 
     expect(captured.tools).toHaveLength(1)
