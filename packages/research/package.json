@@ -1,7 +1,8 @@
 {
   "name": "dsh-pro-research",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Unattended multi-round research through a real ChatGPT Pro web session, with local records and a DSH sidebar.",
+  "private": false,
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -16,6 +17,31 @@
     "README.md",
     "LICENSE"
   ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "chatgpt",
+    "research",
+    "cordis"
+  ],
+  "author": "Octo-o-o-o",
+  "license": "MIT",
+  "homepage": "https://github.com/Octo-o-o-o/dsh-pro",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Octo-o-o-o/dsh-pro.git",
+    "directory": "packages/research"
+  },
+  "bugs": {
+    "url": "https://github.com/Octo-o-o-o/dsh-pro/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
