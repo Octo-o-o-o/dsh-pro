@@ -213,6 +213,24 @@ export class ResearchStore {
     await this.atomic(file, `${JSON.stringify({ materials: [...byPath.values()] }, null, 2)}\n`)
   }
 
+  /** Materials introduced by one follow-up round (empty means "no delta"). */
+  async writeRoundMaterials(topic: Topic, round: number, refs: readonly MaterialRef[]): Promise<void> {
+    const dir = await this.dirOf(topic.id)
+    await this.atomic(join(dir, 'rounds', `${pad(round)}-materials.json`), `${JSON.stringify({ materials: refs }, null, 2)}\n`)
+  }
+
+  async readRoundMaterials(topic: Topic, round: number): Promise<MaterialRef[] | undefined> {
+    try {
+      const dir = await this.dirOf(topic.id)
+      const parsed = JSON.parse(await readFile(join(dir, 'rounds', `${pad(round)}-materials.json`), 'utf8')) as {
+        materials?: MaterialRef[]
+      }
+      return Array.isArray(parsed.materials) ? parsed.materials : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Conversation locator stays local even when the topic is project-stored. */
   async writeLocator(topicId: string, locator: SessionLocator): Promise<void> {
     await this.atomic(join(this.options.localRoot, 'sessions', `${topicId}.json`), `${JSON.stringify(locator, null, 2)}\n`)

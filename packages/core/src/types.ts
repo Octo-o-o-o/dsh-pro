@@ -103,6 +103,8 @@ export interface SubmitRequest {
   round: number
   brief: string
   files: string[]
+  /** Attachments to use when the stored conversation cannot be reused. */
+  fallbackFiles?: string[]
   model: string
   session?: SessionLocator | null
 }

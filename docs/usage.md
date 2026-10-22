@@ -82,7 +82,7 @@ pro_research(action="continue", topic_id="topic-xxxx",
              confirmed=true)
 ```
 
-如果原轮次已经到顶，`continue` 会把上限加一并记录为显式加轮。新加的材料用 `materials=[...]` 传入，会并入主题清单；当前版本这一轮仍会带上清单里的全部文件，只送变化的增量附件留到后续版本。
+如果原会话还在，下一轮会回到同一个 ChatGPT 会话；新加的材料用 `materials=[...]` 传入，只上传这一轮新增的文件。原会话丢了会新开一个，并回退为整份材料清单。轮次到顶时，`continue` 会把上限加一并留下记录（显式加轮）。
 
 新建主题时可以用 `parent` 指向父主题，把 follow-up 串成同一棵树。
 

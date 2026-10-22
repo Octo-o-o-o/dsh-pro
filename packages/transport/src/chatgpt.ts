@@ -115,11 +115,13 @@ export class ChatGptWebTransport implements Transport {
     const page = await context.newPage()
     try {
       const target = request.session?.conversationUrl ?? this.appUrl
+      let reused = request.session?.conversationUrl !== undefined
       await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       let composer = await firstVisible(page, SELECTORS.composer, 30_000)
-      if (composer === undefined && target !== this.appUrl) {
+      if (composer === undefined && reused) {
         // The stored conversation is gone (deleted/another account): start a
-        // fresh chat rather than failing the round; the brief carries context.
+        // fresh chat; the engine's fallback material list keeps the round whole.
+        reused = false
         await page.goto(this.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
         composer = await firstVisible(page, SELECTORS.composer, 30_000)
       }
@@ -127,14 +129,15 @@ export class ChatGptWebTransport implements Transport {
 
       await this.trySelectModel(page, request.model)
 
-      if (request.files.length > 0) {
+      const attachmentsToSend = reused ? request.files : (request.fallbackFiles ?? request.files)
+      if (attachmentsToSend.length > 0) {
         const input = page.locator(SELECTORS.fileInput).first()
         try {
-          await input.setInputFiles(request.files, { timeout: 60_000 })
+          await input.setInputFiles(attachmentsToSend, { timeout: 60_000 })
         } catch (error) {
           throw new TransportError(`cannot attach materials: ${error instanceof Error ? error.message : String(error)}`, 'upload', { cause: error })
         }
-        await this.waitForAttachmentCards(page, request.files)
+        await this.waitForAttachmentCards(page, attachmentsToSend)
       }
 
       await composer.fill(request.brief)
@@ -144,7 +147,7 @@ export class ChatGptWebTransport implements Transport {
 
       await page.waitForTimeout(1_000)
       const conversationUrl = page.url()
-      const attachments = request.files.map(file => file.split(/[\\/]/).pop() ?? file)
+      const attachments = attachmentsToSend.map(file => file.split(/[\\/]/).pop() ?? file)
       const submissionId = randomUUID()
       const fingerprint = sha256(`${conversationUrl}\n${request.brief}\n${attachments.join('\n')}`)
       this.submissions.set(submissionId, {

@@ -105,6 +105,7 @@ export class ResearchEngine {
     if (next > topic.roundsCap) topic.roundsCap = next
     await this.options.store.writeQuestion(topic, next, brief)
     await this.options.store.addMaterials(topic, materials ?? [])
+    await this.options.store.writeRoundMaterials(topic, next, materials ?? [])
     delete topic.stopReason
     await this.transition(topic, 'queued')
     this.enqueue(id)
@@ -241,18 +242,27 @@ export class ResearchEngine {
     if (signal.aborted) throw new DOMException('aborted', 'AbortError')
     const brief = (await this.options.store.readQuestion(topic, round.n)) ?? ''
     const locator = await this.options.store.readLocator(topic.id)
-    // Attachments are always re-sent: if the stored conversation is gone the
-    // transport starts a fresh chat, and a delta would silently lose context.
-    const files = await this.options.store.readMaterialPaths(topic)
+    const allFiles = await this.options.store.readMaterialPaths(topic)
+    let files = allFiles
+    let fallbackFiles: string[] | undefined
+    if (locator !== undefined && round.n > 1) {
+      // Inside the same conversation only the new materials go up; if the
+      // transport has to start a fresh chat it falls back to the full list.
+      const delta = await this.options.store.readRoundMaterials(topic, round.n)
+      files = (delta ?? []).map(item => item.path)
+      fallbackFiles = allFiles
+    }
     round.files = files.length
     const result: SubmitResult = await this.options.transport.submit({
       topicId: topic.id,
       round: round.n,
       brief,
       files,
+      ...(fallbackFiles !== undefined ? { fallbackFiles } : {}),
       model: topic.model,
       session: locator ?? null,
     })
+    round.files = result.attachments.length
     await this.options.store.writeLocator(topic.id, {
       conversationUrl: result.conversationUrl,
       profileDir: this.options.config.browser.profileDir,
