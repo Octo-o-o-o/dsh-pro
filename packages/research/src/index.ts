@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { mkdir, readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -72,6 +72,15 @@ interface SkillsService {
 type ServiceContext = Context & {
   tools: { register(tool: unknown): () => void }
   get(name: string): unknown
+  inject(services: string[], callback: (scoped: Context) => void): void
+}
+
+interface RegistryEntry {
+  id: string
+  root: string
+  mode: 'project' | 'local'
+  title: string
+  updated: string
 }
 
 function homeDir(): string {
@@ -143,12 +152,15 @@ class ProResearchService {
   }
 
   private storeFor(cwd: string): ResearchStore {
-    const root = this.rootFor(cwd)
-    const key = `${this.config.store}:${root}`
+    return this.storeAt(this.rootFor(cwd), this.config.store)
+  }
+
+  private storeAt(root: string, mode: 'project' | 'local'): ResearchStore {
+    const key = `${mode}:${root}`
     const existing = this.stores.get(key)
     if (existing !== undefined) return existing
     const store = new ResearchStore({
-      mode: this.config.store,
+      mode,
       projectRoot: root,
       localRoot: join(this.home, 'pro-research'),
       rawDir: this.config.rawAnswersDir,
@@ -252,6 +264,83 @@ class ProResearchService {
     throw new Error(`unknown topic: ${topicId}`)
   }
 
+  private get registryFile(): string {
+    return join(this.home, 'pro-research', 'registry.json')
+  }
+
+  private async readRegistry(): Promise<RegistryEntry[]> {
+    try {
+      const parsed = JSON.parse(await readFile(this.registryFile, 'utf8')) as { topics?: RegistryEntry[] }
+      return Array.isArray(parsed.topics) ? parsed.topics : []
+    } catch {
+      return []
+    }
+  }
+
+  private async writeRegistry(entries: RegistryEntry[]): Promise<void> {
+    await mkdir(dirname(this.registryFile), { recursive: true })
+    await writeFile(this.registryFile, `${JSON.stringify({ version: 1, topics: entries }, null, 2)}\n`, 'utf8')
+  }
+
+  private async record(topic: Topic, root: string): Promise<void> {
+    const entries = (await this.readRegistry()).filter(entry => entry.id !== topic.id)
+    entries.push({
+      id: topic.id,
+      root,
+      mode: this.config.store,
+      title: topic.title,
+      updated: topic.updated,
+    })
+    await this.writeRegistry(entries)
+  }
+
+  private async entryFor(id: string): Promise<RegistryEntry | undefined> {
+    return (await this.readRegistry()).find(entry => entry.id === id)
+  }
+
+  async listAll(): Promise<Array<Record<string, unknown>>> {
+    const entries = await this.readRegistry()
+    const rows: Array<Record<string, unknown>> = []
+    for (const entry of entries) {
+      try {
+        const topic = await this.storeAt(entry.root, entry.mode).load(entry.id)
+        rows.push({ ...this.view(topic), root: entry.root, store: entry.mode })
+      } catch {
+        // A recorded topic that no longer loads is left out instead of faked.
+      }
+    }
+    return rows.sort((a, b) => String(b.updated ?? '').localeCompare(String(a.updated ?? '')))
+  }
+
+  async detail(id: string): Promise<Record<string, unknown> | undefined> {
+    const entry = await this.entryFor(id)
+    if (entry === undefined) return undefined
+    const store = this.storeAt(entry.root, entry.mode)
+    const topic = await store.load(id)
+    const dir = await store.dirOf(id)
+    return { ...this.view(topic), root: entry.root, store: entry.mode, path: dir, rounds_detail: topic.rounds }
+  }
+
+  async act(
+    id: string,
+    action: string,
+    conclusion?: 'submitted' | 'not_submitted' | 'reopen',
+    note?: string,
+  ): Promise<Record<string, unknown>> {
+    const entry = await this.entryFor(id)
+    if (entry === undefined) throw new Error(`unknown topic: ${id}`)
+    const engine = this.engineFor(entry.root)
+    if (action === 'resume') return this.view(await engine.resume(id))
+    if (action === 'cancel') return this.view(await engine.cancel(id))
+    if (action === 'human_check') {
+      if (conclusion === undefined) throw new Error('conclusion is required')
+      const reason = note ?? ''
+      if (reason.trim() === '') throw new Error('note is required')
+      return this.view(await engine.humanCheck(id, conclusion, reason))
+    }
+    throw new Error('action must be resume, cancel or human_check')
+  }
+
   async handle(args: Record<string, unknown>, exec: ToolRunContext): Promise<Record<string, unknown>> {
     const action = typeof args.action === 'string' ? args.action : ''
     const cwd = exec.agent?.session.header.cwd ?? process.cwd()
@@ -320,6 +409,7 @@ class ProResearchService {
     }
     const engine = this.engineFor(cwd)
     const topic = await engine.start(card)
+    await this.record(topic, this.rootFor(cwd))
     return this.view(topic)
   }
 
@@ -415,10 +505,105 @@ function registerSkill(ctx: ServiceContext): void {
   }))
 }
 
+interface HttpRequest {
+  url?: string
+  method?: string
+  headers: Record<string, string | string[] | undefined>
+  [Symbol.asyncIterator](): AsyncIterator<string | Uint8Array>
+}
+
+interface HttpResponse {
+  statusCode: number
+  headersSent?: boolean
+  writeHead(status: number, headers?: Record<string, string>): void
+  write(chunk: string | Uint8Array): boolean
+  end(body?: string | Uint8Array): void
+}
+
+function sendJson(res: HttpResponse, status: number, value: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(JSON.stringify(value))
+}
+
+async function readJsonBody(req: HttpRequest): Promise<Record<string, unknown>> {
+  let body = ''
+  for await (const chunk of req) {
+    body += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+  }
+  if (body.trim() === '') return {}
+  return JSON.parse(body) as Record<string, unknown>
+}
+
+function registerRoutes(scoped: Context, service: ProResearchService): void {
+  const webServer = (scoped as unknown as {
+    webServer?: { register(route: { kind: 'exact'; path: string; handler: (req: HttpRequest, res: HttpResponse) => void | Promise<void> }): () => void }
+  }).webServer
+  if (webServer === undefined) return
+  const connection = (scoped.get('connection') ?? undefined) as
+    | { requestRejection?(req: HttpRequest): 401 | 403 | undefined }
+    | undefined
+  const reject = (req: HttpRequest): 401 | 403 | undefined => connection?.requestRejection?.(req)
+
+  scoped.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/pro-research/topics',
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      try {
+        sendJson(res, 200, { topics: await service.listAll() })
+      } catch (error) {
+        sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), 'dsh-pro-research: topics route')
+
+  scoped.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/pro-research/topic',
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const id = url.searchParams.get('id') ?? ''
+      try {
+        const topic = await service.detail(id)
+        if (topic === undefined) return sendJson(res, 404, { error: 'unknown topic' })
+        sendJson(res, 200, { topic })
+      } catch (error) {
+        sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), 'dsh-pro-research: topic route')
+
+  scoped.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/pro-research/action',
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' })
+      try {
+        const body = await readJsonBody(req)
+        const id = typeof body.topic_id === 'string' ? body.topic_id : ''
+        const action = typeof body.action === 'string' ? body.action : ''
+        const conclusion = body.conclusion === 'submitted' || body.conclusion === 'not_submitted' || body.conclusion === 'reopen'
+          ? body.conclusion
+          : undefined
+        const note = typeof body.note === 'string' ? body.note : undefined
+        sendJson(res, 200, { topic: await service.act(id, action, conclusion, note) })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), 'dsh-pro-research: action route')
+}
+
 export function apply(ctx: Context, config?: ResearchConfig): void {
   const service = new ProResearchService(ctx as ServiceContext, resolveResearchConfig(config), homeDir())
   ctx.effect(() => () => service.dispose(), 'dsh-pro-research: close browser')
   registerSkill(ctx as ServiceContext)
+  ;(ctx as ServiceContext).inject(['webServer'], scoped => registerRoutes(scoped, service))
   ;(ctx as ServiceContext).tools.register(defineTool({
     name: 'pro_research',
     description: [

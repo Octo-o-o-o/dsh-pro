@@ -33,3 +33,17 @@ await build({
   alias,
   logLevel: 'info',
 })
+
+await build({
+  entryPoints: ['packages/research/client/index.tsx'],
+  outfile: 'packages/research/lib/client.js',
+  bundle: true,
+  platform: 'browser',
+  format: 'esm',
+  target: 'es2022',
+  jsx: 'automatic',
+  sourcemap: false,
+  external: [...external, 'react', 'react/*', 'react-dom', 'react-dom/*'],
+  alias,
+  logLevel: 'info',
+})
