@@ -17,4 +17,12 @@ describe('sidebar status badge', () => {
     expect(sidebarStatusText([])).toBe('')
     expect(sidebarStatusText([{ status: 'cancelled' }, { status: 'draft' }])).toBe('')
   })
+
+  it('does not count a completed topic the user has already opened', () => {
+    const topics = [
+      { id: 'a', status: 'completed', updated: '2026-10-22T15:00:00.000Z' },
+      { id: 'b', status: 'capped', updated: '2026-10-22T15:01:00.000Z' },
+    ]
+    expect(sidebarStatusText(topics, topic => topic.id === 'a')).toBe('1 完成')
+  })
 })

@@ -6,6 +6,8 @@
  * re-renders by re-attaching when the row is recreated.
  */
 
+import { isTopicSeen, SEEN_EVENT } from './seen.ts'
+
 export interface SidebarStatusOptions {
   label: string
   routes: string
@@ -20,7 +22,10 @@ interface Counts {
 
 const POLL_MS = 5_000
 
-function countTopics(topics: Array<{ status?: string }>): Counts {
+function countTopics(
+  topics: Array<{ id?: string; status?: string; updated?: string }>,
+  isSeen: (topic: { id?: string; status?: string; updated?: string }) => boolean,
+): Counts {
   const counts: Counts = { active: 0, completed: 0, failed: 0 }
   for (const topic of topics) {
     switch (topic.status) {
@@ -34,7 +39,7 @@ function countTopics(topics: Array<{ status?: string }>): Counts {
         break
       case 'completed':
       case 'capped':
-        counts.completed += 1
+        if (!isSeen(topic)) counts.completed += 1
         break
       case 'failed':
       case 'stalled':
@@ -56,8 +61,11 @@ function badgeText(counts: Counts): string {
 }
 
 /** Pure summary used by the badge and by tests. */
-export function sidebarStatusText(topics: Array<{ status?: string }>): string {
-  return badgeText(countTopics(topics))
+export function sidebarStatusText(
+  topics: Array<{ id?: string; status?: string; updated?: string }>,
+  isSeen: (topic: { id?: string; status?: string; updated?: string }) => boolean = () => false,
+): string {
+  return badgeText(countTopics(topics, isSeen))
 }
 
 export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
@@ -129,8 +137,11 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
     try {
       const response = await fetch(`${options.routes}/topics`, { headers: { accept: 'application/json' } })
       if (!response.ok) return
-      const data = await response.json() as { topics?: Array<{ status?: string }> }
-      applyText(badgeText(countTopics(data.topics ?? [])))
+      const data = await response.json() as { topics?: Array<{ id?: string; status?: string; updated?: string }> }
+      applyText(sidebarStatusText(
+        data.topics ?? [],
+        topic => isTopicSeen(options.panelId, topic.id ?? '', topic.updated),
+      ))
     } catch {
       // The host may still be starting; poll again on the next tick.
     } finally {
@@ -148,11 +159,14 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
   observer.observe(document.body, { childList: true, subtree: true })
 
   const timer = window.setInterval(() => { void refresh() }, POLL_MS)
+  const onSeen = () => { void refresh() }
+  window.addEventListener(SEEN_EVENT, onSeen)
   void refresh()
 
   return () => {
     disposed = true
     window.clearInterval(timer)
+    window.removeEventListener(SEEN_EVENT, onSeen)
     if (attachTimer !== undefined) window.clearTimeout(attachTimer)
     observer?.disconnect()
     badge?.remove()

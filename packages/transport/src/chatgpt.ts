@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
-import type { CodeBlock, ImageAsset, PollResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
+import type { CodeBlock, ImageAsset, PollResult, ReattachRequest, ReattachResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
 import { TransportError } from 'dsh-pro-core'
 import { SELECTORS } from './selectors.ts'
 import { advanceCompletion } from './completion.ts'
@@ -28,8 +28,16 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex')
 }
 
-function extensionFor(mime: string): string {
-  if (mime.includes('jpeg')) return 'jpg'
+function briefMarker(brief: string): string {
+  return brief
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#>*_`|~]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+}
+
+function extensionFor(mime: string): string {  if (mime.includes('jpeg')) return 'jpg'
   if (mime.includes('webp')) return 'webp'
   if (mime.includes('gif')) return 'gif'
   if (mime.includes('svg')) return 'svg'
@@ -199,6 +207,48 @@ export class ChatGptWebTransport implements Transport {
       await page.close().catch(() => undefined)
       if (error instanceof TransportError) throw error
       throw new TransportError(`submit failed: ${error instanceof Error ? error.message : String(error)}`, 'network', { cause: error })
+    }
+  }
+
+  /**
+   * Adopt an already-sent round after a restart. The prompt text is the proof:
+   * if it is not in the stored conversation, this round was never submitted.
+   */
+  async reattach(request: ReattachRequest): Promise<ReattachResult> {
+    const context = await this.ensureContext()
+    const existing = this.topicPages.get(request.topicId)
+    const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
+    this.topicPages.set(request.topicId, page)
+    try {
+      await page.goto(request.conversationUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      const composer = await firstVisible(page, SELECTORS.composer, 30_000)
+      if (composer === undefined) return { attached: false }
+      const marker = briefMarker(request.brief)
+      if (marker === '') return { attached: false }
+      const found = await page.evaluate(text => (document.body.innerText ?? '').includes(text), marker)
+      if (!found) return { attached: false }
+      const submissionId = randomUUID()
+      this.submissions.set(submissionId, {
+        page,
+        request: {
+          topicId: request.topicId,
+          round: request.round,
+          brief: request.brief,
+          files: [],
+          model: '',
+          session: { conversationUrl: request.conversationUrl, profileDir: this.options.profileDir },
+        },
+        startedAt: Date.now(),
+        lastText: '',
+        stable: 0,
+      })
+      return { attached: true, submissionId }
+    } catch (error) {
+      throw new TransportError(
+        `reattach failed: ${error instanceof Error ? error.message : String(error)}`,
+        'network',
+        { cause: error },
+      )
     }
   }
 

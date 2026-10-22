@@ -117,6 +117,13 @@ function mimeFor(path: string): string {
     case '.css': return 'text/css; charset=utf-8'
     case '.js': return 'text/javascript; charset=utf-8'
     case '.json': return 'application/json; charset=utf-8'
+    case '.md':
+    case '.markdown': return 'text/markdown; charset=utf-8'
+    case '.txt': return 'text/plain; charset=utf-8'
+    case '.ts':
+    case '.tsx':
+    case '.js':
+    case '.jsx': return 'text/plain; charset=utf-8'
     default: return 'application/octet-stream'
   }
 }
@@ -424,6 +431,21 @@ class ProResearchService {
     return await store.readAnswer(topic, round)
   }
 
+  /** Read a text file (final.md, verdict, question) from inside a topic. */
+  async topicText(id: string, relativePath: string): Promise<{ text: string; mime: string }> {
+    const entry = await this.entryFor(id)
+    if (entry === undefined) throw new Error(`unknown topic: ${id}`)
+    const store = this.storeAt(entry.root, entry.mode)
+    const dir = await store.dirOf(id)
+    const target = resolve(dir, relativePath)
+    if (target !== dir && !target.startsWith(`${dir}${sep}`)) {
+      throw new Error('path escapes the topic')
+    }
+    const bytes = await readFile(target)
+    if (bytes.byteLength > 2_000_000) throw new Error('file is too large to preview')
+    return { text: bytes.toString('utf8'), mime: mimeFor(target) }
+  }
+
   /** Reveal a topic-relative file in the OS file manager. */
   async revealFile(id: string, relativePath: string): Promise<void> {
     const entry = await this.entryFor(id)
@@ -460,7 +482,22 @@ class ProResearchService {
       if (reason.trim() === '') throw new Error('note is required')
       return this.view(await engine.humanCheck(id, conclusion, reason))
     }
-    throw new Error('action must be resume, cancel or human_check')
+    if (action === 'regenerate') {
+      const topic = await (await this.storeFor(entry.root)).load(id)
+      if (topic.status !== 'completed' && topic.status !== 'capped') {
+        throw new Error(`topic ${id} is ${topic.status}; regenerate needs completed or capped`)
+      }
+      const feedback = (note ?? '').trim()
+      const brief = [
+        `继续主题「${topic.title}」：用户对上一轮结果不满意，请基于已有上下文重新生成并改进。`,
+        '## 用户反馈',
+        feedback === '' ? '没有具体反馈；请保持成功判据不变，给出与上一轮明显不同的新方案。' : feedback,
+        '## 要求',
+        '不要重复上一轮已确认的内容；给出新的产物或方向，并说明与上一版的差异。',
+      ].join('\n\n')
+      return this.view(await engine.continue(id, brief))
+    }
+    throw new Error('action must be resume, cancel, human_check or regenerate')
   }
 
   async handle(args: Record<string, unknown>, exec: ToolRunContext): Promise<Record<string, unknown>> {
@@ -516,7 +553,7 @@ class ProResearchService {
       case 'login':
         return { login: await this.transportFor().login() }
       default:
-        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, regenerate, probe or login')
     }
   }
 
@@ -599,6 +636,39 @@ class ProResearchService {
       stop_reason: topic.stopReason ?? null,
       artifacts: topic.artifacts,
       updated: topic.updated,
+    }
+  }
+
+  /**
+   * On plugin startup, adopt rounds that were already sent before a restart.
+   * The prompt marker in the stored conversation is the proof; anything that
+   * cannot be proven is parked as unknown_submission instead of being resent.
+   */
+  async recoverActive(): Promise<void> {
+    const entries = await this.readRegistry()
+    for (const entry of entries) {
+      const store = this.storeAt(entry.root, entry.mode)
+      const topic = await store.load(entry.id).catch(() => undefined)
+      if (topic === undefined) continue
+      const engine = this.engineFor(entry.root)
+      if (topic.status === 'waiting' || topic.status === 'submitted') {
+        try {
+          await engine.reattach(entry.id)
+          const recovered = await store.load(entry.id)
+          if (recovered.status === 'stalled') await this.notifyStalled(entry.id, recovered.stallReason)
+        } catch (error) {
+          await engine.interrupt(entry.id, `DSH 重启后恢复失败：${error instanceof Error ? error.message : String(error)}`)
+          await this.notifyStalled(entry.id, 'unknown_submission')
+        }
+      } else if (
+        topic.status === 'queued'
+        || topic.status === 'uploading'
+        || topic.status === 'answered'
+        || topic.status === 'adjudicating'
+      ) {
+        await engine.interrupt(entry.id, 'DSH 重启时任务尚未完成；已停止自动重发，请核对后恢复')
+        await this.notifyStalled(entry.id, 'unknown_submission')
+      }
     }
   }
 
@@ -789,6 +859,25 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
 
   scoped.effect(() => webServer.register({
     kind: 'exact',
+    path: `${spec.routes}/file`,
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const id = url.searchParams.get('id') ?? ''
+      const path = url.searchParams.get('path') ?? ''
+      try {
+        const file = await service.topicText(id, path)
+        res.writeHead(200, { 'content-type': `${file.mime}; charset=utf-8`, 'cache-control': 'no-store' })
+        res.end(file.text)
+      } catch {
+        sendJson(res, 404, { error: 'unknown file' })
+      }
+    },
+  }), `${spec.name}: file route`)
+
+  scoped.effect(() => webServer.register({
+    kind: 'exact',
     path: `${spec.routes}/open`,
     handler: async (req, res) => {
       const denied = reject(req)
@@ -811,6 +900,10 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
   return (ctx: Context, config?: ResearchConfig): void => {
     const service = new ProResearchService(ctx as ServiceContext, resolvePluginConfig(spec, config), homeDir(), spec)
     ctx.effect(() => () => service.dispose(), `${spec.name}: close browser`)
+    ctx.effect(() => {
+      const timer = setTimeout(() => { void service.recoverActive() }, 2_500)
+      return () => clearTimeout(timer)
+    }, `${spec.name}: recover interrupted rounds`)
     registerSkill(ctx as ServiceContext, spec)
     ;(ctx as ServiceContext).inject(['webServer'], scoped => registerRoutes(scoped, service, spec))
   ;(ctx as ServiceContext).tools.register(defineTool({
@@ -819,12 +912,12 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       ? [
           '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
           'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-          'action: start | continue | status | list | resume | cancel | human_check | probe | login。',
+          'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
         ]
       : [
           '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
           'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-          'action: start | continue | status | list | resume | cancel | human_check | probe | login。',
+          'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
         ]).join(' '),
     parameters: {
       action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|probe|login' },
@@ -839,7 +932,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check 的主题 id' },
       parent: { type: 'string', description: '可选：父主题 id，用于把 follow-up 串成同一棵树' },
       conclusion: { type: 'string', description: 'human_check 结论：submitted|not_submitted|reopen' },
-      note: { type: 'string', description: 'human_check 依据' },
+      note: { type: 'string', description: 'human_check 依据；regenerate 时作为不满意点/新要求' },
       confirmed: { type: 'boolean', description: '用户已确认研究卡' },
     },
     output: {
@@ -850,8 +943,8 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     execute: async (args: Record<string, unknown>, exec: ToolRunContext) => {
-      if ((args.action === 'start' || args.action === 'continue') && args.confirmed !== true) {
-        throw new Error('start and continue require confirmed=true after the user has seen the research card')
+      if ((args.action === 'start' || args.action === 'continue' || args.action === 'regenerate') && args.confirmed !== true) {
+        throw new Error('start, continue and regenerate require confirmed=true after the user has seen the card')
       }
       return (await service.handle(args, exec)) as never
     },

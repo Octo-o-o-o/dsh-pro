@@ -124,6 +124,19 @@ export interface SubmitResult {
   conversationUrl: string
 }
 
+export interface ReattachRequest {
+  topicId: string
+  round: number
+  conversationUrl: string
+  /** Text unique to the round; used to verify the prompt is already in the chat. */
+  brief: string
+}
+
+export interface ReattachResult {
+  attached: boolean
+  submissionId?: string
+}
+
 export interface PollResult {
   state: 'waiting' | 'answered' | 'unknown'
   answer?: string
@@ -169,6 +182,7 @@ export class TransportError extends Error {
 export interface Transport {
   probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[] }>
   submit(request: SubmitRequest): Promise<SubmitResult>
+  reattach?(request: ReattachRequest): Promise<ReattachResult>
   poll(request: { submissionId: string; timeoutMs: number; signal?: AbortSignal }): Promise<PollResult>
   fetch(request: { submissionId: string }): Promise<FetchedAnswer>
   cancel(): Promise<void>

@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useState } from 'react'
 import { DESIGN_ICON, RESEARCH_ICON } from './icons.ts'
 import { mountSidebarStatus } from './sidebar-status.ts'
+import { markTopicSeen } from './seen.ts'
 
 const POLL_MS = 3_000
 
@@ -67,6 +68,17 @@ interface TopicDetail extends TopicRow {
   rounds_detail?: RoundRow[]
 }
 
+interface Viewer {
+  kind: 'image' | 'frame' | 'text'
+  title: string
+  topicId?: string
+  src?: string
+  text?: string
+  path?: string
+}
+
+let showViewer: (view: Viewer | undefined) => void = () => {}
+
 const STATUS_LABEL: Record<string, string> = {
   draft: '草稿',
   queued: '排队',
@@ -129,6 +141,8 @@ function Panel(): ReturnType<typeof createElement> {
   const [selected, setSelected] = useState<string | undefined>(undefined)
   const [detail, setDetail] = useState<TopicDetail | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
+  const [viewer, setViewer] = useState<Viewer | undefined>(undefined)
+  showViewer = setViewer
 
   const loadList = useCallback(async () => {
     try {
@@ -180,6 +194,19 @@ function Panel(): ReturnType<typeof createElement> {
     }
   }, [selected, loadDetail, loadList])
 
+  const regenerate = useCallback(async () => {
+    if (selected === undefined) return
+    const input = window.prompt('不满意的地方 / 新要求（可留空，直接换一版）')
+    if (input === null) return
+    try {
+      await postAction({ action: 'regenerate', topic_id: selected, note: input.trim() })
+      await loadDetail(selected)
+      await loadList()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [selected, loadDetail, loadList])
+
   const list = createElement('div', { style: { width: 240, borderRight: '1px solid rgba(127,127,127,.2)', overflowY: 'auto', flex: '0 0 auto' } },
     createElement('div', { style: { padding: '10px 12px', fontWeight: 600, fontSize: 13, opacity: 0.8 } }, config.title),
     topics.length === 0
@@ -189,7 +216,10 @@ function Panel(): ReturnType<typeof createElement> {
           : '还没有研究任务。在会话里用 /pro-research 开始。')
       : topics.map(topic => createElement('div', {
         key: topic.topic_id,
-        onClick: () => setSelected(topic.topic_id),
+        onClick: () => {
+          markTopicSeen(config.panelId, topic.topic_id, topic.updated)
+          setSelected(topic.topic_id)
+        },
         style: {
           padding: '8px 12px',
           cursor: 'pointer',
@@ -208,16 +238,24 @@ function Panel(): ReturnType<typeof createElement> {
     detail === undefined
       ? createElement('div', { style: { opacity: 0.6 } }, '选择左侧的主题查看轮次与产物。')
       : createElement('div', {},
-        createElement('h3', { style: { margin: '0 0 6px', fontSize: 15 } }, detail.title),
-        createElement('div', { style: { opacity: 0.75, marginBottom: 8 } },
-          `${STATUS_LABEL[detail.status] ?? detail.status} · ${detail.rounds}/${detail.rounds_cap} 轮 · ${detail.type}`),
-        detail.stall_reason !== null ? createElement('div', { style: { color: '#ed6c02', marginBottom: 8 } }, `卡住原因：${detail.stall_reason}`) : undefined,
-        detail.stop_reason !== null ? createElement('div', { style: { marginBottom: 8 } }, `停止依据：${detail.stop_reason}`) : undefined,
-        detail.path !== undefined ? createElement('div', { style: { opacity: 0.65, marginBottom: 8, wordBreak: 'break-all' } }, `记录：${detail.path}`) : undefined,
-        createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 } },
+        createElement('div', { style: { display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', paddingBottom: 8, borderBottom: '1px solid rgba(127,127,127,.18)' } },
+          createElement('h3', { style: { margin: 0, fontSize: 17, fontWeight: 650, lineHeight: 1.3 } }, detail.title),
+          statusPill(detail.status)),
+        createElement('div', { style: { display: 'flex', gap: 14, flexWrap: 'wrap', margin: '8px 0', fontSize: 11, opacity: 0.62 } },
+          createElement('span', {}, `${detail.rounds}/${detail.rounds_cap} 轮`),
+          createElement('span', {}, detail.type),
+          detail.designs != null ? createElement('span', {}, `每轮方向 ${detail.designs}`) : undefined,
+          detail.updated !== undefined ? createElement('span', {}, `更新 ${formatTime(detail.updated)}`) : undefined),
+        detail.stall_reason !== null ? createElement('div', { style: { color: '#ed6c02', marginBottom: 8, fontSize: 12 } }, `卡住原因：${detail.stall_reason}`) : undefined,
+        detail.stop_reason !== null ? createElement('div', { style: { marginBottom: 8, fontSize: 12, opacity: 0.72 } }, `停止依据：${detail.stop_reason}`) : undefined,
+        detail.path !== undefined ? createElement('div', { style: { opacity: 0.5, marginBottom: 10, wordBreak: 'break-all', fontSize: 11 } }, detail.path) : undefined,
+        createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 } },
           ACTIVE.has(detail.status) ? createElement('button', { onClick: () => void act('cancel'), style: buttonStyle() }, '取消') : undefined,
           detail.status === 'stalled' || detail.status === 'failed'
             ? createElement('button', { onClick: () => void act('resume'), style: buttonStyle() }, '恢复')
+            : undefined,
+          detail.status === 'completed' || detail.status === 'capped'
+            ? createElement('button', { onClick: () => void regenerate(), style: buttonStyle() }, '重新生成')
             : undefined,
           detail.status === 'stalled'
             ? createElement('span', { style: { display: 'flex', gap: 8 } },
@@ -225,16 +263,99 @@ function Panel(): ReturnType<typeof createElement> {
               createElement('button', { onClick: () => void act('human_check', 'not_submitted'), style: buttonStyle() }, '未提交'),
               createElement('button', { onClick: () => void act('human_check', 'reopen'), style: buttonStyle() }, '需重开'))
             : undefined),
-        createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '轮次'),
+        createElement('div', { style: { fontWeight: 600, marginBottom: 6, fontSize: 13 } }, '轮次'),
         (detail.rounds_detail ?? []).length === 0
           ? createElement('div', { style: { opacity: 0.6 } }, '还没有提交记录。')
           : createElement('div', {}, (detail.rounds_detail ?? []).map(round => renderRound(detail, round))),
-        config.designMode && detail.designs != null
-          ? createElement('div', { style: { marginTop: 8, opacity: 0.75 } }, `每轮方向：${detail.designs}`)
-          : undefined,
         renderArtifacts(detail)))
 
-  return createElement('div', { style: { display: 'flex', height: '100%', minHeight: 0, color: 'inherit' } }, list, body)
+  return createElement('div', { style: { display: 'flex', height: '100%', minHeight: 0, color: 'inherit' } },
+    list,
+    body,
+    viewer !== undefined ? renderViewer(viewer) : undefined)
+}
+
+function statusPill(status: string): ReturnType<typeof createElement> {
+  const color = STATUS_COLOR[status] ?? 'rgba(127,127,127,.9)'
+  return createElement('span', {
+    style: {
+      fontSize: 10,
+      fontWeight: 600,
+      padding: '3px 8px',
+      borderRadius: 999,
+      color,
+      background: 'rgba(127,127,127,.12)',
+      border: '1px solid rgba(127,127,127,.18)',
+      lineHeight: 1.2,
+    },
+  }, STATUS_LABEL[status] ?? status)
+}
+
+function renderViewer(view: Viewer): ReturnType<typeof createElement> {
+  const body = view.kind === 'image' && view.src !== undefined
+    ? createElement('img', {
+      src: view.src,
+      alt: view.title,
+      style: { maxWidth: '100%', maxHeight: '74vh', objectFit: 'contain', display: 'block', margin: '0 auto' },
+    })
+    : view.kind === 'frame' && view.src !== undefined
+      ? createElement('iframe', {
+        src: view.src,
+        sandbox: 'allow-scripts',
+        title: view.title,
+        style: { width: '100%', height: '74vh', border: 0, background: '#fff' },
+      })
+      : createElement('pre', {
+        style: {
+          margin: 0,
+          padding: 16,
+          maxHeight: '74vh',
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+          fontSize: 12,
+          lineHeight: 1.55,
+        },
+      }, view.text ?? '')
+
+  return createElement('div', {
+    style: {
+      position: 'fixed',
+      inset: 0,
+      zIndex: 2_147_483_000,
+      background: 'rgba(0,0,0,.55)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 24,
+    },
+    onClick: () => showViewer(undefined),
+  }, createElement('div', {
+    onClick: (event: { stopPropagation(): void }) => event.stopPropagation(),
+    style: {
+      background: 'Canvas',
+      color: 'CanvasText',
+      borderRadius: 12,
+      width: 'min(92vw, 980px)',
+      maxHeight: '88vh',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+      border: '1px solid rgba(127,127,127,.25)',
+      boxShadow: '0 24px 80px rgba(0,0,0,.45)',
+    },
+  },
+  createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid rgba(127,127,127,.2)' } },
+    createElement('div', { style: { fontWeight: 600, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, view.title),
+    view.path !== undefined && view.topicId !== undefined
+      ? createElement('button', {
+        onClick: () => void revealArtifact(view.topicId as string, view.path as string),
+        style: buttonStyle(),
+      }, '在文件夹中')
+      : undefined,
+    createElement('button', { onClick: () => showViewer(undefined), style: buttonStyle() }, '关闭')),
+  createElement('div', { style: { overflow: 'auto', background: view.kind === 'frame' ? '#fff' : 'transparent' } }, body)))
 }
 
 function assetUrl(topicId: string, path: string): string {
@@ -257,15 +378,14 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
       ? createElement('div', {},
         createElement('div', { style: { fontWeight: 600, marginBottom: 6 } }, '图片'),
         createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 } },
-          images.map(path => createElement('a', {
+          images.map(path => createElement('button', {
             key: path,
-            href: assetUrl(detail.topic_id, path),
-            target: '_blank',
-            rel: 'noreferrer',
+            onClick: () => openViewerImage(detail.topic_id, path),
+            style: { padding: 0, border: 'none', background: 'transparent', cursor: 'zoom-in', borderRadius: 8, overflow: 'hidden' },
           }, createElement('img', {
             src: assetUrl(detail.topic_id, path),
             alt: path,
-            style: { width: '100%', borderRadius: 8, border: '1px solid rgba(127,127,127,.25)' },
+            style: { width: '100%', display: 'block', borderRadius: 8, border: '1px solid rgba(127,127,127,.25)' },
           })))))
       : undefined,
     demos.length > 0
@@ -288,7 +408,7 @@ function renderRound(detail: TopicDetail, round: RoundRow): ReturnType<typeof cr
   const attempts = round.attempts ?? 1
   return createElement('div', {
     key: round.n,
-    style: { padding: '8px 0', borderTop: '1px solid rgba(127,127,127,.18)' },
+    style: { padding: '10px 12px', marginBottom: 8, borderRadius: 8, background: 'rgba(127,127,127,.055)', border: '1px solid rgba(127,127,127,.14)' },
   },
   createElement('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline', fontSize: 12 } },
     createElement('strong', {}, `第 ${round.n} 轮`),
@@ -299,7 +419,7 @@ function renderRound(detail: TopicDetail, round: RoundRow): ReturnType<typeof cr
     attempts > 1 ? createElement('span', { style: { color: '#ed6c02' } }, `重试 ${attempts - 1}`) : undefined),
   createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
     createElement('button', {
-      onClick: () => window.open(`${config.routes}/answer?id=${encodeURIComponent(detail.topic_id)}&round=${round.n}`, '_blank', 'noopener,noreferrer'),
+      onClick: () => void openAnswer(detail.topic_id, round.n),
       style: chipStyle(),
     }, '查看回答'),
     artifacts.map(path => artifactChip(detail.topic_id, path))))
@@ -308,28 +428,57 @@ function renderRound(detail: TopicDetail, round: RoundRow): ReturnType<typeof cr
 function artifactChip(topicId: string, path: string): ReturnType<typeof createElement> {
   const name = path.split('/').pop() ?? path
   if (/\.(png|jpe?g|webp|gif|svg)$/i.test(path)) {
-    return createElement('a', {
+    return createElement('button', {
       key: path,
-      href: assetUrl(topicId, path),
-      target: '_blank',
-      rel: 'noreferrer',
+      onClick: () => openViewerImage(topicId, path),
       style: chipStyle(),
+      title: '查看大图',
     }, name)
   }
   if (/\.html?$/i.test(path)) {
-    return createElement('a', {
+    return createElement('button', {
       key: path,
-      href: assetUrl(topicId, path),
-      target: '_blank',
-      rel: 'noreferrer',
+      onClick: () => showViewer({ kind: 'frame', title: name, topicId, src: assetUrl(topicId, path), path }),
       style: chipStyle(),
+      title: '预览 demo',
     }, `${name} ↗`)
   }
   return createElement('button', {
     key: path,
-    onClick: () => void revealArtifact(topicId, path),
+    onClick: () => void openTopicFile(topicId, path),
     style: chipStyle(),
-  }, `${name} · 目录`)
+    title: '查看文件',
+  }, name)
+}
+
+function openViewerImage(topicId: string, path: string): void {
+  const name = path.split('/').pop() ?? path
+  showViewer({ kind: 'image', title: name, topicId, src: assetUrl(topicId, path), path })
+}
+
+async function openAnswer(topicId: string, round: number): Promise<void> {
+  try {
+    const text = await fetchText(`${config.routes}/answer?id=${encodeURIComponent(topicId)}&round=${round}`)
+    showViewer({ kind: 'text', title: `第 ${round} 轮回答`, topicId, text })
+  } catch (cause) {
+    showViewer({ kind: 'text', title: '读取回答失败', topicId, text: cause instanceof Error ? cause.message : String(cause) })
+  }
+}
+
+async function openTopicFile(topicId: string, path: string): Promise<void> {
+  const name = path.split('/').pop() ?? path
+  try {
+    const text = await fetchText(`${config.routes}/file?id=${encodeURIComponent(topicId)}&path=${encodeURIComponent(path)}`)
+    showViewer({ kind: 'text', title: name, topicId, text, path })
+  } catch (cause) {
+    showViewer({ kind: 'text', title: name, topicId, text: cause instanceof Error ? cause.message : String(cause), path })
+  }
+}
+
+async function fetchText(url: string): Promise<string> {
+  const response = await fetch(url, { headers: { accept: 'text/plain, text/markdown' } })
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+  return await response.text()
 }
 
 async function revealArtifact(topicId: string, path: string): Promise<void> {

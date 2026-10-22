@@ -94,6 +94,52 @@ export class ResearchEngine {
   }
 
   /**
+   * After a host restart the browser map is empty but the topic still carries
+   * the round's submission id. Re-open the stored conversation, verify the
+   * prompt is really there, and adopt it instead of blindly resubmitting.
+   */
+  async reattach(id: string): Promise<Topic> {
+    const topic = await this.options.store.load(id)
+    if (topic.status !== 'waiting' && topic.status !== 'submitted') {
+      throw new Error(`topic ${id} is ${topic.status}, not waiting`)
+    }
+    const round = [...topic.rounds].reverse().find(candidate => candidate.submissionId !== undefined)
+    if (round === undefined) throw new Error(`topic ${id} has no submission to reattach`)
+    const locator = await this.options.store.readLocator(id)
+    if (locator === undefined) throw new Error(`topic ${id} has no conversation locator`)
+    const transport = this.options.transport
+    if (transport.reattach === undefined) throw new Error('transport does not support reattach')
+    const brief = (await this.options.store.readQuestion(topic, round.n)) ?? ''
+    const result = await transport.reattach({
+      topicId: id,
+      round: round.n,
+      conversationUrl: locator.conversationUrl,
+      brief,
+    })
+    if (!result.attached || result.submissionId === undefined) {
+      await this.transition(topic, 'stalled', {
+        stallReason: 'unknown_submission',
+        stopReason: 'DSH 重启后无法确认这一轮是否已提交；请核对会话后再恢复',
+      })
+      return topic
+    }
+    round.submissionId = result.submissionId
+    await this.options.store.save(topic)
+    if (topic.status !== 'waiting') await this.transition(topic, 'waiting')
+    if (!this.runs.has(id)) this.enqueue(id)
+    return topic
+  }
+
+  /** Mark an interrupted active topic for human review without resubmitting. */
+  async interrupt(id: string, reason: string): Promise<Topic> {
+    const topic = await this.options.store.load(id)
+    if (topic.status === 'completed' || topic.status === 'capped' || topic.status === 'cancelled') return topic
+    if (topic.status === 'stalled') return topic
+    await this.transition(topic, 'stalled', { stallReason: 'unknown_submission', stopReason: reason })
+    return topic
+  }
+
+  /**
    * Explicit follow-up on a finished topic: one more round with a new brief.
    * The round limit grows when the follow-up would exceed it, because this is
    * the user-confirmed "+1 round" the design requires.

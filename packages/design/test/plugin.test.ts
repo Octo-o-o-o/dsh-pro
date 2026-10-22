@@ -53,6 +53,7 @@ describe('design plugin wiring', () => {
       '/gpt-image-design/action',
       '/gpt-image-design/answer',
       '/gpt-image-design/asset',
+      '/gpt-image-design/file',
       '/gpt-image-design/open',
       '/gpt-image-design/topic',
       '/gpt-image-design/topics',
