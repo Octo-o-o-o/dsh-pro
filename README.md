@@ -40,13 +40,19 @@ packages/
   research/    # DSH host 插件 + pro-research 技能
 docs/
   design.md    # 设计文档
+  usage.md     # 使用说明
 ```
+
+## 文档
+
+- [使用说明](docs/usage.md)：一次性配置、四种日常用法、卡住与恢复、故障排查。
+- [设计文档](docs/design.md)：范围、架构、状态机、记录格式、里程碑。
 
 ## 待办
 
 - 真实网页冒烟：登录一次，跑通一轮提交/取回/坏选择器恢复（`node packages/transport/src/cli.ts login`）。
 - 侧边栏在真实 DSH 会话里的加载验证（代码与打包已就绪）。
-- npm 发布：包已可 `npm pack`（23.3 kB，8 个文件）；`publish_plugin` 目前被本机临时目录的 `EPERM` 挡住，且没有 npm 发布凭据。
+- npm 发布：`npm publish --dry-run` 已通过（23.3 kB，8 个文件）；`publish_plugin` 被本机临时目录的 `EPERM` 挡住，且当前没有 npm 登录凭据。
 - Pro 设计独立成包：当前是同一插件里的第二个技能，先观察使用反馈再拆。
 
 ## 许可证
