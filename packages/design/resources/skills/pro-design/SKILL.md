@@ -17,11 +17,13 @@ short-description: Generate images and frontend demos through a real web session
 1. 目标与目标用户；
 2. **成功判据**，例如「至少 1 张完整首屏图」「一个可打开的单文件 HTML demo」「与现有品牌/代码不冲突」；
 3. 材料（现有设计、品牌、代码路径）与 brief；
-4. 轮次上限（默认 2）与产物位置。
+4. 轮次上限（默认 3）、本轮方向/图片数（默认 3）与产物位置。
 
-调用 `gpt_image_design`：`action=start, confirmed=true, title, question, brief, criteria[], materials[], rounds`。
+调用 `gpt_image_design`：`action=start, confirmed=true, title, question, brief, criteria[], materials[], rounds, designs`。
 
-brief 里写清尺寸/比例、风格、必须出现的文案、要几个方向、是否要 HTML demo。不要只说「设计好看点」。
+`designs` 是**本轮方向/图片数**（1–6，默认取设置里的 3）；`rounds` 是追问轮数。两者都写在卡片上让用户确认。
+
+brief 里写清尺寸/比例、风格、必须出现的文案、必须区分的点、是否要 HTML demo。不要只说「设计好看点」。
 
 ## 运行期间
 

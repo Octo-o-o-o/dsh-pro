@@ -14,3 +14,4 @@ research-tmp/
 .otp.log
 .publish/
 .publish-web*.cjs
+.approve-stage.cjs

@@ -35,6 +35,7 @@ export interface PluginSpec {
 /** Loader-validated settings. Defaults mirror `defaultConfig()`. */
 export const Config = z.object({
   rounds: z.number().step(1).min(1).max(10).default(3).description('每主题默认轮次上限（1–10）。'),
+  designs: z.number().step(1).min(1).max(6).default(3).description('设计插件每轮生成的方向/图片数（1–6）。'),
   model: z.string().default('pro').description('ChatGPT 页面上的模型：pro 或 thinking。'),
   store: z.string().default('project').description('研究记录位置：project（仓库 docs/research）或 local（DSH 本机）。'),
   autoStart: z.boolean().default(false).description('研究卡是否跳过点击直接开跑。'),
@@ -53,6 +54,7 @@ export const Config = z.object({
 
 export interface ResearchConfig {
   rounds?: number
+  designs?: number
   model?: string
   store?: string
   autoStart?: boolean
@@ -125,6 +127,7 @@ export function resolvePluginConfig(spec: PluginSpec, config: ResearchConfig | u
   const merged: ProConfig = {
     ...base,
     ...(config?.rounds !== undefined ? { rounds: config.rounds } : {}),
+    ...(config?.designs !== undefined ? { designs: config.designs } : {}),
     ...(config?.model !== undefined ? { model: config.model } : {}),
     ...(config?.store === 'local' || config?.store === 'project' ? { store: config.store } : {}),
     ...(config?.autoStart !== undefined ? { autoStart: config.autoStart } : {}),
@@ -493,10 +496,17 @@ class ProResearchService {
     }))
   }
 
+  private withDesignCount(brief: string, designs: number): string {
+    if (this.spec.topicType !== 'design') return brief
+    const count = Number.isInteger(designs) && designs >= 1 && designs <= 6 ? designs : this.config.designs
+    return `${brief}\n\n## 出图数量\n\n请生成 ${count} 个可区分的设计方向，每个方向单独一张图；需要前端时给一个可运行的单文件 HTML demo。`
+  }
+
   private async start(args: Record<string, unknown>, cwd: string, sessionId?: string): Promise<Record<string, unknown>> {
     const title = this.requireString(args, 'title')
     const question = this.requireString(args, 'question')
     const brief = this.requireString(args, 'brief')
+    const designs = typeof args.designs === 'number' ? args.designs : this.config.designs
     const criteria = this.stringArray(args.criteria, 'criteria')
     const materialPaths = args.materials === undefined || args.materials === null
       ? []
@@ -509,7 +519,7 @@ class ProResearchService {
       type: args.type === 'design' ? 'design' : this.spec.topicType,
       question,
       successCriteria: criteria,
-      brief,
+      brief: this.withDesignCount(brief, designs),
       materials: refs,
       rounds: typeof args.rounds === 'number' ? args.rounds : this.config.rounds,
       store: this.config.store,
@@ -748,6 +758,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       materials: { type: 'array', items: { type: 'string' }, description: '相对工作目录的材料路径（start 可选）' },
       type: { type: 'string', description: 'research 或 design；默认按插件类型' },
       rounds: { type: 'number', description: '本次轮次上限（1–10）' },
+      designs: { type: 'number', description: '设计插件本轮生成的方向/图片数（1–6，默认取设置）' },
       topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check 的主题 id' },
       parent: { type: 'string', description: '可选：父主题 id，用于把 follow-up 串成同一棵树' },
       conclusion: { type: 'string', description: 'human_check 结论：submitted|not_submitted|reopen' },

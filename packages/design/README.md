@@ -23,7 +23,7 @@ gpt_image_design(action="start", confirmed=true, title="落地页首屏",
                  question="生成 3 个方向的首屏设计图和 1 个 HTML demo",
                  brief="深色科技风，中文大标题，右侧产品界面，单文件 HTML",
                  criteria=["至少 1 张完整首屏图", "一个可打开的 HTML demo"],
-                 rounds=2)
+                 rounds=2, designs=3)
 ```
 
 产物写入 `<主题>/artifacts/round-NN/`：

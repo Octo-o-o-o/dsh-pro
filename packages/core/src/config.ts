@@ -9,6 +9,7 @@ export interface ProConfig {
   channel: string
   model: string
   rounds: number
+  designs: number
   stallMinutes: number
   maxRoundMinutes: number
   store: StoreMode
@@ -24,10 +25,11 @@ export interface ProConfig {
   browser: BrowserConfig
 }
 
-export type ProjectOverride = Partial<Pick<ProConfig, 'rounds' | 'store' | 'notify'>>
+export type ProjectOverride = Partial<Pick<ProConfig, 'rounds' | 'designs' | 'store' | 'notify'>>
 
 export interface RunOverride {
   rounds?: number
+  designs?: number
   store?: StoreMode
 }
 
@@ -47,6 +49,7 @@ export function defaultConfig(home: string): ProConfig {
     channel: 'web-pro',
     model: 'pro',
     rounds: 3,
+    designs: 3,
     stallMinutes: 45,
     maxRoundMinutes: 90,
     store: 'project',
@@ -69,6 +72,9 @@ const ROUND_MAX = 10
 export function assertConfig(config: ProConfig): ProConfig {
   if (!Number.isInteger(config.rounds) || config.rounds < ROUND_MIN || config.rounds > ROUND_MAX) {
     throw new Error(`rounds must be an integer between ${ROUND_MIN} and ${ROUND_MAX}`)
+  }
+  if (!Number.isInteger(config.designs) || config.designs < 1 || config.designs > 6) {
+    throw new Error('designs must be an integer between 1 and 6')
   }
   if (!Number.isInteger(config.stallMinutes) || config.stallMinutes < 1) {
     throw new Error('stallMinutes must be a positive integer')
@@ -97,9 +103,11 @@ export function resolveConfig(
     secretGlobs: [...profile.secretGlobs],
   }
   if (project?.rounds !== undefined) merged.rounds = project.rounds
+  if (project?.designs !== undefined) merged.designs = project.designs
   if (project?.store !== undefined) merged.store = project.store
   if (project?.notify !== undefined) merged.notify = project.notify
   if (run?.rounds !== undefined) merged.rounds = run.rounds
+  if (run?.designs !== undefined) merged.designs = run.designs
   if (run?.store !== undefined) merged.store = run.store
   return assertConfig(merged)
 }
