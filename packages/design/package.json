@@ -1,6 +1,6 @@
 {
   "name": "gpt-image-design",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Generate images and frontend HTML demos through a real ChatGPT Pro web session, saved locally with a design gallery panel in DeepSeek Harness.",
   "private": false,
   "type": "module",
