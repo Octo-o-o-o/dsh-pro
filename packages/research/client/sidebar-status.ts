@@ -33,6 +33,7 @@ function countTopics(topics: Array<{ status?: string }>): Counts {
         counts.active += 1
         break
       case 'completed':
+      case 'capped':
         counts.completed += 1
         break
       case 'failed':

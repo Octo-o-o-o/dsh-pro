@@ -7,9 +7,10 @@ describe('sidebar status badge', () => {
       { status: 'waiting' },
       { status: 'uploading' },
       { status: 'completed' },
+      { status: 'capped' },
       { status: 'failed' },
       { status: 'stalled' },
-    ])).toBe('2 进行 · 1 完成 · 2 失败')
+    ])).toBe('2 进行 · 2 完成 · 2 失败')
   })
 
   it('hides the badge when there is nothing to count', () => {

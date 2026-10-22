@@ -5,8 +5,8 @@
   "type": "design",
   "parent": null,
   "created": "2026-10-22T14:18:11.302Z",
-  "updated": "2026-10-22T14:57:31.278Z",
-  "status": "waiting",
+  "updated": "2026-10-22T15:32:08.152Z",
+  "status": "capped",
   "roundsCap": 2,
   "designs": 3,
   "rounds": [
@@ -25,7 +25,10 @@
       "files": 0,
       "submissionId": "3e77d057-7a58-46a9-90f8-ece148ae5109",
       "fingerprint": "8b6ff7ea7ed830c0f5a21e041ecc9ab52aa3c79702f77e89efa8a8a22f9c1751",
-      "submittedAt": "2026-10-22T14:57:31.273Z"
+      "submittedAt": "2026-10-22T14:57:31.273Z",
+      "answeredAt": "2026-10-22T15:31:15.862Z",
+      "verdict": "partial",
+      "done": false
     }
   ],
   "channel": "web-pro",
@@ -38,5 +41,13 @@
     "HTML demo 含两条正确安装命令、一次性登录、三条护栏、首屏与页脚风险声明",
     "不使用 OpenAI/ChatGPT 官方 logo，不使用 AI 渐变/玻璃拟态/假数据"
   ],
-  "artifacts": []
+  "artifacts": [
+    "artifacts/round-02/image-01.png",
+    "artifacts/round-02/image-02.png",
+    "artifacts/round-02/image-03.png",
+    "artifacts/round-02/image-04.png",
+    "artifacts/round-02/image-05.png",
+    "final.md"
+  ],
+  "stopReason": "未配置裁决模型，跑满轮次后交付"
 }
