@@ -10,9 +10,14 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
+interface Route {
+  path: string
+  handler: (req: unknown, res: unknown) => unknown
+}
+
 interface Captured {
   tools: Array<Record<string, unknown>>
-  routes: string[]
+  routes: Route[]
   skills: Array<{ name: string }>
 }
 
@@ -30,8 +35,8 @@ function fakeContext(captured: Captured) {
     },
   }
   const webServer = {
-    register: (route: { path: string }) => {
-      captured.routes.push(route.path)
+    register: (route: Route) => {
+      captured.routes.push(route)
       return () => {}
     },
   }
@@ -73,7 +78,7 @@ describe('plugin wiring', () => {
     expect(Object.keys(tool.parameters.properties ?? {})).toContain('action')
     expect(typeof tool.execute).toBe('function')
 
-    expect(captured.routes.sort()).toEqual([
+    expect(captured.routes.map(route => route.path).sort()).toEqual([
       '/pro-research/action',
       '/pro-research/topic',
       '/pro-research/topics',
@@ -106,4 +111,54 @@ describe('plugin wiring', () => {
     const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<unknown> }
     await expect(tool.execute({ action: 'start' }, { agent: undefined })).rejects.toThrow(/confirmed=true/)
   })
+
+  it('serves the topics route from an isolated home', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-pro-home-'))
+    cleanups.push(home)
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      apply(fakeContext(captured) as never, { store: 'local' })
+      const route = captured.routes.find(item => item.path === '/pro-research/topics')
+      expect(route).toBeDefined()
+      const response = await call(route as Route, { url: '/pro-research/topics', method: 'GET', headers: {} })
+      expect(response.status).toBe(200)
+      expect(response.json).toEqual({ topics: [] })
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+    }
+  })
+
+  it('answers 404 for an unknown topic id', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-pro-home-'))
+    cleanups.push(home)
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      apply(fakeContext(captured) as never, { store: 'local' })
+      const route = captured.routes.find(item => item.path === '/pro-research/topic')
+      const response = await call(route as Route, { url: '/pro-research/topic?id=missing', method: 'GET', headers: {} })
+      expect(response.status).toBe(404)
+      expect(response.json).toEqual({ error: 'unknown topic' })
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+    }
+  })
 })
+
+async function call(route: Route, request: Record<string, unknown>): Promise<{ status: number; json: any }> {
+  let status = 0
+  let body = ''
+  const response = {
+    statusCode: 0,
+    writeHead: (code: number) => { status = code },
+    write: () => true,
+    end: (chunk?: unknown) => { body = typeof chunk === 'string' ? chunk : '' },
+  }
+  await route.handler(request, response)
+  return { status, json: body === '' ? undefined : JSON.parse(body) }
+}

@@ -12,7 +12,7 @@
 - **传输**：Playwright 驱动独立 Chrome profile；登录、自检、提交、附件逐文件核对、轮询、取回答复。可用独立 CLI 先跑通。
 - **DSH host 插件**：`pro_research` 工具（start/status/list/resume/cancel/human_check/probe/login）、设置 schema、`pro-research` / `pro-design` 两个技能、只读 HTTP 路由。
 - **侧边栏**：「Pro」面板列出主题、状态、轮次、记录路径；可恢复、取消、人工核对。
-- **测试**：20 个单测覆盖状态机、材料、记录布局、引擎（多轮/提前停止/到顶/卡住/恢复/取消）与插件装配（工具、路由、技能）。
+- **测试**：25 个单测覆盖状态机、材料、记录布局、引擎（多轮/提前停止/到顶/卡住/恢复/取消）、插件装配（工具、路由、技能）与 client 槽位注册。
 
 ## 开发
 
