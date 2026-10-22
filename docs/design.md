@@ -336,7 +336,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
 | M0 | 设计评审 | 已完成：文档获批，许可证 MIT，包名 `dsh-pro-research` |
-| M1 | 传输 spike（CLI） | 代码就绪；待真实登录跑通一轮提交/取回与坏选择器 `stalled` |
+| M1 | 传输 spike（CLI） | 本地 fixture 冒烟通过（launch/type/send/完成判定/fetch）；真实 chatgpt.com 待登录验证 |
 | M2 | 引擎 + CLI | 完成：假传输下 3 轮、到顶、恢复、两种 store 通过；20 项单测通过 |
 | M3 | DSH host 插件 + 技能 | 代码完成：工具、设置、两个技能、三条只读路由；真实 Cordis 上下文加载通过，待桌面宿主验证 |
 | M4 | 侧边栏 | 代码完成：列表/详情/恢复/取消/人工核对；待真实 DSH 验证 |
