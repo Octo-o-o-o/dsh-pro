@@ -306,7 +306,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 
 ## 15. 发布与社区
 
-- 仓库 `dsh-pro` 公开；第一阶段 npm 包 `dsh-pro-research`，核心 `dsh-pro-core`、传输 `dsh-pro-transport` 一并发布（名称发布前查重，冲突则改 scope）。
+- 仓库 `dsh-pro` 公开；v0.1 只发布 `dsh-pro-research`，核心与传输作为 workspace 内部包随它打包，避免过早承诺公共 API。`dsh-pro-design` 落地前再决定是否单独发布 core（名称发布前查重，冲突则改 scope）。
 - README 首屏：风险提示、适用/不适用、安装、登录、示例、故障排查。
 - 兼容：peer 依赖声明 DSH 范围；在桌面 nightly 与 web 各跑一次冒烟，记录版本。
 - 市场：发布后向 awesome-dsh-plugin 提交收录；之后再做 `dsh-pro-design`，最后才是 OctoWorkFlow 约定包。
