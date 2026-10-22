@@ -5,6 +5,7 @@ configure({
   panelId: 'chatgpt-pro-research',
   title: 'ChatGPT Pro Research',
   label: 'Pro Research',
+  icon: 'research',
   designMode: false,
 })
 

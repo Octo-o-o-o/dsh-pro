@@ -1,4 +1,5 @@
 import { createElement, useCallback, useEffect, useState } from 'react'
+import { DESIGN_ICON, RESEARCH_ICON } from './icons.ts'
 
 const POLL_MS = 3_000
 
@@ -7,6 +8,7 @@ export interface ClientSpec {
   panelId: string
   title: string
   label: string
+  icon: 'research' | 'design'
   designMode: boolean
 }
 
@@ -15,6 +17,7 @@ let config: ClientSpec = {
   panelId: 'chatgpt-pro-research',
   title: 'ChatGPT Pro Research',
   label: 'Pro Research',
+  icon: 'research',
   designMode: false,
 }
 
@@ -294,24 +297,17 @@ function cellStyle(): Record<string, string> {
   return { padding: '4px 6px', borderBottom: '1px solid rgba(127,127,127,.12)' }
 }
 
-function Icon(): ReturnType<typeof createElement> {
+function Icon({ kind }: { kind: 'research' | 'design' }): ReturnType<typeof createElement> {
+  const svg = kind === 'design' ? DESIGN_ICON : RESEARCH_ICON
   return createElement('span', {
-    style: {
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      width: 16,
-      height: 16,
-      borderRadius: 4,
-      background: 'rgba(127,127,127,.22)',
-      fontSize: 10,
-      fontWeight: 700,
-    },
-  }, 'P')
+    'aria-hidden': true,
+    style: { display: 'inline-flex', width: 16, height: 16, lineHeight: 0, color: 'inherit' },
+    dangerouslySetInnerHTML: { __html: svg },
+  })
 }
 
 export function apply(ctx: ClientContext): void {
   // The renderer service can activate before layout and sidebar declare their slots.
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: config.panelId }, () => createElement(Panel)))
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: config.panelId, order: 21, label: () => config.label }, () => createElement(Icon)))
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: config.panelId, order: 21, label: () => config.label }, () => createElement(Icon, { kind: config.icon })))
 }

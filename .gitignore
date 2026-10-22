@@ -15,3 +15,6 @@ research-tmp/
 .publish/
 .publish-web*.cjs
 .approve-stage.cjs
+.brand-tmp/
+.make-*.cjs
+.icon-preview.png
