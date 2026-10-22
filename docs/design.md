@@ -23,7 +23,7 @@
 
 非目标（第一阶段不做）：
 
-- 不做通用聊天 UI、不做 API provider、不做模型路由。
+- 不做通用聊天 UI、不做多 provider 路由；调研固定网页会话，设计插件可整体切到单一 OpenAI 兼容生图 API（2026-10-23 增补，见 6.6），不做同轮混用。
 - 不做双账号扇出、不做按账号预算。
 - 不自动 push、不自动外发未确认材料、不代替用户做授权决定。
 - 不抓取其他站点，不与风控对抗，不实现验证码/2FA 绕过。
@@ -171,6 +171,17 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 1. 本插件驱动网页会话，不是官方 API；存在 ToS、风控与账号风险。
 2. 运行期间 DSH 需保持运行（可最小化）；关闭后任务暂停，重开从回执恢复；锁屏尽力而为，不承诺关机跑完。
 3. `rawAnswers=repo` 会把完整答复写进项目；公开仓库禁止该组合。
+
+### 6.6 生图 API 通道
+
+设计插件（`gpt-image-design`）支持 `channel=web|api`。`api` 通道调用 OpenAI 兼容接口：
+
+- 配置：`imageBaseUrl`、`imageApiKey`（空则读 `GPT_IMAGE_API_KEY`）、`imageModel`、`imageSize`、`imageQuality`、`imageFormat`、`imageAuth`、`imageEdit`、`imageTimeoutSeconds`；
+- 每个方向一次 `POST /images/generations`；材料含图片且 `imageEdit=auto` 时走 multipart `/images/edits`；
+- 只产出图片，不产出 HTML demo；未配置自动裁决时默认只跑 1 轮，避免重复计费；
+- 实现：`packages/transport/src/openai-images.ts`，不碰浏览器 profile；key 不进 `topic.json`、回执、日志与错误体。
+
+研究插件不受影响，`channel` 只对设计插件生效。
 
 ## 7. 轮次语义
 

@@ -1,7 +1,7 @@
 {
   "name": "gpt-image-design",
   "version": "0.3.0",
-  "description": "Generate images and frontend HTML demos through a real ChatGPT Pro web session, saved locally with a design gallery panel in DeepSeek Harness.",
+  "description": "Generate images through a real ChatGPT Pro web session or an OpenAI-compatible image API, saved locally with a design gallery panel in DeepSeek Harness.",
   "private": false,
   "type": "module",
   "main": "lib/index.js",
@@ -23,6 +23,8 @@
     "dsh-plugin",
     "chatgpt",
     "image-generation",
+    "openai-compatible",
+    "image-api",
     "design"
   ],
   "author": "Octo-o-o-o",

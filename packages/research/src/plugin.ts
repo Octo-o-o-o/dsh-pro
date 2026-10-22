@@ -11,17 +11,22 @@ import {
   ResearchEngine,
   ResearchStore,
   TransportError,
+  assertImageApiConfig,
   assertMaterialLimits,
   buildManifest,
   defaultConfig,
+  type Channel,
+  type ImageApiConfig,
+  type ImageFormat,
   type Judge,
   type JudgeResult,
   type MaterialRef,
   type ProConfig,
   type ResearchCard,
   type Topic,
+  type Transport,
 } from '@dsh-pro/core'
-import { acquireSharedTransport } from '@dsh-pro/transport'
+import { OpenAIImageTransport, acquireSharedTransport } from '@dsh-pro/transport'
 import type { ChatGptWebTransport, SharedTransport } from '@dsh-pro/transport'
 
 export interface PluginSpec {
@@ -34,8 +39,7 @@ export interface PluginSpec {
   skills: ReadonlyArray<{ name: string; dir: string; description: string }>
 }
 
-/** Loader-validated settings. Defaults mirror `defaultConfig()`. */
-export const Config = z.object({
+const baseFields = {
   rounds: z.number().step(1).min(1).max(10).default(3).description('每主题默认轮次上限（1–10）。'),
   designs: z.number().step(1).min(1).max(6).default(3).description('设计插件每轮生成的方向/图片数（1–6）。'),
   model: z.string().default('pro').description('ChatGPT 页面上的模型：pro 或 thinking。'),
@@ -52,12 +56,40 @@ export const Config = z.object({
   headless: z.boolean().default(false).description('无头模式仅建议用于自检；首次登录必须有头。'),
   judgeProvider: z.string().default('').description('自动裁决使用的 LLM provider；留空则跑满轮次。'),
   judgeModel: z.string().default('').description('自动裁决使用的 model；与 provider 同时填写才启用。'),
+}
+
+/** Loader-validated settings. Defaults mirror `defaultConfig()`. */
+export const Config = z.object(baseFields)
+
+/** Design-only schema: image settings would be noise in the research settings page. */
+export const DesignConfig = z.object({
+  ...baseFields,
+  channel: z.string().default('web').description('生图通道：web（ChatGPT 网页会话）或 api（OpenAI 兼容生图 API）。'),
+  imageBaseUrl: z.string().default('https://api.openai.com/v1').description('API 通道的 base URL，含版本前缀，例如 https://api.openai.com/v1。'),
+  imageApiKey: z.string().default('').description('API 通道的 key；留空则读环境变量 GPT_IMAGE_API_KEY。只存本机配置，不要写进仓库。'),
+  imageModel: z.string().default('gpt-image-1').description('API 通道的生图模型名，例如 gpt-image-1、dall-e-3 或服务商模型名。'),
+  imageSize: z.string().default('auto').description('图片尺寸：auto 或 1024x1024 / 1536x1024 / 1024x1536。'),
+  imageQuality: z.string().default('auto').description('质量：auto / low / medium / high（服务商支持时生效）。'),
+  imageFormat: z.string().default('png').description('输出格式：png / jpeg / webp。'),
+  imageAuth: z.string().default('bearer').description('鉴权头：bearer（Authorization: Bearer）或 api-key（Azure 风格）。'),
+  imageEdit: z.string().default('auto').description('材料中的图片是否作为参考图发给 /images/edits：auto / off。'),
+  imageTimeoutSeconds: z.number().step(1).min(10).max(3600).default(300).description('单张图片的生成/下载超时（秒，10–3600）。'),
 })
 
 export interface ResearchConfig {
+  channel?: string
   rounds?: number
   designs?: number
   model?: string
+  imageBaseUrl?: string
+  imageApiKey?: string
+  imageModel?: string
+  imageSize?: string
+  imageQuality?: string
+  imageFormat?: string
+  imageAuth?: string
+  imageEdit?: string
+  imageTimeoutSeconds?: number
   store?: string
   autoStart?: boolean
   notify?: string
@@ -128,13 +160,50 @@ function mimeFor(path: string): string {
   }
 }
 
+// Settings load must not take the whole plugin down over one typo: the image
+// enums are validated by assertImageApiConfig right before the first request.
+function imageFormatOf(value: string | undefined, fallback: ImageFormat): ImageFormat {
+  return value === undefined || value.trim() === '' ? fallback : value as ImageFormat
+}
+
+function imageAuthOf(value: string | undefined): 'bearer' | 'api-key' {
+  return value === undefined || value.trim() === '' ? 'bearer' : value as 'bearer' | 'api-key'
+}
+
+function imageEditOf(value: string | undefined): 'auto' | 'off' {
+  return value === undefined || value.trim() === '' ? 'auto' : value as 'auto' | 'off'
+}
+
+/** Settings are flat for the generated settings form; the engine keeps one object. */
+function resolveImageConfig(base: ImageApiConfig, config: ResearchConfig | undefined): ImageApiConfig {
+  const settingsKey = (config?.imageApiKey ?? '').trim()
+  const envKey = (process.env.GPT_IMAGE_API_KEY ?? '').trim()
+  return {
+    baseUrl: (config?.imageBaseUrl ?? '').trim() !== '' ? config!.imageBaseUrl!.trim() : base.baseUrl,
+    apiKey: settingsKey !== '' ? settingsKey : envKey,
+    model: (config?.imageModel ?? '').trim() !== '' ? config!.imageModel!.trim() : base.model,
+    size: (config?.imageSize ?? '').trim() !== '' ? config!.imageSize!.trim() : base.size,
+    quality: (config?.imageQuality ?? '').trim() !== '' ? config!.imageQuality!.trim() : base.quality,
+    format: imageFormatOf(config?.imageFormat, base.format),
+    auth: imageAuthOf(config?.imageAuth),
+    editMode: imageEditOf(config?.imageEdit),
+    timeoutSeconds: config?.imageTimeoutSeconds ?? base.timeoutSeconds,
+  }
+}
+
 export function resolvePluginConfig(spec: PluginSpec, config: ResearchConfig | undefined): ProConfig {
   const base = defaultConfig(join(homeDir(), spec.homeSubdir))
   // Both plugins share one logged-in ChatGPT profile; existing installs keep
   // their session because the old directory is reused.
   base.browser = { ...base.browser, profileDir: join(homeDir(), 'pro-research', 'browser') }
+  const design = spec.topicType === 'design'
+  // The api channel is a design feature; research stays on the web session even
+  // if image settings leak into its stored config.
+  const channel: Channel = design && config?.channel === 'api' ? 'api' : 'web'
   const merged: ProConfig = {
     ...base,
+    channel,
+    image: design ? resolveImageConfig(base.image, config) : base.image,
     ...(config?.rounds !== undefined ? { rounds: config.rounds } : {}),
     ...(config?.designs !== undefined ? { designs: config.designs } : {}),
     ...(config?.model !== undefined ? { model: config.model } : {}),
@@ -186,6 +255,7 @@ class ProResearchService {
   private readonly stores = new Map<string, ResearchStore>()
   private readonly topicSessions = new Map<string, string>()
   private transport?: ChatGptWebTransport
+  private imageTransport?: OpenAIImageTransport
   private shared?: SharedTransport
 
   constructor(
@@ -219,7 +289,24 @@ class ProResearchService {
     return store
   }
 
-  private transportFor(): ChatGptWebTransport {
+  private transportFor(): Transport {
+    if (this.config.channel === 'api') {
+      if (this.imageTransport === undefined) {
+        this.imageTransport = new OpenAIImageTransport({
+          baseUrl: this.config.image.baseUrl,
+          apiKey: this.config.image.apiKey,
+          model: this.config.image.model,
+          size: this.config.image.size,
+          quality: this.config.image.quality,
+          format: this.config.image.format,
+          auth: this.config.image.auth,
+          editMode: this.config.image.editMode,
+          timeoutMs: this.config.image.timeoutSeconds * 1_000,
+          count: this.config.designs,
+        })
+      }
+      return this.imageTransport
+    }
     if (this.transport !== undefined) return this.transport
     this.shared = acquireSharedTransport({
       profileDir: this.config.browser.profileDir,
@@ -549,10 +636,29 @@ class ProResearchService {
         const { engine } = await this.find(cwd, id)
         return this.view(await engine.humanCheck(id, conclusion, note))
       }
-      case 'probe':
-        return { probe: await this.transportFor().probe() }
+      case 'probe': {
+        const probe = await this.transportFor().probe()
+        return {
+          channel: this.config.channel,
+          probe: {
+            ...probe,
+            ...(this.config.channel === 'api'
+              ? { baseUrl: this.config.image.baseUrl, format: this.config.image.format, editMode: this.config.image.editMode }
+              : {}),
+          },
+        }
+      }
       case 'login':
-        return { login: await this.transportFor().login() }
+        if (this.config.channel === 'api') {
+          return {
+            login: {
+              ok: true,
+              channel: 'api',
+              note: 'API 通道不需要登录；用 probe 检查 imageBaseUrl / imageApiKey / imageModel。',
+            },
+          }
+        }
+        return { login: await (this.transportFor() as ChatGptWebTransport).login() }
       default:
         throw new Error('action must be start, continue, status, list, resume, cancel, human_check, regenerate, probe or login')
     }
@@ -565,13 +671,21 @@ class ProResearchService {
     }))
   }
 
+  private judgeEnabled(): boolean {
+    return this.config.judgeProvider !== '' && this.config.judgeModel !== ''
+  }
+
   private withDesignCount(brief: string, designs: number): string {
     if (this.spec.topicType !== 'design') return brief
     const count = Number.isInteger(designs) && designs >= 1 && designs <= 6 ? designs : this.config.designs
-    return `${brief}\n\n## 出图数量\n\n请生成 ${count} 个可区分的设计方向，每个方向单独一张图；需要前端时给一个可运行的单文件 HTML demo。`
+    const delivery = this.config.channel === 'api'
+      ? `本轮由 API 生成 ${count} 张图，每个方向独立成图；HTML demo 不在此通道产出。`
+      : `请生成 ${count} 个可区分的设计方向，每个方向单独一张图；需要前端时给一个可运行的单文件 HTML demo。`
+    return `${brief}\n\n## 出图数量\n\n${delivery}`
   }
 
   private async start(args: Record<string, unknown>, cwd: string, sessionId?: string): Promise<Record<string, unknown>> {
+    if (this.config.channel === 'api') assertImageApiConfig(this.config.image, { requireKey: true })
     const title = this.requireString(args, 'title')
     const question = this.requireString(args, 'question')
     const brief = this.requireString(args, 'brief')
@@ -586,6 +700,9 @@ class ProResearchService {
     const reasons = (args.materialReasons ?? {}) as Record<string, string>
     const refs = this.withSources(cwd, await buildManifest(cwd, materialPaths, reasons))
     assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
+    // A billable API round is not repeated by default: without an automatic
+    // judge, round 2 would just buy another three images.
+    const defaultRounds = this.config.channel === 'api' && !this.judgeEnabled() ? 1 : this.config.rounds
     const card: ResearchCard = {
       title,
       type: args.type === 'design' ? 'design' : this.spec.topicType,
@@ -593,10 +710,10 @@ class ProResearchService {
       successCriteria: criteria,
       brief: this.withDesignCount(brief, designs),
       materials: refs,
-      rounds: typeof args.rounds === 'number' ? args.rounds : this.config.rounds,
+      rounds: typeof args.rounds === 'number' ? args.rounds : defaultRounds,
       ...(this.spec.topicType === 'design' ? { designs } : {}),
       store: this.config.store,
-      model: this.config.model,
+      model: this.config.channel === 'api' ? this.config.image.model : this.config.model,
       ...(typeof args.parent === 'string' && args.parent !== '' ? { parent: args.parent } : {}),
     }
     const engine = this.engineFor(cwd)
@@ -630,6 +747,8 @@ class ProResearchService {
       title: topic.title,
       type: topic.type,
       status: topic.status,
+      channel: topic.channel,
+      model: topic.model,
       stall_reason: topic.stallReason ?? null,
       rounds: topic.rounds.length,
       rounds_cap: topic.roundsCap,
@@ -644,36 +763,50 @@ class ProResearchService {
    * On plugin startup, adopt rounds that were already sent before a restart.
    * The prompt marker in the stored conversation is the proof; anything that
    * cannot be proven is parked as unknown_submission instead of being resent.
+   * The api channel has no page to reattach: its in-flight requests die with
+   * the host, so those rounds are parked for a human instead of retried.
    */
   async recoverActive(): Promise<void> {
+    const active = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating'])
     const entries = await this.readRegistry()
     for (const entry of entries) {
-      const store = this.storeAt(entry.root, entry.mode)
-      const topic = await store.load(entry.id).catch(() => undefined)
-      if (topic === undefined) continue
-      const engine = this.engineFor(entry.root)
-      if (topic.status === 'waiting' || topic.status === 'submitted') {
-        try {
+      try {
+        const store = this.storeAt(entry.root, entry.mode)
+        const topic = await store.load(entry.id).catch(() => undefined)
+        if (topic === undefined) continue
+        const engine = this.engineFor(entry.root, entry.mode)
+        const recordedChannel: Channel = topic.channel === 'api' ? 'api' : 'web'
+        if (recordedChannel !== this.config.channel) {
+          if (active.has(topic.status)) {
+            await engine.interrupt(entry.id, `这条记录来自 ${recordedChannel} 通道，当前配置为 ${this.config.channel}；已停止自动恢复，请核对后重新发起`)
+            await this.notifyStalled(entry.id, 'unknown_submission')
+          }
+          continue
+        }
+        if (this.config.channel === 'api') {
+          if (active.has(topic.status)) {
+            await engine.interrupt(entry.id, 'API 生图请求在 DSH 重启后已丢失，本轮不会自动重发；已生成的图片见 artifacts，确认后可重新发起或取消')
+            await this.notifyStalled(entry.id, 'unknown_submission')
+          }
+          continue
+        }
+        if (topic.status === 'waiting' || topic.status === 'submitted') {
           await engine.reattach(entry.id)
           const recovered = await store.load(entry.id)
           if (recovered.status === 'stalled') await this.notifyStalled(entry.id, recovered.stallReason)
-        } catch (error) {
-          await engine.interrupt(entry.id, `DSH 重启后恢复失败：${error instanceof Error ? error.message : String(error)}`)
+        } else if (active.has(topic.status)) {
+          await engine.interrupt(entry.id, 'DSH 重启时任务尚未完成；已停止自动重发，请核对后恢复')
           await this.notifyStalled(entry.id, 'unknown_submission')
         }
-      } else if (
-        topic.status === 'queued'
-        || topic.status === 'uploading'
-        || topic.status === 'answered'
-        || topic.status === 'adjudicating'
-      ) {
-        await engine.interrupt(entry.id, 'DSH 重启时任务尚未完成；已停止自动重发，请核对后恢复')
-        await this.notifyStalled(entry.id, 'unknown_submission')
+      } catch {
+        // A stale registry entry or a recovered page must not take the host down.
       }
     }
   }
 
   dispose(): void {
+    this.imageTransport?.dispose()
+    this.imageTransport = undefined
     this.shared?.release()
     this.shared = undefined
     this.transport = undefined
@@ -897,29 +1030,44 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
   }), `${spec.name}: open route`)
 }
 
+function toolDescription(spec: PluginSpec, config: ProConfig): string {
+  if (spec.topicType === 'design') {
+    if (config.channel === 'api') {
+      return [
+        `用 OpenAI 兼容生图 API（${config.image.model}）按方向生成设计图，保存到本地并出现在设计面板；此通道只出图，不产出 HTML demo。`,
+        'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径、模型）；用户确认后传 confirmed=true。',
+        'key 只读插件设置或环境变量 GPT_IMAGE_API_KEY，不要在会话里回显；probe 检查 base URL / key / 模型名。',
+        'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
+      ].join(' ')
+    }
+    return [
+      '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
+      'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
+      'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
+    ].join(' ')
+  }
+  return [
+    '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
+    'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
+    'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
+  ].join(' ')
+}
+
 export function createPlugin(spec: PluginSpec): (ctx: Context, config?: ResearchConfig) => void {
   return (ctx: Context, config?: ResearchConfig): void => {
-    const service = new ProResearchService(ctx as ServiceContext, resolvePluginConfig(spec, config), homeDir(), spec)
+    const resolved = resolvePluginConfig(spec, config)
+    const service = new ProResearchService(ctx as ServiceContext, resolved, homeDir(), spec)
     ctx.effect(() => () => service.dispose(), `${spec.name}: close browser`)
     ctx.effect(() => {
       const timer = setTimeout(() => { void service.recoverActive() }, 2_500)
+      timer.unref?.()
       return () => clearTimeout(timer)
     }, `${spec.name}: recover interrupted rounds`)
     registerSkill(ctx as ServiceContext, spec)
     ;(ctx as ServiceContext).inject(['webServer'], scoped => registerRoutes(scoped, service, spec))
   ;(ctx as ServiceContext).tools.register(defineTool({
     name: spec.tool,
-    description: (spec.topicType === 'design'
-      ? [
-          '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
-          'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-          'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
-        ]
-      : [
-          '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
-          'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-          'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
-        ]).join(' '),
+    description: toolDescription(spec, resolved),
     parameters: {
       action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|probe|login' },
       title: { type: 'string', description: '主题标题（start 必填）' },

@@ -21,6 +21,8 @@
 | `autoStart` | false | 跳过研究卡确认（不建议首次开启） |
 | `judgeProvider` / `judgeModel` | 空 | 自动裁决的 LLM 路由；留空则跑满轮次 |
 
+设计插件（`dsh-pro-design`）另有生图通道设置：`channel=web|api`，`api` 时填 `imageBaseUrl` / `imageApiKey` / `imageModel`（以及可选的 `imageSize` / `imageQuality` / `imageFormat` / `imageEdit` / `imageTimeoutSeconds`）。key 也可用环境变量 `GPT_IMAGE_API_KEY`；不需要登录，`gpt_image_design(action="probe")` 自检地址、key 与模型名。API 通道只出图片，不产出 HTML demo；`designs` 是每轮请求数（按服务商计费），未配置自动裁决时默认只跑 1 轮。详见 [gpt-image-design README](../packages/design/README.md)。
+
 设置页固定提示：运行期间 DSH 要开着（可最小化）；关掉后任务暂停、重开从回执恢复；锁屏尽力而为，不承诺关机跑完。
 
 ### 登录一次

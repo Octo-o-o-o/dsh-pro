@@ -5,8 +5,32 @@ export interface BrowserConfig {
   headless: boolean
 }
 
+/** `web` drives a real ChatGPT page; `api` calls an OpenAI-compatible image API. */
+export type Channel = 'web' | 'api'
+
+export type ImageFormat = 'png' | 'jpeg' | 'webp'
+
+export interface ImageApiConfig {
+  /** Base URL including the version prefix, e.g. https://api.openai.com/v1. */
+  baseUrl: string
+  /** Bearer token (or api-key header for Azure-style gateways). Never logged. */
+  apiKey: string
+  model: string
+  /** Provider size string; `auto` leaves the field out of the request. */
+  size: string
+  /** `auto` / `low` / `medium` / `high`; `auto` leaves the field out. */
+  quality: string
+  format: ImageFormat
+  /** `bearer` → Authorization header; `api-key` → api-key header. */
+  auth: 'bearer' | 'api-key'
+  /** `auto` sends image materials as reference images to /images/edits. */
+  editMode: 'auto' | 'off'
+  timeoutSeconds: number
+}
+
 export interface ProConfig {
-  channel: string
+  channel: Channel
+  image: ImageApiConfig
   model: string
   rounds: number
   designs: number
@@ -46,7 +70,18 @@ export const DEFAULT_SECRET_GLOBS = [
 
 export function defaultConfig(home: string): ProConfig {
   return {
-    channel: 'web-pro',
+    channel: 'web',
+    image: {
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: '',
+      model: 'gpt-image-1',
+      size: 'auto',
+      quality: 'auto',
+      format: 'png',
+      auth: 'bearer',
+      editMode: 'auto',
+      timeoutSeconds: 300,
+    },
     model: 'pro',
     rounds: 3,
     designs: 3,
@@ -68,8 +103,37 @@ export function defaultConfig(home: string): ProConfig {
 
 const ROUND_MIN = 1
 const ROUND_MAX = 10
+const IMAGE_FORMATS: readonly ImageFormat[] = ['png', 'jpeg', 'webp']
+
+/**
+ * Fail before the first billable request. The key check is optional because the
+ * plugin resolves `GPT_IMAGE_API_KEY` after the settings layer has run.
+ */
+export function assertImageApiConfig(image: ImageApiConfig, options?: { requireKey?: boolean }): void {
+  let url: URL
+  try {
+    url = new URL(image.baseUrl.trim())
+  } catch {
+    throw new Error('imageBaseUrl must be an absolute URL, for example https://api.openai.com/v1')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('imageBaseUrl must use http or https')
+  }
+  if (image.model.trim() === '') throw new Error('imageModel is required for the api channel')
+  if (!IMAGE_FORMATS.includes(image.format)) throw new Error('imageFormat must be png, jpeg or webp')
+  if (image.auth !== 'bearer' && image.auth !== 'api-key') throw new Error('imageAuth must be bearer or api-key')
+  if (image.editMode !== 'auto' && image.editMode !== 'off') throw new Error('imageEdit must be auto or off')
+  if (!Number.isInteger(image.timeoutSeconds) || image.timeoutSeconds < 10 || image.timeoutSeconds > 3600) {
+    throw new Error('imageTimeoutSeconds must be an integer between 10 and 3600')
+  }
+  if (options?.requireKey === true && image.apiKey.trim() === '') {
+    throw new Error('imageApiKey is empty: set it in the plugin settings or export GPT_IMAGE_API_KEY')
+  }
+}
 
 export function assertConfig(config: ProConfig): ProConfig {
+  if (config.channel !== 'web' && config.channel !== 'api') throw new Error('channel must be web or api')
+  if (config.channel === 'api') assertImageApiConfig(config.image)
   if (!Number.isInteger(config.rounds) || config.rounds < ROUND_MIN || config.rounds > ROUND_MAX) {
     throw new Error(`rounds must be an integer between ${ROUND_MIN} and ${ROUND_MAX}`)
   }
@@ -99,6 +163,7 @@ export function resolveConfig(
 ): ProConfig {
   const merged: ProConfig = {
     ...profile,
+    image: { ...profile.image },
     browser: { ...profile.browser },
     secretGlobs: [...profile.secretGlobs],
   }

@@ -60,4 +60,13 @@ describe('design plugin wiring', () => {
     ])
     expect(captured.skills).toEqual(['pro-design'])
   })
+
+  it('describes the api channel as images-only', async () => {
+    const captured: Captured = { tools: [], routes: [], skills: [] }
+    apply(fakeContext(captured) as never, { channel: 'api', imageApiKey: 'test-key', store: 'local' })
+    await Promise.resolve()
+    const description = (captured.tools[0] as { description?: string }).description ?? ''
+    expect(description).toContain('只出图')
+    expect(description).toContain('GPT_IMAGE_API_KEY')
+  })
 })

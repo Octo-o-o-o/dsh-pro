@@ -210,6 +210,27 @@ describe('plugin wiring', () => {
   })
 })
 
+describe('settings scoping', () => {
+  it('keeps research on the web channel even when api fields are present', () => {
+    const previous = process.env.GPT_IMAGE_API_KEY
+    process.env.GPT_IMAGE_API_KEY = 'env-key'
+    try {
+      const settings = resolveResearchConfig({
+        channel: 'api',
+        imageBaseUrl: 'https://gateway.example/v1',
+        imageModel: 'gpt-image-1',
+      })
+      expect(settings.channel).toBe('web')
+      expect(settings.image.baseUrl).toBe('https://api.openai.com/v1')
+      expect(settings.image.model).toBe('gpt-image-1')
+      expect(resolveResearchConfig({}).channel).toBe('web')
+    } finally {
+      if (previous === undefined) delete process.env.GPT_IMAGE_API_KEY
+      else process.env.GPT_IMAGE_API_KEY = previous
+    }
+  })
+})
+
 async function call(route: Route, request: Record<string, unknown>): Promise<{ status: number; json: any }> {
   let status = 0
   let body = ''

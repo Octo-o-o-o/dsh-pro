@@ -42,6 +42,8 @@ interface TopicRow {
   title: string
   type: string
   status: string
+  channel?: string
+  model?: string
   stall_reason: string | null
   rounds: number
   rounds_cap: number
@@ -104,6 +106,21 @@ const STATUS_COLOR: Record<string, string> = {
 
 const ACTIVE = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating'])
 
+const STALL_LABEL: Record<string, string> = {
+  login: '登录失效',
+  upload: '材料上传不完整',
+  timeout: '超时或无进展',
+  ui: '页面结构变化',
+  config: '配置或请求参数被拒',
+  worker: '浏览器进程崩溃',
+  unknown_submission: '提交状态未知',
+}
+
+function channelLabel(channel: string | undefined): string | undefined {
+  if (channel === undefined || channel === '') return undefined
+  return channel === 'api' ? 'API 生图' : '网页会话'
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { headers: { accept: 'application/json' } })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
@@ -141,8 +158,17 @@ function Panel(): ReturnType<typeof createElement> {
   const [selected, setSelected] = useState<string | undefined>(undefined)
   const [detail, setDetail] = useState<TopicDetail | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | undefined>(undefined)
+  const [regenOpen, setRegenOpen] = useState(false)
+  const [regenNote, setRegenNote] = useState('')
   const [viewer, setViewer] = useState<Viewer | undefined>(undefined)
   showViewer = setViewer
+
+  useEffect(() => {
+    if (notice === undefined) return
+    const timer = setTimeout(() => setNotice(undefined), 4_000)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   const loadList = useCallback(async () => {
     try {
@@ -187,25 +213,37 @@ function Panel(): ReturnType<typeof createElement> {
     }
     try {
       await postAction({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
+      if (action === 'accept') {
+        setDetail(current => current === undefined ? current : { ...current, status: 'completed' })
+        setNotice({ kind: 'ok', text: '已接受结果' })
+      } else {
+        setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
+      }
       await loadDetail(selected)
       await loadList()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(message)
+      setNotice({ kind: 'error', text: message })
     }
   }, [selected, loadDetail, loadList])
 
-  const regenerate = useCallback(async () => {
+  const submitRegenerate = useCallback(async () => {
     if (selected === undefined) return
-    const input = window.prompt('不满意的地方 / 新要求（可留空，直接换一版）')
-    if (input === null) return
     try {
-      await postAction({ action: 'regenerate', topic_id: selected, note: input.trim() })
+      await postAction({ action: 'regenerate', topic_id: selected, note: regenNote.trim() })
+      setNotice({ kind: 'ok', text: '已提交重新生成' })
+      setDetail(current => current === undefined ? current : { ...current, status: 'queued' })
+      setRegenOpen(false)
+      setRegenNote('')
       await loadDetail(selected)
       await loadList()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(message)
+      setNotice({ kind: 'error', text: message })
     }
-  }, [selected, loadDetail, loadList])
+  }, [selected, regenNote, loadDetail, loadList])
 
   const list = createElement('div', { style: { width: 240, borderRight: '1px solid rgba(127,127,127,.2)', overflowY: 'auto', flex: '0 0 auto' } },
     createElement('div', { style: { padding: '10px 12px', fontWeight: 600, fontSize: 13, opacity: 0.8 } }, config.title),
@@ -235,6 +273,18 @@ function Panel(): ReturnType<typeof createElement> {
 
   const body = createElement('div', { style: { flex: 1, overflowY: 'auto', padding: 14, fontSize: 13, lineHeight: 1.6 } },
     error !== undefined ? createElement('div', { style: { color: '#c62828', marginBottom: 8 } }, `接口错误：${error}`) : undefined,
+    notice !== undefined
+      ? createElement('div', {
+        style: {
+          marginBottom: 8,
+          padding: '6px 10px',
+          borderRadius: 6,
+          fontSize: 12,
+          color: notice.kind === 'ok' ? '#2e7d32' : '#c62828',
+          background: notice.kind === 'ok' ? 'rgba(46,125,50,.1)' : 'rgba(198,40,40,.1)',
+        },
+      }, notice.text)
+      : undefined,
     detail === undefined
       ? createElement('div', { style: { opacity: 0.6 } }, '选择左侧的主题查看轮次与产物。')
       : createElement('div', {},
@@ -244,9 +294,11 @@ function Panel(): ReturnType<typeof createElement> {
         createElement('div', { style: { display: 'flex', gap: 14, flexWrap: 'wrap', margin: '8px 0', fontSize: 11, opacity: 0.62 } },
           createElement('span', {}, `${detail.rounds}/${detail.rounds_cap} 轮`),
           createElement('span', {}, detail.type),
+          channelLabel(detail.channel) !== undefined ? createElement('span', {}, channelLabel(detail.channel)) : undefined,
+          detail.model !== undefined && detail.model !== '' ? createElement('span', {}, detail.model) : undefined,
           detail.designs != null ? createElement('span', {}, `每轮方向 ${detail.designs}`) : undefined,
           detail.updated !== undefined ? createElement('span', {}, `更新 ${formatTime(detail.updated)}`) : undefined),
-        detail.stall_reason !== null ? createElement('div', { style: { color: '#ed6c02', marginBottom: 8, fontSize: 12 } }, `卡住原因：${detail.stall_reason}`) : undefined,
+        detail.stall_reason !== null ? createElement('div', { style: { color: '#ed6c02', marginBottom: 8, fontSize: 12 } }, `卡住原因：${STALL_LABEL[detail.stall_reason] ?? detail.stall_reason}（${detail.stall_reason}）`) : undefined,
         detail.stop_reason !== null ? createElement('div', { style: { marginBottom: 8, fontSize: 12, opacity: 0.72 } }, `停止依据：${detail.stop_reason}`) : undefined,
         detail.status === 'capped' && (detail.stop_reason ?? '').includes('未配置裁决模型')
           ? createElement('div', { style: { marginBottom: 8, fontSize: 11, color: '#ed6c02' } }, '未配置自动裁决：跑满轮次不会自动判定成功；请接受结果或重新生成。')
@@ -258,7 +310,7 @@ function Panel(): ReturnType<typeof createElement> {
             ? createElement('button', { onClick: () => void act('resume'), style: buttonStyle() }, '恢复')
             : undefined,
           detail.status === 'completed' || detail.status === 'capped'
-            ? createElement('button', { onClick: () => void regenerate(), style: buttonStyle() }, '重新生成')
+            ? createElement('button', { onClick: () => { setRegenNote(''); setRegenOpen(true) }, style: buttonStyle() }, '重新生成')
             : undefined,
           detail.status === 'capped'
             ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, '接受结果')
@@ -269,6 +321,31 @@ function Panel(): ReturnType<typeof createElement> {
               createElement('button', { onClick: () => void act('human_check', 'not_submitted'), style: buttonStyle() }, '未提交'),
               createElement('button', { onClick: () => void act('human_check', 'reopen'), style: buttonStyle() }, '需重开'))
             : undefined),
+        regenOpen
+          ? createElement('div', { style: { marginBottom: 14, padding: 10, border: '1px solid rgba(127,127,127,.22)', borderRadius: 8, background: 'rgba(127,127,127,.05)' } },
+            createElement('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 6 } }, '重新生成：补充要求（可选）'),
+            createElement('textarea', {
+              value: regenNote,
+              onChange: (event: { target: { value: string } }) => setRegenNote(event.target.value),
+              rows: 3,
+              placeholder: '例如：保留版式，只改配色；标题必须出现……；不要再用……',
+              style: {
+                width: '100%',
+                boxSizing: 'border-box',
+                resize: 'vertical',
+                padding: 8,
+                borderRadius: 6,
+                border: '1px solid rgba(127,127,127,.3)',
+                background: 'transparent',
+                color: 'inherit',
+                fontSize: 12,
+                lineHeight: 1.5,
+              },
+            }),
+            createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 } },
+              createElement('button', { onClick: () => { setRegenOpen(false); setRegenNote('') }, style: buttonStyle() }, '取消'),
+              createElement('button', { onClick: () => void submitRegenerate(), style: buttonStyle() }, '提交重新生成')))
+          : undefined,
         createElement('div', { style: { fontWeight: 600, marginBottom: 6, fontSize: 13 } }, '轮次'),
         (detail.rounds_detail ?? []).length === 0
           ? createElement('div', { style: { opacity: 0.6 } }, '还没有提交记录。')

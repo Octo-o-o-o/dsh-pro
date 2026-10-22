@@ -323,6 +323,7 @@ export class ResearchEngine {
       files,
       ...(fallbackFiles !== undefined ? { fallbackFiles } : {}),
       model: topic.model,
+      ...(topic.designs !== undefined ? { designs: topic.designs } : {}),
       session: locator ?? null,
     })
     round.files = result.attachments.length
@@ -404,6 +405,16 @@ export class ResearchEngine {
     const stored = this.nextBrief.get(topic.id)
     if (stored !== undefined && stored.trim() !== '') return stored
     const last = topic.rounds[topic.rounds.length - 1]
+    if (topic.type === 'design') {
+      return [
+        `继续主题「${topic.title}」，给出与上一轮明显不同的新方向；若上一轮只部分满足判据，就在保留已确认部分的前提下修订。不要重复已确认的方案。`,
+        '',
+        '## 成功判据',
+        ...topic.successCriteria.map(item => `- ${item}`),
+        '',
+        last?.verdict !== undefined ? `上一轮裁决：${last.verdict}` : '上一轮裁决：未记录',
+      ].join('\n')
+    }
     return [
       `继续主题「${topic.title}」，只补充未决部分，不要重复已确认结论。`,
       '',
@@ -467,7 +478,7 @@ export class ResearchEngine {
         await this.transition(topic, 'failed', { stopReason: error.message })
         return
       }
-      const reason = error.failure === 'login' || error.failure === 'upload' || error.failure === 'ui'
+      const reason = error.failure === 'login' || error.failure === 'upload' || error.failure === 'ui' || error.failure === 'config'
         ? error.failure
         : 'timeout'
       await this.transition(topic, 'stalled', { stallReason: reason, stopReason: error.message })

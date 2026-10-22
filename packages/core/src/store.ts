@@ -72,6 +72,27 @@ function sanitizeSegment(value: string): string {
     .slice(0, 40) || 'project'
 }
 
+/**
+ * Windows refuses to replace a file that another handle (a reader, the indexer,
+ * an antivirus scan) still has open, reporting EPERM/EACCES/EBUSY instead of
+ * blocking. The readers here are the panel's poll and `status`, so a short
+ * bounded retry keeps atomic writes atomic without turning them into direct
+ * overwrites.
+ */
+async function replaceFile(temp: string, target: string): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(temp, target)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      const retriable = code === 'EPERM' || code === 'EACCES' || code === 'EBUSY'
+      if (!retriable || attempt >= 8) throw error
+      await new Promise(resolve => setTimeout(resolve, 10 * attempt))
+    }
+  }
+}
+
 export class ResearchStore {
   private dirs = new Map<string, string>()
   private readonly options: StoreOptions
@@ -106,7 +127,7 @@ export class ResearchStore {
     await mkdir(dirname(path), { recursive: true })
     const temp = `${path}.tmp-${process.pid}-${Date.now()}`
     await writeFile(temp, text, 'utf8')
-    await rename(temp, path)
+    await replaceFile(temp, path)
   }
 
   private async uniqueDir(slug: string, id: string): Promise<string> {

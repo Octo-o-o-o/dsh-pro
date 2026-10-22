@@ -129,6 +129,18 @@ describe('engine', () => {
     expect(document).toContain('状态：completed')
   })
 
+  it('asks a design follow-up for a new direction and carries the image count', async () => {
+    const { engine, transport } = await harness({ doneAt: 99, rounds: 2 })
+    const topic = await engine.start(card({ type: 'design', designs: 2, rounds: 2 }))
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.status).toBe('capped')
+    expect(transport.submits).toHaveLength(2)
+    expect(transport.submits[0]?.designs).toBe(2)
+    expect(transport.submits[1]?.brief).toContain('明显不同的新方向')
+    expect(transport.submits[1]?.brief).not.toContain('只补充未决部分')
+  })
+
   it('stores images and code blocks from the fetched answer', async () => {
     class AssetTransport extends FakeTransport {
       override async fetch() {
@@ -276,6 +288,17 @@ describe('engine', () => {
     expect(final.rounds[1]?.files).toBe(1)
     const dir = await store.dirOf(topic.id)
     expect(await readFile(join(dir, 'rounds', '02-question.md'), 'utf8')).toContain('follow-up brief')
+  })
+
+  it('accepts a capped topic as completed', async () => {
+    const { engine } = await harness({ doneAt: 99, rounds: 1 })
+    const topic = await engine.start(card({ rounds: 1 }))
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('capped')
+
+    const accepted = await engine.accept(topic.id)
+    expect(accepted.status).toBe('completed')
+    expect(accepted.stopReason).toBe('人工接受结果')
   })
 
   it('raises the cap when a capped topic is continued', async () => {

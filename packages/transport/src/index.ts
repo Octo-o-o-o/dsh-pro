@@ -1,5 +1,7 @@
 export { ChatGptWebTransport } from './chatgpt.ts'
 export type { ChatGptTransportOptions } from './chatgpt.ts'
+export { OpenAIImageTransport } from './openai-images.ts'
+export type { OpenAIImageOptions } from './openai-images.ts'
 export { acquireSharedTransport } from './shared.ts'
 export type { SharedTransport } from './shared.ts'
 export { SELECTORS } from './selectors.ts'

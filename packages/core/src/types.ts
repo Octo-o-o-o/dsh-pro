@@ -18,7 +18,7 @@ export type Status =
 
 export type Verdict = 'accepted' | 'partial' | 'rejected'
 
-export type StallReason = 'login' | 'upload' | 'timeout' | 'ui' | 'worker' | 'unknown_submission'
+export type StallReason = 'login' | 'upload' | 'timeout' | 'ui' | 'config' | 'worker' | 'unknown_submission'
 
 export type StoreMode = 'project' | 'local'
 
@@ -114,6 +114,8 @@ export interface SubmitRequest {
   /** Attachments to use when the stored conversation cannot be reused. */
   fallbackFiles?: string[]
   model: string
+  /** Images one round should produce for the design plugin (1–6). */
+  designs?: number
   session?: SessionLocator | null
 }
 
@@ -163,7 +165,7 @@ export interface FetchedAnswer {
   snapshotPath?: string
 }
 
-export type TransportFailure = 'login' | 'upload' | 'ui' | 'network' | 'worker' | 'timeout'
+export type TransportFailure = 'login' | 'upload' | 'ui' | 'network' | 'worker' | 'timeout' | 'config'
 
 export class TransportError extends Error {
   readonly failure: TransportFailure
@@ -180,7 +182,8 @@ export class TransportError extends Error {
 }
 
 export interface Transport {
-  probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[] }>
+  /** `reason` carries a human-readable hint for the api channel (never the key). */
+  probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[]; reason?: string }>
   submit(request: SubmitRequest): Promise<SubmitResult>
   reattach?(request: ReattachRequest): Promise<ReattachResult>
   poll(request: { submissionId: string; timeoutMs: number; signal?: AbortSignal }): Promise<PollResult>
