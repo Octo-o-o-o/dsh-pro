@@ -129,6 +129,34 @@ describe('engine', () => {
     expect(document).toContain('状态：completed')
   })
 
+  it('stores images and code blocks from the fetched answer', async () => {
+    class AssetTransport extends FakeTransport {
+      override async fetch() {
+        return {
+          answer: 'asset answer',
+          images: [{
+            name: 'hero.png',
+            mime: 'image/png',
+            base64: Buffer.from('png-bytes').toString('base64'),
+          }],
+          codeBlocks: [{ language: 'html', text: '<h1>demo</h1>' }],
+        }
+      }
+    }
+    const transport = new AssetTransport(['first answer'])
+    const { engine, store } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.artifacts).toEqual(expect.arrayContaining([
+      'artifacts/round-01/hero.png',
+      'artifacts/round-01/code-01.html',
+    ]))
+    const dir = await store.dirOf(topic.id)
+    expect(await readFile(join(dir, 'artifacts', 'round-01', 'hero.png'), 'utf8')).toBe('png-bytes')
+    expect(await readFile(join(dir, 'artifacts', 'round-01', 'code-01.html'), 'utf8')).toContain('<h1>demo</h1>')
+  })
+
   it('stops early when the first round satisfies the criteria', async () => {
     const { engine } = await harness({ doneAt: 1 })
     const topic = await engine.start(card())

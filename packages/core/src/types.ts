@@ -124,6 +124,26 @@ export interface PollResult {
   snapshotPath?: string
 }
 
+/** One image produced by the answer (base64 payload, no filesystem assumptions). */
+export interface ImageAsset {
+  name?: string
+  mime: string
+  base64: string
+}
+
+/** One fenced code block from the answer (frontend demos live here). */
+export interface CodeBlock {
+  language: string
+  text: string
+}
+
+export interface FetchedAnswer {
+  answer: string
+  images?: ImageAsset[]
+  codeBlocks?: CodeBlock[]
+  snapshotPath?: string
+}
+
 export type TransportFailure = 'login' | 'upload' | 'ui' | 'network' | 'worker' | 'timeout'
 
 export class TransportError extends Error {
@@ -144,7 +164,7 @@ export interface Transport {
   probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[] }>
   submit(request: SubmitRequest): Promise<SubmitResult>
   poll(request: { submissionId: string; timeoutMs: number; signal?: AbortSignal }): Promise<PollResult>
-  fetch(request: { submissionId: string }): Promise<{ answer: string; snapshotPath?: string }>
+  fetch(request: { submissionId: string }): Promise<FetchedAnswer>
   cancel(): Promise<void>
 }
 

@@ -9,3 +9,8 @@ coverage/
 .env.*
 .DS_Store
 research-tmp/
+.design-*
+.inspect*
+.otp.log
+.publish/
+.publish-web*.cjs

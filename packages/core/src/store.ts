@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
-import type { HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
+import { dirname, join, relative, resolve } from 'node:path'
+import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
 
 export interface StoreOptions {
@@ -30,6 +30,36 @@ interface IndexFile {
 
 function pad(n: number): string {
   return String(n).padStart(2, '0')
+}
+
+function artifactFileName(value: string): string {
+  const base = value.split(/[\\/]/).pop() ?? 'artifact'
+  return base.replace(/[^\w.-]/g, '_').slice(0, 100) || 'artifact'
+}
+
+function extensionForLanguage(language: string): string {
+  switch (language.toLowerCase()) {
+    case 'html':
+    case 'htm':
+      return 'html'
+    case 'tsx':
+    case 'typescriptreact':
+      return 'tsx'
+    case 'jsx':
+      return 'jsx'
+    case 'css':
+      return 'css'
+    case 'js':
+    case 'javascript':
+      return 'js'
+    case 'json':
+      return 'json'
+    case 'md':
+    case 'markdown':
+      return 'md'
+    default:
+      return 'txt'
+  }
 }
 
 function sanitizeSegment(value: string): string {
@@ -271,6 +301,33 @@ export class ResearchStore {
       const dir = await this.dirOf(topic.id)
       await this.atomic(join(dir, 'rounds', `${pad(round)}-answer.md`), answer)
     }
+  }
+
+  /** Persist images and code blocks under `<topic>/artifacts/round-NN/`. */
+  async writeArtifacts(topic: Topic, round: number, fetched: FetchedAnswer): Promise<string[]> {
+    const images = fetched.images ?? []
+    const blocks = fetched.codeBlocks ?? []
+    if (images.length === 0 && blocks.length === 0) return []
+    const dir = await this.dirOf(topic.id)
+    const base = join(dir, 'artifacts', `round-${pad(round)}`)
+    const added: string[] = []
+    for (const [index, image] of images.entries()) {
+      const name = artifactFileName(image.name ?? `image-${pad(index + 1)}.png`)
+      const target = join(base, name)
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, Buffer.from(image.base64, 'base64'))
+      added.push(relative(dir, target).replace(/\\/g, '/'))
+    }
+    for (const [index, block] of blocks.entries()) {
+      const target = join(base, `code-${pad(index + 1)}.${extensionForLanguage(block.language)}`)
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, block.text, 'utf8')
+      added.push(relative(dir, target).replace(/\\/g, '/'))
+    }
+    for (const artifact of added) {
+      if (!topic.artifacts.includes(artifact)) topic.artifacts.push(artifact)
+    }
+    return added
   }
 
   async readAnswer(topic: Topic, round: number): Promise<string | undefined> {

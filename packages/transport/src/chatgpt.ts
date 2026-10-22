@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
-import type { PollResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
+import type { CodeBlock, ImageAsset, PollResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
 import { TransportError } from 'dsh-pro-core'
 import { SELECTORS } from './selectors.ts'
 import { advanceCompletion } from './completion.ts'
@@ -25,6 +25,14 @@ interface Submission {
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
+function extensionFor(mime: string): string {
+  if (mime.includes('jpeg')) return 'jpg'
+  if (mime.includes('webp')) return 'webp'
+  if (mime.includes('gif')) return 'gif'
+  if (mime.includes('svg')) return 'svg'
+  return 'png'
 }
 
 function isAborted(signal?: AbortSignal): boolean {
@@ -186,7 +194,7 @@ export class ChatGptWebTransport implements Transport {
       if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
       if (page.isClosed()) return { state: 'unknown' }
       const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
-      const text = streaming ? '' : await this.lastAssistantText(page)
+      const text = streaming ? '' : await this.richAnswerText(page)
       const next = advanceCompletion(
         { lastText: submission.lastText, stable: submission.stable },
         text,
@@ -204,9 +212,82 @@ export class ChatGptWebTransport implements Transport {
     const submission = this.submissions.get(request.submissionId)
     if (submission === undefined) throw new TransportError('unknown submission', 'ui')
     if (submission.page.isClosed()) throw new TransportError('conversation page is closed', 'ui')
-    const answer = await this.lastAssistantText(submission.page)
-    if (answer === '') throw new TransportError('no assistant answer on the page', 'ui')
-    return { answer }
+    const page = submission.page
+    const answer = await this.lastAssistantText(page)
+    const images = await this.collectImages(page)
+    const codeBlocks = await this.collectCodeBlocks(page)
+    if (answer === '' && images.length === 0 && codeBlocks.length === 0) {
+      throw new TransportError('no assistant answer on the page', 'ui')
+    }
+    return {
+      answer,
+      ...(images.length > 0 ? { images } : {}),
+      ...(codeBlocks.length > 0 ? { codeBlocks } : {}),
+    }
+  }
+
+  /** Large images in the answer; blob URLs are read in-page, https through cookies. */
+  private async collectImages(page: Page): Promise<ImageAsset[]> {
+    const sources: string[] = await page.evaluate(() => {
+      const seen = new Set<string>()
+      const out: string[] = []
+      for (const image of document.querySelectorAll('main img')) {
+        const element = image as HTMLImageElement
+        if (element.naturalWidth < 300 || element.naturalHeight < 300) continue
+        if (element.src !== '' && !seen.has(element.src)) {
+          seen.add(element.src)
+          out.push(element.src)
+        }
+      }
+      return out
+    })
+    const images: ImageAsset[] = []
+    for (const [index, source] of sources.slice(0, 8).entries()) {
+      try {
+        if (source.startsWith('blob:')) {
+          const dataUrl = await page.evaluate(async (src) => {
+            const response = await fetch(src)
+            const blob = await response.blob()
+            return await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(String(reader.result))
+              reader.onerror = () => reject(reader.error)
+              reader.readAsDataURL(blob)
+            })
+          }, source)
+          const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl)
+          if (match === null) continue
+          const mime = match[1] as string
+          images.push({
+            name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(mime)}`,
+            mime,
+            base64: (match[2] as string).replace(/\s/g, ''),
+          })
+        } else {
+          const response = await page.request.get(source)
+          if (!response.ok()) continue
+          const mime = (response.headers()['content-type'] ?? 'image/png').split(';')[0]?.trim() ?? 'image/png'
+          images.push({
+            name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(mime)}`,
+            mime,
+            base64: (await response.body()).toString('base64'),
+          })
+        }
+      } catch {
+        // One unreadable image must not fail the whole round.
+      }
+    }
+    return images
+  }
+
+  private async collectCodeBlocks(page: Page): Promise<CodeBlock[]> {
+    return await page.evaluate(() => [...document.querySelectorAll('main pre code')]
+      .slice(0, 20)
+      .map(code => ({
+        language: /language-([\w-]+)/.exec(code.className)?.[1] ?? '',
+        text: code.textContent ?? '',
+      }))
+      .filter(block => block.text.trim() !== ''))
   }
 
   async cancel(): Promise<void> {
@@ -271,6 +352,17 @@ export class ChatGptWebTransport implements Transport {
         throw new TransportError(`attachment card missing for ${name}`, 'upload', { cause: error })
       }
     }
+  }
+
+  private async richAnswerText(page: Page): Promise<string> {
+    const text = await this.lastAssistantText(page)
+    if (text !== '') return text
+    // Image-only answers have no text; use the produced image URLs as the
+    // stability fingerprint so a gallery response still completes.
+    const images: string[] = await page.evaluate(() => [...document.querySelectorAll('main img')]
+      .filter(image => (image as HTMLImageElement).naturalWidth >= 300)
+      .map(image => (image as HTMLImageElement).src))
+    return images.length > 0 ? `image:${images.join('|')}` : ''
   }
 
   private async lastAssistantText(page: Page): Promise<string> {

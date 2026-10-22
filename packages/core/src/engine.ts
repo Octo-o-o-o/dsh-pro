@@ -1,5 +1,6 @@
 import type {
   EngineEvent,
+  FetchedAnswer,
   Judge,
   MaterialRef,
   PollResult,
@@ -227,9 +228,10 @@ export class ResearchEngine {
         }
         if (topic.status !== 'waiting') await this.transition(topic, 'waiting')
 
-        const answer = await this.waitAnswer(round, signal)
-        if (answer === undefined) return
-        await this.options.store.writeAnswer(topic, n, answer)
+        const fetched = await this.waitAnswer(round, signal)
+        if (fetched === undefined) return
+        await this.options.store.writeAnswer(topic, n, fetched.answer)
+        await this.options.store.writeArtifacts(topic, n, fetched)
         round.answeredAt = new Date().toISOString()
         await this.transition(topic, 'answered')
         this.emit({ type: 'answered', topicId: topic.id, round: n })
@@ -284,7 +286,7 @@ export class ResearchEngine {
     await this.transition(topic, 'submitted')
   }
 
-  private async waitAnswer(round: RoundRecord, signal: AbortSignal): Promise<string | undefined> {
+  private async waitAnswer(round: RoundRecord, signal: AbortSignal): Promise<FetchedAnswer | undefined> {
     const submissionId = round.submissionId
     if (submissionId === undefined) throw new Error('round has no submission')
     const deadline = this.now() + this.options.config.maxRoundMinutes * 60_000
@@ -296,9 +298,13 @@ export class ResearchEngine {
         signal,
       })
       if (polled.state === 'answered') {
-        if (polled.answer !== undefined) return polled.answer
-        const fetched = await this.options.transport.fetch({ submissionId })
-        return fetched.answer
+        try {
+          return await this.options.transport.fetch({ submissionId })
+        } catch (error) {
+          // Text-only fallback keeps older transports (and partial pages) usable.
+          if (polled.answer !== undefined) return { answer: polled.answer }
+          throw error
+        }
       }
       if (polled.state === 'unknown') throw new TransportError('page state is unknown', 'ui')
     }
