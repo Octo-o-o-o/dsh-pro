@@ -46,6 +46,7 @@ export interface Topic {
   status: Status
   stallReason?: StallReason
   roundsCap: number
+  designs?: number
   rounds: RoundRecord[]
   channel: string
   model: string
@@ -78,6 +79,7 @@ export interface ResearchCard {
   brief: string
   materials: MaterialRef[]
   rounds: number
+  designs?: number
   store: StoreMode
   model?: string
   parent?: string

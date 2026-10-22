@@ -42,6 +42,7 @@ interface TopicRow {
   stall_reason: string | null
   rounds: number
   rounds_cap: number
+  designs?: number | null
   stop_reason: string | null
   artifacts: string[]
   updated: string
@@ -234,6 +235,9 @@ function Panel(): ReturnType<typeof createElement> {
               createElement('td', { style: cellStyle() }, round.verdict ?? '—'),
               createElement('td', { style: cellStyle() }, String(round.files)),
               createElement('td', { style: cellStyle() }, round.submittedAt?.slice(0, 16).replace('T', ' ') ?? '—'))))),
+        config.designMode && detail.designs != null
+          ? createElement('div', { style: { marginTop: 8, opacity: 0.75 } }, `每轮方向：${detail.designs}`)
+          : undefined,
         renderArtifacts(detail)))
 
   return createElement('div', { style: { display: 'flex', height: '100%', minHeight: 0, color: 'inherit' } }, list, body)

@@ -507,6 +507,9 @@ class ProResearchService {
     const question = this.requireString(args, 'question')
     const brief = this.requireString(args, 'brief')
     const designs = typeof args.designs === 'number' ? args.designs : this.config.designs
+    if (!Number.isInteger(designs) || designs < 1 || designs > 6) {
+      throw new Error('designs must be an integer between 1 and 6')
+    }
     const criteria = this.stringArray(args.criteria, 'criteria')
     const materialPaths = args.materials === undefined || args.materials === null
       ? []
@@ -522,6 +525,7 @@ class ProResearchService {
       brief: this.withDesignCount(brief, designs),
       materials: refs,
       rounds: typeof args.rounds === 'number' ? args.rounds : this.config.rounds,
+      ...(this.spec.topicType === 'design' ? { designs } : {}),
       store: this.config.store,
       model: this.config.model,
       ...(typeof args.parent === 'string' && args.parent !== '' ? { parent: args.parent } : {}),
@@ -560,6 +564,7 @@ class ProResearchService {
       stall_reason: topic.stallReason ?? null,
       rounds: topic.rounds.length,
       rounds_cap: topic.roundsCap,
+      designs: topic.designs ?? null,
       stop_reason: topic.stopReason ?? null,
       artifacts: topic.artifacts,
       updated: topic.updated,

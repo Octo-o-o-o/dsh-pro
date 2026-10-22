@@ -143,6 +143,7 @@ export class ResearchStore {
       updated: now,
       status: 'draft',
       roundsCap,
+      ...(card.designs !== undefined ? { designs: card.designs } : {}),
       rounds: [],
       channel,
       model,
