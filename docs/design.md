@@ -147,6 +147,8 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 | `maxFiles` | `12` | 单轮附件上限 |
 | `maxTotalMB` | `24` | 单轮附件总大小 |
 | `secretGlobs` | 见 6.4 | 禁止外发的路径模式 |
+| `rawAnswers` | `local` | 原始答复保存位置：`local` / `repo`；公开仓库强制 `local` |
+| `rawAnswersDir` | `~/.dsh/pro-research/raw` | `local` 模式的原文目录，可改绝对路径 |
 | `browser.profileDir` | `~/.dsh/pro-research/browser` | 独立 profile |
 | `browser.headless` | `false` | 无头仅用于自检，默认关闭 |
 
@@ -162,9 +164,18 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 
 `secretGlobs` 默认包含 `.env*`、`*.pem`、`*.key`、`id_rsa*`、`.npmrc`、`.credentials*`、`**/secrets/**`。命中做两件事：研究卡标红、提交前内容扫描阻断。扫描失败按失败处理，不静默放行。
 
+### 6.5 设置页说明
+
+设置页固定展示三条，不可关闭：
+
+1. 本插件驱动网页会话，不是官方 API；存在 ToS、风控与账号风险。
+2. 运行期间 DSH 需保持运行（可最小化）；关闭后任务暂停，重开从回执恢复；锁屏尽力而为，不承诺关机跑完。
+3. `rawAnswers=repo` 会把完整答复写进项目；公开仓库禁止该组合。
+
 ## 7. 轮次语义
 
 - **一轮 = 一次提交 + 一份完整答复**。
+- 研究卡必须写**成功判据**；每轮裁决后由宿主判断是否满足：满足即 `completed`，停止依据写进 `final.md`；不满足继续，直到 `rounds` 上限转 `capped`。无人值守期间不为此询问用户。
 - 复核续问（只送变化）也算一轮；这样上限可审计。
 - 达到上限且无结论：状态 `capped`，交付阶段结论 + 未决项；加一轮必须用户明确确认。
 - 同一轮内重试（例如上传失败后重传）不新增轮次，但必须留下重试记录。
@@ -219,27 +230,26 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 3. 发送前扫描密钥；命中即阻断，不提供「强制发送」快捷方式。
 4. 上传后核对逐文件卡片（数量 + 文件名）；缺件按 `stalled(upload)` 处理。
 5. **GitHub 是可选补充**：brief 里可以附仓库地址、提交号、路径清单，让 ChatGPT 自己判断要不要读；不自动 push、不传 token。未提交的改动仍然打包上传。
-6. 不把摘要当原文：原始答复整份落盘，摘要只作为裁决材料。
+6. 不把摘要当原文：原始答复整份落盘——始终写 `rawAnswersDir/<topic-id>/NN-answer.md`；`rawAnswers=repo` 时再复制一份进主题目录。摘要只作为裁决材料。
 7. follow-up 只送变化：原会话仍在时，送上一轮裁决 + 变化后的 brief + 新增/修改的附件，未变化的附件不重传；会话丢失时，由宿主生成 `context.md`（目标、已确认结论、未决问题、变化清单），连同当前仍需的附件重开一轮。`context.md` 进主题目录，生成它的是宿主，不是 Pro。
 
 ## 11. 记录与索引
 
 ### 11.1 目录
 
-`store=project`：
+`store=project`（`rawAnswers=local`，默认）：
 
 ```text
 <project>/docs/research/<slug>/
   topic.json
   materials/manifest.json
   rounds/01-question.md
-  rounds/01-answer.md
   rounds/01-verdict.md
   receipts/01.json
   final.md
 ```
 
-`store=local`：`~/.dsh/pro-research/projects/<project-slug>/<slug>/`，结构相同。
+原文始终写 `rawAnswersDir/<topic-id>/NN-answer.md`（本机，路径可配）；`rawAnswers=repo` 时再复制到主题目录 `rounds/NN-answer.md`。`store=local` 时主题目录在 `~/.dsh/pro-research/projects/<project-slug>/<slug>/`，结构相同。
 
 `slug` 由标题生成 ASCII kebab；非 ASCII 标题回退 `topic-<hash4>`，`topic.json` 保存原标题。
 
@@ -298,7 +308,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 技能名 `pro-research`，用户可调用，模型也可在用户明确说「用 Pro 调研」时调用。正文约束：
 
 1. 只在用户明确要求 Pro 调研/设计，或用户同意提议时启动；不因「任务看起来重要」自动开跑。
-2. 先给研究卡，字段齐全才允许 `start`；`autoStart=true` 时也至少显示卡片与材料清单。
+2. 先给研究卡，字段齐全（问题、成功判据、材料、轮次上限、产物路径）才允许 `start`；`autoStart=true` 时也至少显示卡片与材料清单。
 3. 运行期间不在会话里逐轮汇报；用户主动问才查状态。
 4. 答复回来后逐条裁决（采纳/部分采纳/有依据驳回），写 `verdict.md`；不以 Pro 的身份或一致性当证据。
 5. 最终文档由宿主写，Pro 的原文不直接当交付物。
@@ -325,7 +335,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 
 | 阶段 | 内容 | 退出条件 |
 |---|---|---|
-| M0 | 设计评审 | 本文档获批；许可证与包名确定 |
+| M0 | 设计评审 | 已完成：文档获批，许可证 MIT，包名 `dsh-pro-research` |
 | M1 | 传输 spike（CLI） | 真实登录一次，完成 1 轮提交与取回；注入坏选择器能干净地 `stalled` |
 | M2 | 引擎 + CLI | 假传输下 3 轮、到顶、恢复、两种 store 全通过；原子写与脱敏测试通过 |
 | M3 | DSH host 插件 + 技能 | 会话里发起一个真实主题，工具、设置、技能可用，无 UI |
@@ -346,16 +356,16 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 
 ## 18. 待定与我的默认
 
-| 问题 | 我的默认 | 需要谁定 |
+| 问题 | 结论 | 备注 |
 |---|---|---|
-| 许可证 | MIT | 用户 |
-| npm 包名/scope | 先查重，冲突改 scope | 用户 |
-| 有头/无头 | 有头（可最小化）；无头仅自检 | 用户可改 |
-| 原始答复是否进仓库 | project 模式进仓库；公开仓库改 local | 用户 |
-| 是否支持 ChatGPT Projects | 第一版不支持 | 用户 |
-| 公开仓库保护强度 | 提醒 + 默认建议 local，不强制 | 用户 |
-| 提前完成的判据 | 研究卡写成功判据，满足即停；否则跑到上限 | 用户 |
-| DSH 关闭时是否继续 | v1 不支持，重开后从回执恢复 | 用户 |
+| 许可证 | **MIT** | 见 `LICENSE` |
+| npm 包名/scope | **`dsh-pro-research`** | 发布前查重，冲突改 scope |
+| 提前完成的判据 | **研究卡写成功判据，宿主判断，满足即停** | 停止依据写进 `final.md` |
+| DSH 关闭时是否继续 | **v1 需 DSH 运行；关闭后暂停，重开恢复** | 设置页固定说明 |
+| 原始答复 | **默认本机 `rawAnswersDir`；`repo` 可选** | 公开仓库禁止 repo |
+| 有头/无头 | 有头（可最小化）；无头仅自检 | 可改 |
+| ChatGPT Projects | 第一版不支持 | 后续评估 |
+| 公开仓库保护强度 | 提醒 + 默认建议 local，不强制 | 后续可收紧 |
 
 ## 19. 未验证
 
