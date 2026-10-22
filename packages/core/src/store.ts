@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import type { HumanCheck, MaterialRef, Receipt, ResearchCard, StoreMode, Topic } from './types.ts'
+import type { HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
 
 export interface StoreOptions {
@@ -211,6 +211,19 @@ export class ResearchStore {
     const byPath = new Map(existing.map(item => [item.path, item]))
     for (const ref of refs) byPath.set(ref.path, ref)
     await this.atomic(file, `${JSON.stringify({ materials: [...byPath.values()] }, null, 2)}\n`)
+  }
+
+  /** Conversation locator stays local even when the topic is project-stored. */
+  async writeLocator(topicId: string, locator: SessionLocator): Promise<void> {
+    await this.atomic(join(this.options.localRoot, 'sessions', `${topicId}.json`), `${JSON.stringify(locator, null, 2)}\n`)
+  }
+
+  async readLocator(topicId: string): Promise<SessionLocator | undefined> {
+    try {
+      return JSON.parse(await readFile(join(this.options.localRoot, 'sessions', `${topicId}.json`), 'utf8')) as SessionLocator
+    } catch {
+      return undefined
+    }
   }
 
   async writeAnswer(topic: Topic, round: number, answer: string): Promise<void> {

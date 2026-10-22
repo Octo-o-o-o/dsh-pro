@@ -114,8 +114,15 @@ export class ChatGptWebTransport implements Transport {
     const context = await this.ensureContext()
     const page = await context.newPage()
     try {
-      await page.goto(this.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
-      const composer = await firstVisible(page, SELECTORS.composer, 30_000)
+      const target = request.session?.conversationUrl ?? this.appUrl
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      let composer = await firstVisible(page, SELECTORS.composer, 30_000)
+      if (composer === undefined && target !== this.appUrl) {
+        // The stored conversation is gone (deleted/another account): start a
+        // fresh chat rather than failing the round; the brief carries context.
+        await page.goto(this.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+        composer = await firstVisible(page, SELECTORS.composer, 30_000)
+      }
       if (composer === undefined) throw new TransportError('composer not found; the session is probably logged out', 'login')
 
       await this.trySelectModel(page, request.model)

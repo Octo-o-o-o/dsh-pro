@@ -215,9 +215,10 @@ describe('engine', () => {
   it('adds an explicit follow-up round to a completed topic', async () => {
     const judge: Judge = async () => ({ verdict: 'accepted', reason: 'enough', done: true, summary: 'done' })
     const { engine, store, transport } = await harness({ doneAt: 1, judge })
-    const topic = await engine.start(card())
+    const topic = await engine.start(card({ materials: [{ path: 'base.md', bytes: 1, sha256: 'b' }] }))
     await engine.drain()
     expect((await engine.status(topic.id)).status).toBe('completed')
+    expect(transport.submits[0]?.files).toEqual(['base.md'])
 
     await engine.continue(topic.id, 'follow-up brief', [{ path: 'new.md', bytes: 1, sha256: 'x' }])
     await engine.drain()
@@ -225,7 +226,8 @@ describe('engine', () => {
     expect(final.status).toBe('completed')
     expect(final.rounds).toHaveLength(2)
     expect(transport.submits).toHaveLength(2)
-    expect(transport.submits[1]?.files).toContain('new.md')
+    expect(transport.submits[1]?.files).toEqual(['base.md', 'new.md'])
+    expect(transport.submits[1]?.session?.conversationUrl).toBe('https://chatgpt.com/c/example')
     const dir = await store.dirOf(topic.id)
     expect(await readFile(join(dir, 'rounds', '02-question.md'), 'utf8')).toContain('follow-up brief')
   })

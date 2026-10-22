@@ -240,6 +240,9 @@ export class ResearchEngine {
   private async submitRound(topic: Topic, round: RoundRecord, signal: AbortSignal): Promise<void> {
     if (signal.aborted) throw new DOMException('aborted', 'AbortError')
     const brief = (await this.options.store.readQuestion(topic, round.n)) ?? ''
+    const locator = await this.options.store.readLocator(topic.id)
+    // Attachments are always re-sent: if the stored conversation is gone the
+    // transport starts a fresh chat, and a delta would silently lose context.
     const files = await this.options.store.readMaterialPaths(topic)
     round.files = files.length
     const result: SubmitResult = await this.options.transport.submit({
@@ -248,6 +251,12 @@ export class ResearchEngine {
       brief,
       files,
       model: topic.model,
+      session: locator ?? null,
+    })
+    await this.options.store.writeLocator(topic.id, {
+      conversationUrl: result.conversationUrl,
+      profileDir: this.options.config.browser.profileDir,
+      lastFingerprint: result.fingerprint,
     })
     round.submissionId = result.submissionId
     round.fingerprint = result.fingerprint
