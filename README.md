@@ -31,6 +31,12 @@ node packages/transport/src/cli.ts probe
 node packages/transport/src/cli.ts submit --brief-file brief.md --file README.md --out answer.md
 ```
 
+浏览器冒烟（本地 fixture，不需要 ChatGPT 账号；默认跳过）：
+
+```bash
+DSH_PRO_TRANSPORT_SMOKE=1 npx vitest run packages/transport/test/transport.smoke.test.ts
+```
+
 ## 结构
 
 ```text
