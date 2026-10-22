@@ -18,3 +18,6 @@ research-tmp/
 .brand-tmp/
 .make-*.cjs
 .icon-preview.png
+.asar-extract/
+.badge-preview.*
+.sidebar-status.iife.js

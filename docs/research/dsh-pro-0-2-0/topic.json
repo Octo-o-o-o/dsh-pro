@@ -5,13 +5,16 @@
   "type": "research",
   "parent": null,
   "created": "2026-10-22T14:18:10.131Z",
-  "updated": "2026-10-22T14:19:35.695Z",
-  "status": "stalled",
+  "updated": "2026-10-22T14:50:34.909Z",
+  "status": "waiting",
   "roundsCap": 2,
   "rounds": [
     {
       "n": 1,
-      "files": 0
+      "files": 12,
+      "submissionId": "41b43529-9ad5-44fc-8804-569e9ff6c4b3",
+      "fingerprint": "325041bf9a6820cbe270a7be11aac585d970d0b8f1caaa4ca662aeb6d55b2385",
+      "submittedAt": "2026-10-22T14:50:34.904Z"
     }
   ],
   "channel": "web-pro",
@@ -24,6 +27,5 @@
     "不重复 README 已承认的未覆盖项，除非给出新的代码证据或更具体方案。",
     "最后给 2 周内 Top 5 行动计划，按投入/收益排序。"
   ],
-  "artifacts": [],
-  "stallReason": "upload"
+  "artifacts": []
 }

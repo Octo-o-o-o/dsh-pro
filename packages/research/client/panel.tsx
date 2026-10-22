@@ -1,5 +1,6 @@
 import { createElement, useCallback, useEffect, useState } from 'react'
 import { DESIGN_ICON, RESEARCH_ICON } from './icons.ts'
+import { mountSidebarStatus } from './sidebar-status.ts'
 
 const POLL_MS = 3_000
 
@@ -30,6 +31,7 @@ interface ClientContext {
     register(options: Record<string, unknown>, render: (owner?: unknown) => unknown): () => void
     inject(name: string, register: () => () => void): () => void
   }
+  effect?(setup: () => () => void, label?: string): () => void
 }
 
 export const inject = ['slots']
@@ -314,4 +316,6 @@ export function apply(ctx: ClientContext): void {
   // The renderer service can activate before layout and sidebar declare their slots.
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: config.panelId }, () => createElement(Panel)))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: config.panelId, order: 21, label: () => config.label }, () => createElement(Icon, { kind: config.icon })))
+  const disposeBadge = mountSidebarStatus({ label: config.label, routes: config.routes, panelId: config.panelId })
+  if (typeof ctx.effect === 'function') ctx.effect(() => disposeBadge, `${config.panelId}: sidebar status badge`)
 }

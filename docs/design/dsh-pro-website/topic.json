@@ -5,14 +5,27 @@
   "type": "design",
   "parent": null,
   "created": "2026-10-22T14:18:11.302Z",
-  "updated": "2026-10-22T14:19:15.349Z",
-  "status": "failed",
+  "updated": "2026-10-22T14:57:31.278Z",
+  "status": "waiting",
   "roundsCap": 2,
   "designs": 3,
   "rounds": [
     {
       "n": 1,
-      "files": 0
+      "files": 5,
+      "submissionId": "e1b759cc-cb19-41fc-a970-991319591d53",
+      "fingerprint": "9ecdb1ca0707d9e14d4ae829b7a794624c845f72123958125fedc005f1f4a354",
+      "submittedAt": "2026-10-22T14:50:55.641Z",
+      "answeredAt": "2026-10-22T14:57:20.738Z",
+      "verdict": "partial",
+      "done": false
+    },
+    {
+      "n": 2,
+      "files": 0,
+      "submissionId": "3e77d057-7a58-46a9-90f8-ece148ae5109",
+      "fingerprint": "8b6ff7ea7ed830c0f5a21e041ecc9ab52aa3c79702f77e89efa8a8a22f9c1751",
+      "submittedAt": "2026-10-22T14:57:31.273Z"
     }
   ],
   "channel": "web-pro",
