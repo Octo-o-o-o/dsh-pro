@@ -114,12 +114,14 @@ stdin/stdout 逐行 JSON 协议，命令：
 
 worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器集中在 `selectors.ts`，按「角色/文本优先，CSS 兜底」排列，并带版本指纹；页面状态不明时宁可报 `unknown`，不猜。
 
+完成判定三条同时满足才算 `answered`：生成指示（停止按钮）消失、复制按钮出现、答复正文连续两次轮询（间隔 3 秒）哈希一致。任一不满足超过阈值报 `stalled(ui)`，不取半截答案。回执指纹 `fingerprint = sha256(conversationId + userMessageOrdinal + 答复正文前 4KB)`；页面不暴露消息 id 时不伪造，直接按 `unknown` 处理。
+
 ### 5.2 引擎
 
 - 单 worker、FIFO 队列；同一 profile 同时只跑一个主题，其余排队。
 - 原子写：临时文件 + rename；回执 append-only。
 - 状态每次变更写 `events.ndjson`，用于恢复与审计。
-- 看门狗：心跳缺失、阶段超时、页面指纹长时间不变都进入 `stalled`。
+- 看门狗：心跳缺失 3 次 → `failed(worker)`；页面级无进展 → `stalled(timeout)`。进入 `stalled` 或 `failed` 会释放 worker，队列继续下一个主题；被挂起主题的计时从 `resume` 重新开始，不累计。
 
 ### 5.3 DSH 插件
 
@@ -135,9 +137,10 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `channel` | `web-pro` | 第一阶段固定 |
-| `model` | `pro` | `pro` / `thinking`；以 `probe` 读到的选择器为准 |
+| `model` | `pro` | `pro` / `thinking`；启动时 `probe` 校验，不可用直接拒绝启动，不静默降级 |
 | `rounds` | `3` | 1–10，主题默认轮次上限 |
-| `stallMinutes` | `20` | 无进展判定 |
+| `stallMinutes` | `45` | 无进展判定：仅在生成指示消失且无完整答复时计时 |
+| `maxRoundMinutes` | `90` | 单轮墙钟上限，到点按 `stalled(timeout)` 处理 |
 | `store` | `project` | `project` / `local` |
 | `autoStart` | `false` | 研究卡直接开跑（跳过点击） |
 | `notify` | `stall-only` | `stall-only` / `all` |
@@ -197,13 +200,17 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 |---|---|---|---|
 | 登录失效 | 出现登录页/输入框消失 | `stalled(login)` | 提示重新登录后恢复 |
 | 附件不符 | 发送后 120 秒文件卡片少于清单 | `stalled(upload)` | 保留清单，不重发；人工确认 |
-| 无进展 | 心跳正常但 DOM 指纹与流式状态长时间不变（`stallMinutes`） | `stalled(timeout)` | 提示查看窗口，可恢复 |
+| 无进展 | 生成指示消失、无完整答复，持续 `stallMinutes`；或单轮达到 `maxRoundMinutes` | `stalled(timeout)` | 提示查看窗口，可恢复 |
 | 页面状态不明 | 关键选择器缺失 | `stalled(ui)` | 保留快照，等待修选择器 |
 | worker 崩溃 | 心跳缺失 3 次 | `failed(worker)` | 重启 worker，保留会话目录 |
 | 提交状态未知 | 重开后回执指纹不匹配 | `stalled(unknown_submission)` | **绝不自动重发**，人工核对 |
 | 轮次到顶 | 达到 `rounds` | `capped` | 交付阶段结论 |
 
 通知策略：只有 `stalled` / `failed` / `capped` 向发起会话追加一条提醒，并在侧边栏标橙；`completed` 默认静默（可配 `notify=all`）。
+
+### 9.1 人工核对
+
+`stalled(upload)` 与 `stalled(unknown_submission)` 只能由人退出：侧边栏提供「我已核对」动作，必须填结论（已提交 / 未提交 / 需重开）和依据；写入 `human-check.json`（时间、结论、备注），随后转 `waiting` / `submitted` / `failed`。没有这条记录，主题不能离开 `stalled`；宿主不得代替人填写。
 
 ## 10. 材料策略
 
@@ -213,6 +220,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 4. 上传后核对逐文件卡片（数量 + 文件名）；缺件按 `stalled(upload)` 处理。
 5. **GitHub 是可选补充**：brief 里可以附仓库地址、提交号、路径清单，让 ChatGPT 自己判断要不要读；不自动 push、不传 token。未提交的改动仍然打包上传。
 6. 不把摘要当原文：原始答复整份落盘，摘要只作为裁决材料。
+7. follow-up 只送变化：原会话仍在时，送上一轮裁决 + 变化后的 brief + 新增/修改的附件，未变化的附件不重传；会话丢失时，由宿主生成 `context.md`（目标、已确认结论、未决问题、变化清单），连同当前仍需的附件重开一轮。`context.md` 进主题目录，生成它的是宿主，不是 Pro。
 
 ## 11. 记录与索引
 
@@ -223,7 +231,6 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 ```text
 <project>/docs/research/<slug>/
   topic.json
-  index 条目（见 11.3）
   materials/manifest.json
   rounds/01-question.md
   rounds/01-answer.md
@@ -264,9 +271,11 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 }
 ```
 
+`verdict` 取值固定为 `accepted | partial | rejected`；`rejected` 必须带理由，中文只用于展示。
+
 ### 11.3 本地侧车
 
-会话 URL、消息指纹、profile 位置只写本机 `~/.dsh/pro-research/sessions/<topic-id>.json`，不进仓库；仓库里的 `receipts/NN.json` 只放哈希与时间。
+会话 URL、消息指纹、profile 位置只写本机 `~/.dsh/pro-research/sessions/<topic-id>.json`，不进仓库；仓库里的 `receipts/NN.json` 只放哈希与时间。侧车不随仓库走：换机器或清空本机状态后，恢复不可自证，按 `stalled` 交人工核对。
 
 ### 11.4 索引
 
@@ -281,7 +290,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 - 面板「Pro」：按项目分组列表；每行状态点、标题、类型、第几轮、耗时、产物。
 - 详情：时间线（问题/材料/答复/裁决）、回执、产物链接、恢复/取消按钮。
 - 过滤：项目、状态、类型；搜索标题。
-- 第一版只读 + 恢复/取消，不做拖拽、不做富文本编辑。
+- 第一版只读 + 恢复/取消 + 「我已核对」，不做拖拽、不做富文本编辑。
 - 打开详情时每 2 秒轮询一次远程方法；面板关闭即停。
 
 ## 13. 交互协议（技能）
@@ -345,6 +354,8 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 | 原始答复是否进仓库 | project 模式进仓库；公开仓库改 local | 用户 |
 | 是否支持 ChatGPT Projects | 第一版不支持 | 用户 |
 | 公开仓库保护强度 | 提醒 + 默认建议 local，不强制 | 用户 |
+| 提前完成的判据 | 研究卡写成功判据，满足即停；否则跑到上限 | 用户 |
+| DSH 关闭时是否继续 | v1 不支持，重开后从回执恢复 | 用户 |
 
 ## 19. 未验证
 
