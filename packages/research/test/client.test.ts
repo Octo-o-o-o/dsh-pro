@@ -1,3 +1,4 @@
+import { renderToString } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { apply } from '../client/index.tsx'
 
@@ -30,5 +31,25 @@ describe('client panel', () => {
     const icon = registrations[1]?.render()
     expect(icon).toBeTruthy()
     expect(disposed).toBe(0)
+  })
+
+  it('renders the panel shell without a browser', () => {
+    const registrations: Registration[] = []
+    const ctx = {
+      slots: {
+        register: (options: Record<string, unknown>, render: () => unknown) => {
+          registrations.push({ options, render })
+          return () => {}
+        },
+      },
+      effect: () => {},
+    }
+    apply(ctx as never)
+
+    const main = registrations[0]?.render()
+    expect(main).toBeTruthy()
+    const html = renderToString(main as Parameters<typeof renderToString>[0])
+    expect(html).toContain('Pro 研究')
+    expect(html).toContain('还没有研究任务')
   })
 })

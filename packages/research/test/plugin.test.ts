@@ -1,7 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { ResearchStore, type ResearchCard } from '@dsh-pro/core'
 import { apply, resolveResearchConfig } from '../src/index.ts'
 
 const cleanups: string[] = []
@@ -144,6 +145,60 @@ describe('plugin wiring', () => {
       const response = await call(route as Route, { url: '/pro-research/topic?id=missing', method: 'GET', headers: {} })
       expect(response.status).toBe(404)
       expect(response.json).toEqual({ error: 'unknown topic' })
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+    }
+  })
+
+  it('lists and reads a topic recorded before the current host start', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-pro-home-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-pro-project-'))
+    cleanups.push(home, cwd)
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      const store = new ResearchStore({
+        mode: 'local',
+        projectRoot: cwd,
+        localRoot: join(home, 'pro-research'),
+        rawDir: join(home, 'raw'),
+        rawAnswers: 'local',
+      })
+      const card: ResearchCard = {
+        title: 'Persisted topic',
+        type: 'research',
+        question: 'Q?',
+        successCriteria: ['c'],
+        brief: 'b',
+        materials: [],
+        rounds: 2,
+        store: 'local',
+      }
+      const { topic } = await store.create(card, 2, 'pro', 'web-pro')
+      await mkdir(join(home, 'pro-research'), { recursive: true })
+      await writeFile(join(home, 'pro-research', 'registry.json'), JSON.stringify({
+        version: 1,
+        topics: [{ id: topic.id, root: cwd, mode: 'local', title: topic.title, updated: topic.updated }],
+      }), 'utf8')
+
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      apply(fakeContext(captured) as never, { store: 'local' })
+      const topicsRoute = captured.routes.find(item => item.path === '/pro-research/topics')
+      const listed = await call(topicsRoute as Route, { url: '/pro-research/topics', method: 'GET', headers: {} })
+      expect(listed.status).toBe(200)
+      expect(listed.json.topics).toHaveLength(1)
+      expect(listed.json.topics[0].topic_id).toBe(topic.id)
+
+      const detailRoute = captured.routes.find(item => item.path === '/pro-research/topic')
+      const detail = await call(detailRoute as Route, {
+        url: `/pro-research/topic?id=${topic.id}`,
+        method: 'GET',
+        headers: {},
+      })
+      expect(detail.status).toBe(200)
+      expect(detail.json.topic.title).toBe('Persisted topic')
+      expect(detail.json.topic.rounds_detail).toEqual([])
     } finally {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
