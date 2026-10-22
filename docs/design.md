@@ -338,7 +338,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 | M0 | 设计评审 | 已完成：文档获批，许可证 MIT，包名 `dsh-pro-research` |
 | M1 | 传输 spike（CLI） | 代码就绪；待真实登录跑通一轮提交/取回与坏选择器 `stalled` |
 | M2 | 引擎 + CLI | 完成：假传输下 3 轮、到顶、恢复、两种 store 通过；20 项单测通过 |
-| M3 | DSH host 插件 + 技能 | 代码完成：工具、设置、两个技能、三条只读路由；待宿主加载验证 |
+| M3 | DSH host 插件 + 技能 | 代码完成：工具、设置、两个技能、三条只读路由；真实 Cordis 上下文加载通过，待桌面宿主验证 |
 | M4 | 侧边栏 | 代码完成：列表/详情/恢复/取消/人工核对；待真实 DSH 验证 |
 | M5 | 发布 0.1.0 | 包可 `npm pack`（8 文件）；发布被本机临时目录 EPERM 与 npm 凭据阻塞 |
 | M6 | Pro 设计 | 复用核心，产物模板与入口独立；0.2.0 |
