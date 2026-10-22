@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -71,6 +71,37 @@ describe('project store', () => {
     })
     const { topic } = await store.create(card({ parent: 'topic-parent' }), 3, 'pro', 'web-pro')
     expect(topic.parent).toBe('topic-parent')
+  })
+
+  it('stages materials into the topic directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const sourceDir = join(root, 'src')
+    await mkdir(sourceDir, { recursive: true })
+    await writeFile(join(sourceDir, 'readme.md'), 'hello', 'utf8')
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic, dir } = await store.create(card({
+      materials: [{
+        path: 'src/readme.md',
+        bytes: 5,
+        sha256: 'x',
+        source: join(sourceDir, 'readme.md'),
+      }],
+    }), 3, 'pro', 'web-pro')
+
+    const paths = await store.readMaterialPaths(topic)
+    expect(paths).toEqual([join(dir, 'materials', 'src', 'readme.md')])
+    expect(await readFile(paths[0] as string, 'utf8')).toBe('hello')
+    const manifest = JSON.parse(await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')) as {
+      materials: Array<{ path: string; source: string }>
+    }
+    expect(manifest.materials[0]?.source).toBe('src/readme.md')
   })
 
   it('writes answers into the repo only when rawAnswers=repo', async () => {

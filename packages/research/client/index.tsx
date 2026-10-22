@@ -5,9 +5,9 @@ const POLL_MS = 3_000
 
 interface ClientContext {
   slots: {
-    register(options: Record<string, unknown>, render: (owner?: unknown) => unknown): (() => void) | undefined
+    register(options: Record<string, unknown>, render: (owner?: unknown) => unknown): () => void
+    inject(name: string, register: () => () => void): () => void
   }
-  effect(fn: () => () => void, label?: string): void
 }
 
 export const inject = ['slots']
@@ -250,10 +250,7 @@ function Icon(): ReturnType<typeof createElement> {
 }
 
 export function apply(ctx: ClientContext): void {
-  const disposers: Array<() => void> = []
-  const panel = ctx.slots.register({ name: 'main', key: PANEL_ID }, () => createElement(Panel))
-  if (typeof panel === 'function') disposers.push(panel as () => void)
-  const row = ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 21, label: () => 'Pro' }, () => createElement(Icon))
-  if (typeof row === 'function') disposers.push(row as () => void)
-  ctx.effect(() => () => { for (const dispose of disposers) dispose() }, 'dsh-pro-research: client panel')
+  // The renderer service can activate before layout and sidebar declare their slots.
+  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID }, () => createElement(Panel)))
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 21, label: () => 'Pro' }, () => createElement(Icon)))
 }

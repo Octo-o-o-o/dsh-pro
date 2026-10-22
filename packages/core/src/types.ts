@@ -66,6 +66,8 @@ export interface MaterialRef {
   bytes: number
   sha256: string
   reason?: string
+  /** Absolute source path; the store stages a copy into the topic directory. */
+  source?: string
 }
 
 export interface ResearchCard {

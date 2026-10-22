@@ -30,6 +30,10 @@ action=start, confirmed=true, title, question, brief, criteria[], materials[], r
 
 侧边栏「Pro」面板列出主题、轮次、状态与记录路径；卡住时可恢复、取消或人工核对。
 
+## 桌面加载
+
+前端使用 DSH `0.2.1-rc.2` 的 `window.__ModuleLoader__.load()` 惰性模块格式，共用宿主 React，并通过 `slots.inject()` 等待主面板与侧边栏槽位就绪。源码安装前先在仓库根目录运行 `npm run build` 和 `node scripts/smoke-bundle.mjs`；重建后确认 profile 中的安装产物已同步。本机 `file:` 安装的产物是硬链接，可随重建一起更新，复制或打包安装则需重新安装。
+
 ## 记录
 
 - `store=project`：`<项目>/docs/research/<slug>/`，含问题、裁决、回执、最终汇总。

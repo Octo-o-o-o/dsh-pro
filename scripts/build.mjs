@@ -1,9 +1,11 @@
 import { build } from 'esbuild'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const p = relative => join(root, relative)
+const { name: clientId } = JSON.parse(await readFile(p('packages/research/package.json'), 'utf8'))
 
 /** Bundle each publishable entry; DSH host packages stay external. */
 const external = ['@deepseek-ai/*', 'playwright-core']
@@ -44,11 +46,16 @@ await build({
   outfile: p('packages/research/lib/client.js'),
   bundle: true,
   platform: 'browser',
-  format: 'esm',
+  // DSH executes /plugins combo scripts before materializing their CJS factories.
+  format: 'cjs',
   target: 'es2022',
   jsx: 'automatic',
   sourcemap: false,
   external: [...external, 'react', 'react/*', 'react-dom', 'react-dom/*'],
   alias,
+  banner: {
+    js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(clientId)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;`,
+  },
+  footer: { js: 'return module.exports;\n} });' },
   logLevel: 'info',
 })

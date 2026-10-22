@@ -17,6 +17,7 @@ class FakeTransport implements Transport {
   submits: SubmitRequest[] = []
   fail?: Error
   hang = false
+  polling = false
   private seq = 0
 
   constructor(private readonly answers: string[]) {}
@@ -37,6 +38,7 @@ class FakeTransport implements Transport {
   }
 
   async poll(request: { submissionId: string; signal?: AbortSignal }) {
+    this.polling = true
     if (this.hang) {
       return await new Promise<never>((_resolve, reject) => {
         request.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
@@ -256,7 +258,10 @@ describe('engine', () => {
     transport.hang = true
     const { engine } = await harness({ doneAt: 1, transport })
     const topic = await engine.start(card())
-    await new Promise(resolve => setTimeout(resolve, 30))
+    const deadline = Date.now() + 2_000
+    while (!transport.polling && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
     await engine.cancel(topic.id)
     await engine.drain()
     const final = await engine.status(topic.id)

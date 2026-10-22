@@ -8,17 +8,22 @@ interface Registration {
 }
 
 describe('client panel', () => {
-  it('registers the main page and the sidebar row, and disposes them', () => {
+  it('registers the main page and the sidebar row under their declaration lifetimes', () => {
     const registrations: Registration[] = []
+    const effects: Array<() => void> = []
     let disposed = 0
     const ctx = {
       slots: {
+        inject: (_name: string, register: () => () => void) => {
+          const dispose = register()
+          effects.push(dispose)
+          return dispose
+        },
         register: (options: Record<string, unknown>, render: () => unknown) => {
           registrations.push({ options, render })
           return () => { disposed += 1 }
         },
       },
-      effect: (fn: () => () => void) => { void fn() },
     }
     apply(ctx as never)
 
@@ -31,18 +36,43 @@ describe('client panel', () => {
     const icon = registrations[1]?.render()
     expect(icon).toBeTruthy()
     expect(disposed).toBe(0)
+    for (const dispose of effects) dispose()
+    expect(disposed).toBe(2)
+  })
+
+  it('waits for layout and sidebar to declare their slots independently', () => {
+    const pending = new Map<string, () => void>()
+    const registrations: string[] = []
+    const ctx = {
+      slots: {
+        inject: (name: string, register: () => void) => {
+          pending.set(name, register)
+          return () => { pending.delete(name) }
+        },
+        register: (options: Record<string, unknown>) => {
+          registrations.push(String(options.name))
+          return () => {}
+        },
+      },
+    }
+    apply(ctx as never)
+    expect(registrations).toEqual([])
+    pending.get('sidebar.panellist')?.()
+    expect(registrations).toEqual(['sidebar.panellist'])
+    pending.get('main')?.()
+    expect(registrations).toEqual(['sidebar.panellist', 'main'])
   })
 
   it('renders the panel shell without a browser', () => {
     const registrations: Registration[] = []
     const ctx = {
       slots: {
+        inject: (_name: string, register: () => () => void) => register(),
         register: (options: Record<string, unknown>, render: () => unknown) => {
           registrations.push({ options, render })
           return () => {}
         },
       },
-      effect: () => {},
     }
     apply(ctx as never)
 

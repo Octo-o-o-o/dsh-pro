@@ -131,6 +131,8 @@ pro_research(action="continue", topic_id="topic-xxxx",
 | 页面结构变了 | 记录 snapshot 与时间，报 issue；不要手改回执 |
 | 轮次到顶没结论 | 状态是 `capped` 不是失败；确认后可显式加一轮 |
 | 面板空白 | 先看 DSH 插件页是否加载成功；再看 `/pro-research/topics` 是否 200 |
+| 启动报 `Cannot use import statement outside a module`，指向 `dsh-pro-research/client.js` | 插件前端产物格式错误；用修复后的源码运行 `npm run build` 和 `node scripts/smoke-bundle.mjs`，更新 profile 中的插件安装副本后重启。前端必须注册 DSH 的惰性模块 factory，不能直接分发 ESM |
+| 启动报 `slot "main" is not declared` | 前端注册早于布局加载；更新到使用 `slots.inject()` 等待槽位声明的版本后重启 |
 
 ## 7. 边界
 

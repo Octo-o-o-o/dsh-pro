@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import type { HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
@@ -119,10 +119,27 @@ export class ResearchStore {
     }
     const dir = await this.uniqueDir(slugifyTitle(card.title), id)
     this.dirs.set(id, dir)
+    const materials = await this.stageMaterials(dir, card.materials)
     await this.atomic(join(dir, 'topic.json'), `${JSON.stringify(topic, null, 2)}\n`)
     await this.atomic(join(dir, 'rounds', '00-question.md'), `# ${card.title}\n\n## 研究问题\n\n${card.question}\n\n## 成功判据\n\n${card.successCriteria.map(item => `- ${item}`).join('\n')}\n\n## 任务\n\n${card.brief}\n`)
-    await this.atomic(join(dir, 'materials', 'manifest.json'), `${JSON.stringify({ materials: card.materials }, null, 2)}\n`)
+    await this.atomic(join(dir, 'materials', 'manifest.json'), `${JSON.stringify({ materials }, null, 2)}\n`)
     return { topic, dir }
+  }
+
+  /** Copy source files into `<topic>/materials/`; the manifest keeps absolute stored paths. */
+  private async stageMaterials(dir: string, refs: readonly MaterialRef[]): Promise<MaterialRef[]> {
+    const staged: MaterialRef[] = []
+    for (const ref of refs) {
+      if (ref.source === undefined || ref.source === '') {
+        staged.push(ref)
+        continue
+      }
+      const target = join(dir, 'materials', ref.path)
+      await mkdir(dirname(target), { recursive: true })
+      await copyFile(ref.source, target)
+      staged.push({ ...ref, path: target, source: ref.path })
+    }
+    return staged
   }
 
   async save(topic: Topic): Promise<void> {
@@ -211,8 +228,9 @@ export class ResearchStore {
     } catch {
       // No manifest yet: the merge starts from the new refs alone.
     }
-    const byPath = new Map(existing.map(item => [item.path, item]))
-    for (const ref of refs) byPath.set(ref.path, ref)
+    const byPath = new Map(existing.map(item => [item.source ?? item.path, item]))
+    const staged = await this.stageMaterials(dir, refs)
+    for (const ref of staged) byPath.set(ref.source ?? ref.path, ref)
     await this.atomic(file, `${JSON.stringify({ materials: [...byPath.values()] }, null, 2)}\n`)
   }
 

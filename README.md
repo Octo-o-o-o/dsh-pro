@@ -2,7 +2,7 @@
 
 用 ChatGPT Pro 网页会话做**无人值守的多轮调研与设计**的 DeepSeek Harness 插件。
 
-状态：**v0.1 开发中**。核心引擎、网页传输、host 插件、侧边栏与研究记录已落地；真实网页的单轮、附件与同会话两轮已经验证，桌面 DSH 加载与 npm 发布还没完成。
+状态：**v0.1 开发中**。核心引擎、网页传输、host 插件、侧边栏与研究记录已落地；真实网页的单轮、附件与同会话两轮，以及本机桌面 DSH 的加载已验证，npm 发布还没完成。
 
 > ⚠️ 风险提示：本插件驱动的是 ChatGPT 网页（订阅额度），不是官方 API。自动化网页可能违反服务条款、触发风控或导致账号受限；页面改版也会让它失效。请自行评估账号风险，不要把凭据写进仓库或日志。
 
@@ -12,7 +12,7 @@
 - **传输**：Playwright 驱动独立 Chrome profile；登录、自检、提交、附件逐文件核对、轮询、取回答复。可用独立 CLI 先跑通。
 - **DSH host 插件**：`pro_research` 工具（start/continue/status/list/resume/cancel/human_check/probe/login）、设置 schema、`pro-research` / `pro-design` 两个技能、只读 HTTP 路由。
 - **侧边栏**：「Pro」面板列出主题、状态、轮次、记录路径；可恢复、取消、人工核对。卡住或失败时向发起会话注入一条安静的提醒（会话已关闭时只更新侧边栏）。
-- **测试**：37 个单测覆盖状态机、材料、记录布局、引擎（多轮/提前停止/到顶/卡住/恢复/取消/追问）、插件装配（工具、路由、技能、client 槽位）与真实 Cordis 上下文加载。
+- **测试**：39 个单测覆盖状态机、材料、记录布局、引擎（多轮/提前停止/到顶/卡住/恢复/取消/追问）、插件装配（工具、路由、技能、client 槽位）与真实 Cordis 上下文加载；构建后另检验前端脚本和惰性模块加载。
 
 ## 真实网页验证（2026-10-22）
 
@@ -25,6 +25,10 @@
 
 未覆盖：账号风控/ToS、页面改版后的失效、超长回答与断线恢复。
 
+## 桌面 DSH 验证（2026-10-22）
+
+Windows 本机 DSH `0.2.1-rc.2` 已验证启动、「Pro」入口、研究面板和 `/pro-research/topics` 的 200 响应。修复了前端 ESM 产物无法作为普通脚本加载，以及布局槽位尚未声明就注册的启动故障；本次未重复发送真实 ChatGPT 调研请求。
+
 ## 开发
 
 ```bash
@@ -32,7 +36,10 @@ npm install
 npm test
 npm run typecheck
 npm run build
+node scripts/smoke-bundle.mjs
 ```
+
+前端产物按 DSH `0.2.1-rc.2` 的模块加载方式生成：普通脚本调用 `window.__ModuleLoader__.load()` 注册惰性的 CommonJS factory，React 从宿主共享，`slots.inject()` 等待布局声明槽位。冒烟检查同时加载 host 和前端产物，避免 ESM 文件进入 `/plugins` 或过早注册槽位阻断桌面启动。
 
 独立跑一轮真实网页（需要本机 Chrome 和一个已登录的 ChatGPT 账号）：
 
@@ -67,7 +74,6 @@ docs/
 
 ## 待办
 
-- 侧边栏在真实 DSH 会话里的加载验证（代码与打包已就绪）。
 - npm 发布：`npm publish --dry-run` 已通过（23.3 kB，8 个文件）；`publish_plugin` 被本机临时目录的 `EPERM` 挡住，且当前没有 npm 登录凭据。
 - Pro 设计独立成包：当前是同一插件里的第二个技能，先观察使用反馈再拆。
 - 页面改版后的选择器维护：集中在 `packages/transport/src/selectors.ts`，最近一次按 2026-10-22 的真实页面校准。

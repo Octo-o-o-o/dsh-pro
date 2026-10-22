@@ -260,7 +260,11 @@ export class ChatGptWebTransport implements Transport {
   private async waitForAttachmentCards(page: Page, files: string[]): Promise<void> {
     for (const file of files) {
       const name = file.split(/[\\/]/).pop() ?? file
-      const card = page.getByText(name, { exact: false }).first()
+      // ChatGPT may append "(2)" before the extension on a name collision, so
+      // match the stem inside the composer rather than the exact filename.
+      const stem = name.replace(/\.[^.]+$/, '')
+      const needle = stem.length >= 3 ? stem : name
+      const card = page.locator('form').getByText(needle, { exact: false }).first()
       try {
         await card.waitFor({ state: 'visible', timeout: 120_000 })
       } catch (error) {

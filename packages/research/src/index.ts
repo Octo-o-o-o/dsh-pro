@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
@@ -15,6 +15,7 @@ import {
   defaultConfig,
   type Judge,
   type JudgeResult,
+  type MaterialRef,
   type ProConfig,
   type ResearchCard,
   type Topic,
@@ -226,9 +227,10 @@ class ProResearchService {
     }
   }
 
-  private engineFor(cwd: string): ResearchEngine {
-    const store = this.storeFor(cwd)
-    const key = `${this.config.store}:${this.rootFor(cwd)}`
+  private engineFor(cwd: string, mode: 'project' | 'local' = this.config.store): ResearchEngine {
+    const root = this.rootFor(cwd)
+    const store = this.storeAt(root, mode)
+    const key = `${mode}:${root}`
     const existing = this.engines.get(key)
     if (existing !== undefined) return existing
     const engine = new ResearchEngine({
@@ -254,6 +256,11 @@ class ProResearchService {
   }
 
   private async find(cwd: string, topicId: string): Promise<{ store: ResearchStore; engine: ResearchEngine; topic: Topic }> {
+    const entry = await this.entryFor(topicId)
+    if (entry !== undefined) {
+      const store = this.storeAt(entry.root, entry.mode)
+      return { store, engine: this.engineFor(entry.root, entry.mode), topic: await store.load(topicId) }
+    }
     const store = this.storeFor(cwd)
     try {
       const topic = await store.load(topicId)
@@ -405,7 +412,7 @@ class ProResearchService {
         const paths = Array.isArray(args.materials) && args.materials.length > 0
           ? this.stringArray(args.materials, 'materials')
           : []
-        const refs = paths.length > 0 ? await buildManifest(cwd, paths) : []
+        const refs = paths.length > 0 ? this.withSources(cwd, await buildManifest(cwd, paths)) : []
         assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
         const { engine } = await this.find(cwd, id)
         return this.view(await engine.continue(id, brief, refs))
@@ -435,14 +442,23 @@ class ProResearchService {
     }
   }
 
+  private withSources(cwd: string, refs: MaterialRef[]): MaterialRef[] {
+    return refs.map(ref => ({
+      ...ref,
+      source: isAbsolute(ref.path) ? ref.path : resolve(cwd, ref.path),
+    }))
+  }
+
   private async start(args: Record<string, unknown>, cwd: string, sessionId?: string): Promise<Record<string, unknown>> {
     const title = this.requireString(args, 'title')
     const question = this.requireString(args, 'question')
     const brief = this.requireString(args, 'brief')
     const criteria = this.stringArray(args.criteria, 'criteria')
-    const materialPaths = this.stringArray(args.materials, 'materials')
+    const materialPaths = args.materials === undefined || args.materials === null
+      ? []
+      : this.stringArray(args.materials, 'materials')
     const reasons = (args.materialReasons ?? {}) as Record<string, string>
-    const refs = await buildManifest(cwd, materialPaths, reasons)
+    const refs = this.withSources(cwd, await buildManifest(cwd, materialPaths, reasons))
     assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
     const card: ResearchCard = {
       title,
