@@ -110,6 +110,7 @@ describe('plugin wiring', () => {
     apply(fakeContext(captured) as never, {})
     const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<unknown> }
     await expect(tool.execute({ action: 'start' }, { agent: undefined })).rejects.toThrow(/confirmed=true/)
+    await expect(tool.execute({ action: 'continue', topic_id: 'x' }, { agent: undefined })).rejects.toThrow(/confirmed=true/)
   })
 
   it('serves the topics route from an isolated home', async () => {

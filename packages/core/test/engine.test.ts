@@ -212,6 +212,23 @@ describe('engine', () => {
     expect(transport.submits).toHaveLength(1)
   })
 
+  it('adds an explicit follow-up round to a completed topic', async () => {
+    const judge: Judge = async () => ({ verdict: 'accepted', reason: 'enough', done: true, summary: 'done' })
+    const { engine, store, transport } = await harness({ doneAt: 1, judge })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('completed')
+
+    await engine.continue(topic.id, 'follow-up brief')
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.status).toBe('completed')
+    expect(final.rounds).toHaveLength(2)
+    expect(transport.submits).toHaveLength(2)
+    const dir = await store.dirOf(topic.id)
+    expect(await readFile(join(dir, 'rounds', '02-question.md'), 'utf8')).toContain('follow-up brief')
+  })
+
   it('cancels an in-flight run', async () => {
     const transport = new FakeTransport(['first answer'])
     transport.hang = true

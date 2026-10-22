@@ -89,6 +89,26 @@ export class ResearchEngine {
     return topic
   }
 
+  /**
+   * Explicit follow-up on a finished topic: one more round with a new brief.
+   * The round limit grows when the follow-up would exceed it, because this is
+   * the user-confirmed "+1 round" the design requires.
+   */
+  async continue(id: string, brief: string): Promise<Topic> {
+    const topic = await this.options.store.load(id)
+    if (brief.trim() === '') throw new Error('brief is required')
+    if (topic.status !== 'completed' && topic.status !== 'capped') {
+      throw new Error(`topic ${id} is ${topic.status}; only completed or capped topics accept a follow-up`)
+    }
+    const next = topic.rounds.length + 1
+    if (next > topic.roundsCap) topic.roundsCap = next
+    await this.options.store.writeQuestion(topic, next, brief)
+    delete topic.stopReason
+    await this.transition(topic, 'queued')
+    this.enqueue(id)
+    return topic
+  }
+
   async humanCheck(
     id: string,
     conclusion: 'submitted' | 'not_submitted' | 'reopen',
@@ -185,10 +205,11 @@ export class ResearchEngine {
         if (round === undefined) {
           round = { n, files: 0 }
           topic.rounds.push(round)
-          const brief = n === 1
-            ? (await this.options.store.readQuestion(topic, 0)) ?? ''
-            : this.followUpBrief(topic)
-          await this.options.store.writeQuestion(topic, n, brief)
+          const stored = n === 1
+            ? await this.options.store.readQuestion(topic, 0)
+            : await this.options.store.readQuestion(topic, n)
+          const brief = stored ?? this.followUpBrief(topic)
+          if (stored === undefined) await this.options.store.writeQuestion(topic, n, brief)
           await this.transition(topic, 'uploading')
         }
 

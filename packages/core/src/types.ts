@@ -78,6 +78,7 @@ export interface ResearchCard {
   rounds: number
   store: StoreMode
   model?: string
+  parent?: string
 }
 
 export interface SessionLocator {

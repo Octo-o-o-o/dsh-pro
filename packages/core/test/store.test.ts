@@ -59,6 +59,20 @@ describe('project store', () => {
     expect(manifest).toContain('materials')
   })
 
+  it('keeps the parent link for follow-up topics', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic } = await store.create(card({ parent: 'topic-parent' }), 3, 'pro', 'web-pro')
+    expect(topic.parent).toBe('topic-parent')
+  })
+
   it('writes answers into the repo only when rawAnswers=repo', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
     cleanups.push(root)

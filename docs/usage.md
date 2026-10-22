@@ -74,11 +74,17 @@ pro_research(action="start", confirmed=true, title=..., question=..., brief=...,
 
 ### 2.4 追问同一主题
 
+用 `continue` 追加一轮（`completed` 或 `capped` 都可以）：
+
 ```text
-pro_research(action="status", topic_id="topic-xxxx")
+pro_research(action="continue", topic_id="topic-xxxx",
+             brief="只补充未决的部署风险，不要重复已确认结论",
+             confirmed=true)
 ```
 
-拿到状态后继续；下一轮只送变化：上一轮裁决 + 新 brief + 新增/修改的材料。会话丢了由宿主生成 `context.md` 重开，不在原会话里重传未变文件。
+如果原轮次已经到顶，`continue` 会把上限加一并记录为显式加轮。下一轮只送变化：上一轮裁决 + 新 brief + 新增/修改的材料；原会话丢了由宿主生成 `context.md` 重开。
+
+新建主题时可以用 `parent` 指向父主题，把 follow-up 串成同一棵树。
 
 ## 3. 侧边栏
 

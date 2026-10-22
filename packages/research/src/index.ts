@@ -362,6 +362,12 @@ class ProResearchService {
         const { engine } = await this.find(cwd, id)
         return this.view(await engine.resume(id))
       }
+      case 'continue': {
+        const id = this.requireId(args)
+        const brief = this.requireString(args, 'brief')
+        const { engine } = await this.find(cwd, id)
+        return this.view(await engine.continue(id, brief))
+      }
       case 'cancel': {
         const id = this.requireId(args)
         const { engine } = await this.find(cwd, id)
@@ -383,7 +389,7 @@ class ProResearchService {
       case 'login':
         return { login: await this.transportFor().login() }
       default:
-        throw new Error('action must be start, status, list, resume, cancel, human_check, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, probe or login')
     }
   }
 
@@ -406,6 +412,7 @@ class ProResearchService {
       rounds: typeof args.rounds === 'number' ? args.rounds : this.config.rounds,
       store: this.config.store,
       model: this.config.model,
+      ...(typeof args.parent === 'string' && args.parent !== '' ? { parent: args.parent } : {}),
     }
     const engine = this.engineFor(cwd)
     const topic = await engine.start(card)
@@ -609,10 +616,10 @@ export function apply(ctx: Context, config?: ResearchConfig): void {
     description: [
       '用 ChatGPT Pro 网页会话做无人值守的多轮调研或设计。',
       'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-      'action: start | status | list | resume | cancel | human_check | probe | login。',
+      'action: start | continue | status | list | resume | cancel | human_check | probe | login。',
     ].join(' '),
     parameters: {
-      action: { type: 'string', required: true, description: 'start|status|list|resume|cancel|human_check|probe|login' },
+      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|probe|login' },
       title: { type: 'string', description: '主题标题（start 必填）' },
       question: { type: 'string', description: '研究问题（start 必填）' },
       brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },
@@ -620,7 +627,8 @@ export function apply(ctx: Context, config?: ResearchConfig): void {
       materials: { type: 'array', items: { type: 'string' }, description: '相对工作目录的材料路径（start 可选）' },
       type: { type: 'string', description: 'research 或 design' },
       rounds: { type: 'number', description: '本次轮次上限（1–10）' },
-      topic_id: { type: 'string', description: 'status/resume/cancel/human_check 的主题 id' },
+      topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check 的主题 id' },
+      parent: { type: 'string', description: '可选：父主题 id，用于把 follow-up 串成同一棵树' },
       conclusion: { type: 'string', description: 'human_check 结论：submitted|not_submitted|reopen' },
       note: { type: 'string', description: 'human_check 依据' },
       confirmed: { type: 'boolean', description: '用户已确认研究卡' },
@@ -633,8 +641,8 @@ export function apply(ctx: Context, config?: ResearchConfig): void {
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     execute: async (args: Record<string, unknown>, exec: ToolRunContext) => {
-      if (args.action === 'start' && args.confirmed !== true) {
-        throw new Error('start requires confirmed=true after the user has seen the research card')
+      if ((args.action === 'start' || args.action === 'continue') && args.confirmed !== true) {
+        throw new Error('start and continue require confirmed=true after the user has seen the research card')
       }
       return (await service.handle(args, exec)) as never
     },

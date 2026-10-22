@@ -103,7 +103,7 @@ export class ResearchStore {
       id,
       title: card.title,
       type: card.type,
-      parent: null,
+      parent: card.parent ?? null,
       created: now,
       updated: now,
       status: 'draft',
