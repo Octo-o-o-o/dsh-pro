@@ -1,0 +1,10 @@
+node_modules/
+.pnpm-store/
+dist/
+lib/
+coverage/
+*.log
+.env
+.env.*
+.DS_Store
+research-tmp/
