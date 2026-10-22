@@ -1,0 +1,34 @@
+{
+  "materials": [
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\design\\dsh-pro-website\\materials\\packages\\research\\README.md",
+      "bytes": 2195,
+      "sha256": "74ce22ef6cc6d864dca3f4ac59c1e0c437260e5ff7974de0748d6c569eac86c4",
+      "source": "packages/research/README.md"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\design\\dsh-pro-website\\materials\\packages\\design\\README.md",
+      "bytes": 1365,
+      "sha256": "0db34ce6547c9066991a458ae2a302ef79624e9b4bcfe042f6374c92a5d195f1",
+      "source": "packages/design/README.md"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\design\\dsh-pro-website\\materials\\docs\\design.md",
+      "bytes": 20609,
+      "sha256": "de35c662817dfb70f5957252c34e75cdb227608ddbbbf76c8cc28f99e6e4ff9d",
+      "source": "docs/design.md"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\design\\dsh-pro-website\\materials\\docs\\usage.md",
+      "bytes": 6273,
+      "sha256": "87a86fb286e25bba160dad73b14b43dc78cbdecbefd287fdb083174a0b99a899",
+      "source": "docs/usage.md"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\design\\dsh-pro-website\\materials\\packages\\research\\client\\panel.tsx",
+      "bytes": 13504,
+      "sha256": "e86fd13077b356fd6e76f04cf0eba3ebbd547c089b8168a157db4a2e0bff4403",
+      "source": "packages/research/client/panel.tsx"
+    }
+  ]
+}

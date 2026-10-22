@@ -1,0 +1,51 @@
+# chatgpt-pro-research
+
+用 ChatGPT Pro 网页会话做无人值守多轮调研的 DeepSeek Harness 插件。
+
+> 这是订阅网页自动化，不是官方 API。自动化网页可能违反服务条款、触发风控或导致账号受限；页面改版也会让它失效。请自行评估风险，不要把凭据写进仓库或日志。
+
+## 安装
+
+```bash
+dsh plugin --profile desktop add chatgpt-pro-research
+```
+
+安装后在 DSH 设置页填写轮次上限、记录位置（project / local）、原始答复目录与浏览器 profile。首次使用先登录一次：
+
+```text
+让 agent 调用 pro_research(action="login")
+```
+
+弹出一个独立 Chrome 窗口，登录 ChatGPT 后关闭即可；登录态保存在 `~/.dsh/pro-research/browser`（与 GPT-Image Design 共用）。
+
+## 使用
+
+在会话里说「用 Pro 调研一下……」，或直接调用 `pro_research` 工具：
+
+```text
+action=start, confirmed=true, title, question, brief, criteria[], materials[], rounds
+```
+
+其余动作：`status`、`list`、`resume`、`cancel`、`human_check`、`probe`、`login`。
+
+侧边栏「Pro Research」面板列出主题、轮次、状态与记录路径；卡住时可恢复、取消或人工核对。
+
+## 桌面加载
+
+前端使用 DSH `0.2.1-rc.2` 的 `window.__ModuleLoader__.load()` 惰性模块格式，共用宿主 React，并通过 `slots.inject()` 等待主面板与侧边栏槽位就绪。源码安装前先在仓库根目录运行 `npm run build` 和 `node scripts/smoke-bundle.mjs`；重建后确认 profile 中的安装产物已同步。本机 `file:` 安装的产物是硬链接，可随重建一起更新，复制或打包安装则需重新安装。
+
+## 记录
+
+- `store=project`：`<项目>/docs/research/<slug>/`，含问题、裁决、回执、最终汇总。
+- `store=local`：`~/.dsh/chatgpt-pro-research/projects/<project>/<slug>/`。
+- 原始答复默认只在本机 `rawAnswersDir/<topic-id>/`；`rawAnswers=repo` 才复制进项目。
+
+## 边界
+
+- 不自动 push；GitHub 只是 ChatGPT 自己的可选材料来源。
+- 提交状态未知时不自动重发，需人工核对。
+- 页面改版、账号风险、ToS 风险由使用者承担。
+
+## 许可证
+
+MIT。

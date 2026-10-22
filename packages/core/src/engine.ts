@@ -403,16 +403,18 @@ export class ResearchEngine {
     if (topic.status === 'completed' || topic.status === 'cancelled') return
     if (error instanceof TransportError) {
       if (error.failure === 'worker') {
-        await this.transition(topic, 'failed')
+        await this.transition(topic, 'failed', { stopReason: error.message })
         return
       }
       const reason = error.failure === 'login' || error.failure === 'upload' || error.failure === 'ui'
         ? error.failure
         : 'timeout'
-      await this.transition(topic, 'stalled', { stallReason: reason })
+      await this.transition(topic, 'stalled', { stallReason: reason, stopReason: error.message })
       return
     }
-    await this.transition(topic, 'failed')
+    await this.transition(topic, 'failed', {
+      stopReason: error instanceof Error ? error.message : String(error),
+    })
   }
 
   private async transition(

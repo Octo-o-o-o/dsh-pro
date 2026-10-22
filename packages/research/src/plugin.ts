@@ -20,7 +20,8 @@ import {
   type ResearchCard,
   type Topic,
 } from '@dsh-pro/core'
-import { ChatGptWebTransport } from '@dsh-pro/transport'
+import { acquireSharedTransport } from '@dsh-pro/transport'
+import type { ChatGptWebTransport, SharedTransport } from '@dsh-pro/transport'
 
 export interface PluginSpec {
   name: string
@@ -177,6 +178,7 @@ class ProResearchService {
   private readonly stores = new Map<string, ResearchStore>()
   private readonly topicSessions = new Map<string, string>()
   private transport?: ChatGptWebTransport
+  private shared?: SharedTransport
 
   constructor(
     private readonly ctx: ServiceContext,
@@ -211,10 +213,11 @@ class ProResearchService {
 
   private transportFor(): ChatGptWebTransport {
     if (this.transport !== undefined) return this.transport
-    this.transport = new ChatGptWebTransport({
+    this.shared = acquireSharedTransport({
       profileDir: this.config.browser.profileDir,
       headless: this.config.browser.headless,
     })
+    this.transport = this.shared.transport
     return this.transport
   }
 
@@ -572,7 +575,9 @@ class ProResearchService {
   }
 
   dispose(): void {
-    void this.transport?.close()
+    this.shared?.release()
+    this.shared = undefined
+    this.transport = undefined
   }
 }
 

@@ -35,7 +35,15 @@ export const SELECTORS = {
     '[data-markdown-text-style="assistant-message"]',
     '[data-message-author-role="assistant"]',
   ].join(', '),
-  fileInput: 'input[type="file"]',
+  // The composer has several file inputs (camera, photos, videos). The general
+  // attachment input is the one without an `accept` filter; the camera input
+  // rejects multiple files.
+  fileInput: [
+    'input[type="file"][aria-label="附加文件"]',
+    'input[type="file"][aria-label*="Attach" i]:not([capture])',
+    'form input[type="file"][multiple]:not([accept]):not([capture])',
+    'input[type="file"][multiple]:not([accept]):not([capture])',
+  ].join(', '),
   modelPicker: [
     'button[aria-label*="选择 ChatGPT 模型"]',
     'button[aria-label*="模型"]',

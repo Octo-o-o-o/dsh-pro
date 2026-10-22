@@ -185,6 +185,7 @@ describe('engine', () => {
     const stalled = await engine.status(topic.id)
     expect(stalled.status).toBe('stalled')
     expect(stalled.stallReason).toBe('ui')
+    expect(stalled.stopReason).toContain('page changed')
 
     transport.fail = undefined
     await engine.resume(topic.id)
@@ -192,6 +193,17 @@ describe('engine', () => {
     const final = await engine.status(topic.id)
     expect(final.status).toBe('completed')
     expect(transport.submits).toHaveLength(1)
+  })
+
+  it('records the worker failure message on failed topics', async () => {
+    const transport = new FakeTransport(['first answer'])
+    transport.fail = new TransportError('cannot launch Chrome with profile X', 'worker')
+    const { engine } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const failed = await engine.status(topic.id)
+    expect(failed.status).toBe('failed')
+    expect(failed.stopReason).toContain('cannot launch Chrome')
   })
 
   it('resubmits only after a human confirms the submission was not made', async () => {

@@ -58,6 +58,7 @@ async function firstVisible(page: Page, selector: string, timeoutMs: number): Pr
  */
 export class ChatGptWebTransport implements Transport {
   private context?: BrowserContext
+  private launching?: Promise<BrowserContext>
   private readonly submissions = new Map<string, Submission>()
   private readonly options: ChatGptTransportOptions
 
@@ -71,6 +72,16 @@ export class ChatGptWebTransport implements Transport {
 
   private async ensureContext(): Promise<BrowserContext> {
     if (this.context !== undefined) return this.context
+    if (this.launching !== undefined) return this.launching
+    this.launching = this.launchContext()
+    try {
+      return await this.launching
+    } finally {
+      this.launching = undefined
+    }
+  }
+
+  private async launchContext(): Promise<BrowserContext> {
     await mkdir(this.options.profileDir, { recursive: true })
     const base = {
       headless: this.options.headless ?? false,
@@ -78,7 +89,12 @@ export class ChatGptWebTransport implements Transport {
       args: ['--disable-blink-features=AutomationControlled'],
     }
     try {
-      this.context = await chromium.launchPersistentContext(this.options.profileDir, { ...base, channel: 'chrome' })
+      const context = await chromium.launchPersistentContext(this.options.profileDir, { ...base, channel: 'chrome' })
+      context.on('close', () => {
+        if (this.context === context) this.context = undefined
+      })
+      this.context = context
+      return context
     } catch (error) {
       throw new TransportError(
         `cannot launch Chrome with profile ${this.options.profileDir}; install Google Chrome or pass browser.headless=false plus a Playwright browser. ${error instanceof Error ? error.message : String(error)}`,
@@ -86,7 +102,6 @@ export class ChatGptWebTransport implements Transport {
         { cause: error },
       )
     }
-    return this.context
   }
 
   async probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[] }> {

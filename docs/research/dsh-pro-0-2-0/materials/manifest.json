@@ -1,0 +1,76 @@
+{
+  "materials": [
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\README.md",
+      "bytes": 2505,
+      "sha256": "833988b133e896c412fa7145c5ed6f8e4cf9bff0b9a3628de235ae52e45fd87c",
+      "source": "README.md"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\docs\\design.md",
+      "bytes": 20609,
+      "sha256": "de35c662817dfb70f5957252c34e75cdb227608ddbbbf76c8cc28f99e6e4ff9d",
+      "source": "docs/design.md"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\core\\src\\engine.ts",
+      "bytes": 16730,
+      "sha256": "c4b157b1b2fe003ecfabfa3a047b8a6d77c2ea8b9a408168ee8cda82510221b9",
+      "source": "packages/core/src/engine.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\core\\src\\store.ts",
+      "bytes": 14356,
+      "sha256": "7f86aeb4edcecfdf105fdd682da47fd648026ab4183162e03884659a3a37d715",
+      "source": "packages/core/src/store.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\core\\src\\materials.ts",
+      "bytes": 3244,
+      "sha256": "ffb116ecce36eedb9b0e7ee8886b3edea71cb3407a911f83f4d2799d3ca0523e",
+      "source": "packages/core/src/materials.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\core\\src\\config.ts",
+      "bytes": 3951,
+      "sha256": "1f8ddb027f72e72122e722fd62fc3a72c9d1dfa4c83283922ecfb4b8b5e8b1b7",
+      "source": "packages/core/src/config.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\research\\src\\plugin.ts",
+      "bytes": 34141,
+      "sha256": "ab34997ecb0874ec1ec4dc4c36c5be0a589e95198acb449fd230a3e5d52d9ed6",
+      "source": "packages/research/src/plugin.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\research\\client\\panel.tsx",
+      "bytes": 13504,
+      "sha256": "e86fd13077b356fd6e76f04cf0eba3ebbd547c089b8168a157db4a2e0bff4403",
+      "source": "packages/research/client/panel.tsx"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\transport\\src\\chatgpt.ts",
+      "bytes": 15666,
+      "sha256": "de9680e2db6da95d50dfa2113b0e00e82d4a28430fbb16b8655d7e3b7c08f28d",
+      "source": "packages/transport/src/chatgpt.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\transport\\src\\selectors.ts",
+      "bytes": 1610,
+      "sha256": "837642d93df6d2b9c9616193f36d43cb56763aa33977dd0af9679a924bd09041",
+      "source": "packages/transport/src/selectors.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\design\\src\\index.ts",
+      "bytes": 679,
+      "sha256": "1d30b9b591fa36a3577476a6866aa7d56074dc5ea4dd47417fc693e48f2a39cc",
+      "source": "packages/design/src/index.ts"
+    },
+    {
+      "path": "C:\\WorkSpace\\dsh-plugins\\dsh-pro\\docs\\research\\dsh-pro-0-2-0\\materials\\packages\\research\\resources\\skills\\pro-research\\SKILL.md",
+      "bytes": 3090,
+      "sha256": "6619325b0b019b68382e7e1c25a1c9c4d5b75ca6c6fde247d58b74f62682d20f",
+      "source": "packages/research/resources/skills/pro-research/SKILL.md"
+    }
+  ]
+}
