@@ -148,8 +148,10 @@ export class ChatGptWebTransport implements Transport {
       if (send === undefined) throw new TransportError('send button not found', 'ui')
       await send.click()
 
-      await page.waitForTimeout(1_000)
-      const conversationUrl = page.url()
+      // A new chat first gets a local id and only later the server-assigned
+      // /c/<uuid> URL. Persist the addressable one, otherwise follow-ups
+      // cannot reopen the thread.
+      const conversationUrl = await this.waitForConversationUrl(page, 20_000)
       const attachments = attachmentsToSend.map(file => file.split(/[\\/]/).pop() ?? file)
       const submissionId = randomUUID()
       const fingerprint = sha256(`${conversationUrl}\n${request.brief}\n${attachments.join('\n')}`)
@@ -216,6 +218,17 @@ export class ChatGptWebTransport implements Transport {
     this.context = undefined
   }
 
+  private async waitForConversationUrl(page: Page, timeoutMs: number): Promise<string> {
+    const pattern = /^https:\/\/chatgpt\.com\/c\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const url = page.url()
+      if (pattern.test(url)) return url
+      await page.waitForTimeout(500)
+    }
+    return page.url()
+  }
+
   private async readModel(page: Page): Promise<string> {
     const picker = await firstVisible(page, SELECTORS.modelPicker, 2_000)
     if (picker === undefined) return ''
@@ -225,17 +238,16 @@ export class ChatGptWebTransport implements Transport {
   private async trySelectModel(page: Page, model: string): Promise<void> {
     const picker = await firstVisible(page, SELECTORS.modelPicker, 2_000)
     if (picker === undefined) return
-    const wanted = model.toLowerCase()
+    const wanted = model.trim()
+    if (wanted === '') return
+    // The live picker lists menu items by display name (Pro, GPT-6, ...);
+    // "thinking" is an effort on the same picker, so it accepts Pro.
+    const pattern = /^thinking$/i.test(wanted) ? /pro|思考|thinking/i : new RegExp(wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
     try {
       await picker.click()
-      const option = page.getByText(/pro|thinking/i).first()
+      const option = page.getByRole('menuitem').filter({ hasText: pattern }).first()
       await option.waitFor({ state: 'visible', timeout: 3_000 })
-      const label = (await option.innerText()).toLowerCase()
-      if (wanted === 'pro' ? label.includes('pro') : label.includes('think')) {
-        await option.click()
-      } else {
-        await page.keyboard.press('Escape')
-      }
+      await option.click()
     } catch {
       await page.keyboard.press('Escape').catch(() => undefined)
     }
