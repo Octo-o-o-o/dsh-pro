@@ -51,7 +51,9 @@ describe('design plugin wiring', () => {
     expect(JSON.stringify(captured.tools[0])).toContain('designs')
     expect(captured.routes.sort()).toEqual([
       '/gpt-image-design/action',
+      '/gpt-image-design/answer',
       '/gpt-image-design/asset',
+      '/gpt-image-design/open',
       '/gpt-image-design/topic',
       '/gpt-image-design/topics',
     ])

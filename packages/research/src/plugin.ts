@@ -1,6 +1,7 @@
+import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -400,8 +401,7 @@ class ProResearchService {
     return { ...this.view(topic), root: entry.root, store: entry.mode, path: dir, rounds_detail: topic.rounds }
   }
 
-  /** Serve one recorded artifact; the path must stay inside `<topic>/artifacts/`. */
-  async readArtifact(id: string, relativePath: string): Promise<{ bytes: Buffer; mime: string }> {
+  /** Serve one recorded artifact; the path must stay inside `<topic>/artifacts/`. */  async readArtifact(id: string, relativePath: string): Promise<{ bytes: Buffer; mime: string }> {
     const entry = await this.entryFor(id)
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
     const store = this.storeAt(entry.root, entry.mode)
@@ -413,6 +413,34 @@ class ProResearchService {
     }
     const bytes = await readFile(target)
     return { bytes, mime: mimeFor(target) }
+  }
+
+  /** Raw answer text for one round; shown in a new tab from the panel. */
+  async answerText(id: string, round: number): Promise<string | undefined> {
+    const entry = await this.entryFor(id)
+    if (entry === undefined) return undefined
+    const store = this.storeAt(entry.root, entry.mode)
+    const topic = await store.load(id)
+    return await store.readAnswer(topic, round)
+  }
+
+  /** Reveal a topic-relative file in the OS file manager. */
+  async revealFile(id: string, relativePath: string): Promise<void> {
+    const entry = await this.entryFor(id)
+    if (entry === undefined) throw new Error(`unknown topic: ${id}`)
+    const store = this.storeAt(entry.root, entry.mode)
+    const dir = await store.dirOf(id)
+    const target = resolve(dir, relativePath)
+    if (target !== dir && !target.startsWith(`${dir}${sep}`)) {
+      throw new Error('path escapes the topic')
+    }
+    await access(target)
+    const child = process.platform === 'win32'
+      ? spawn('explorer.exe', ['/select,', target], { detached: true, stdio: 'ignore' })
+      : process.platform === 'darwin'
+        ? spawn('open', ['-R', target], { detached: true, stdio: 'ignore' })
+        : spawn('xdg-open', [dirname(target)], { detached: true, stdio: 'ignore' })
+    child.unref()
   }
 
   async act(
@@ -738,6 +766,45 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
       }
     },
   }), `${spec.name}: asset route`)
+
+  scoped.effect(() => webServer.register({
+    kind: 'exact',
+    path: `${spec.routes}/answer`,
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const id = url.searchParams.get('id') ?? ''
+      const round = Number(url.searchParams.get('round') ?? '0')
+      try {
+        const text = await service.answerText(id, round)
+        if (text === undefined) return sendJson(res, 404, { error: 'answer not found' })
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(text)
+      } catch (error) {
+        sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), `${spec.name}: answer route`)
+
+  scoped.effect(() => webServer.register({
+    kind: 'exact',
+    path: `${spec.routes}/open`,
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' })
+      try {
+        const body = await readJsonBody(req)
+        const id = typeof body.topic_id === 'string' ? body.topic_id : ''
+        const relativePath = typeof body.path === 'string' ? body.path : ''
+        await service.revealFile(id, relativePath)
+        sendJson(res, 200, { ok: true })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), `${spec.name}: open route`)
 }
 
 export function createPlugin(spec: PluginSpec): (ctx: Context, config?: ResearchConfig) => void {

@@ -58,6 +58,8 @@ interface RoundRow {
   files: number
   submittedAt?: string
   answeredAt?: string
+  attempts?: number
+  artifacts?: string[]
 }
 
 interface TopicDetail extends TopicRow {
@@ -226,17 +228,7 @@ function Panel(): ReturnType<typeof createElement> {
         createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '轮次'),
         (detail.rounds_detail ?? []).length === 0
           ? createElement('div', { style: { opacity: 0.6 } }, '还没有提交记录。')
-          : createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 } },
-            createElement('thead', {}, createElement('tr', {},
-              ['轮', '裁决', '文件', '提交时间'].map(label => createElement('th', {
-                key: label,
-                style: { textAlign: 'left', padding: '4px 6px', borderBottom: '1px solid rgba(127,127,127,.25)', opacity: 0.7, fontWeight: 500 },
-              }, label)))),
-            createElement('tbody', {}, (detail.rounds_detail ?? []).map(round => createElement('tr', { key: round.n },
-              createElement('td', { style: cellStyle() }, String(round.n)),
-              createElement('td', { style: cellStyle() }, round.verdict ?? '—'),
-              createElement('td', { style: cellStyle() }, String(round.files)),
-              createElement('td', { style: cellStyle() }, round.submittedAt?.slice(0, 16).replace('T', ' ') ?? '—'))))),
+          : createElement('div', {}, (detail.rounds_detail ?? []).map(round => renderRound(detail, round))),
         config.designMode && detail.designs != null
           ? createElement('div', { style: { marginTop: 8, opacity: 0.75 } }, `每轮方向：${detail.designs}`)
           : undefined,
@@ -253,7 +245,10 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
   const artifacts = detail.artifacts ?? []
   if (artifacts.length === 0) return undefined
   if (!config.designMode) {
-    return createElement('div', { style: { marginTop: 10, opacity: 0.75 } }, `产物：${artifacts.join('、')}`)
+    return createElement('div', { style: { marginTop: 10 } },
+      createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '全部产物'),
+      createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+        artifacts.map(path => artifactChip(detail.topic_id, path))))
   }
   const images = artifacts.filter(path => /\.(png|jpe?g|webp|gif|svg)$/i.test(path))
   const demos = artifacts.filter(path => /\.html?$/i.test(path))
@@ -285,6 +280,83 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
         })))
       : undefined,
     createElement('div', { style: { marginTop: 8, opacity: 0.6, fontSize: 11, wordBreak: 'break-all' } }, artifacts.join('、')))
+}
+
+function renderRound(detail: TopicDetail, round: RoundRow): ReturnType<typeof createElement> {
+  const prefix = `/round-${String(round.n).padStart(2, '0')}/`
+  const artifacts = round.artifacts ?? (detail.artifacts ?? []).filter(path => path.includes(prefix))
+  const attempts = round.attempts ?? 1
+  return createElement('div', {
+    key: round.n,
+    style: { padding: '8px 0', borderTop: '1px solid rgba(127,127,127,.18)' },
+  },
+  createElement('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline', fontSize: 12 } },
+    createElement('strong', {}, `第 ${round.n} 轮`),
+    createElement('span', { style: { opacity: 0.72 } }, round.verdict ?? (round.answeredAt !== undefined ? '已答复' : '进行中')),
+    createElement('span', { style: { opacity: 0.6 } }, `${round.files} 文件`),
+    createElement('span', { style: { opacity: 0.6 } }, `提交 ${formatTime(round.submittedAt)}`),
+    createElement('span', { style: { opacity: 0.6 } }, `完成 ${formatTime(round.answeredAt)}`),
+    attempts > 1 ? createElement('span', { style: { color: '#ed6c02' } }, `重试 ${attempts - 1}`) : undefined),
+  createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
+    createElement('button', {
+      onClick: () => window.open(`${config.routes}/answer?id=${encodeURIComponent(detail.topic_id)}&round=${round.n}`, '_blank', 'noopener,noreferrer'),
+      style: chipStyle(),
+    }, '查看回答'),
+    artifacts.map(path => artifactChip(detail.topic_id, path))))
+}
+
+function artifactChip(topicId: string, path: string): ReturnType<typeof createElement> {
+  const name = path.split('/').pop() ?? path
+  if (/\.(png|jpe?g|webp|gif|svg)$/i.test(path)) {
+    return createElement('a', {
+      key: path,
+      href: assetUrl(topicId, path),
+      target: '_blank',
+      rel: 'noreferrer',
+      style: chipStyle(),
+    }, name)
+  }
+  if (/\.html?$/i.test(path)) {
+    return createElement('a', {
+      key: path,
+      href: assetUrl(topicId, path),
+      target: '_blank',
+      rel: 'noreferrer',
+      style: chipStyle(),
+    }, `${name} ↗`)
+  }
+  return createElement('button', {
+    key: path,
+    onClick: () => void revealArtifact(topicId, path),
+    style: chipStyle(),
+  }, `${name} · 目录`)
+}
+
+async function revealArtifact(topicId: string, path: string): Promise<void> {
+  await fetch(`${config.routes}/open`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ topic_id: topicId, path }),
+  }).catch(() => undefined)
+}
+
+function formatTime(value: string | undefined): string {
+  return value === undefined ? '—' : value.slice(0, 16).replace('T', ' ')
+}
+
+function chipStyle(): Record<string, string | number> {
+  return {
+    padding: '2px 8px',
+    borderRadius: 999,
+    border: '1px solid rgba(127,127,127,.35)',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontSize: 11,
+    textDecoration: 'none',
+    display: 'inline-flex',
+    alignItems: 'center',
+  }
 }
 
 function buttonStyle(): Record<string, string | number> {

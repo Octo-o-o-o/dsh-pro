@@ -209,7 +209,7 @@ export class ResearchEngine {
 
         let round = pending ?? topic.rounds.find(item => item.n === n)
         if (round === undefined) {
-          round = { n, files: 0 }
+          round = { n, files: 0, attempts: 0 }
           topic.rounds.push(round)
           const stored = n === 1
             ? await this.options.store.readQuestion(topic, 0)
@@ -231,7 +231,10 @@ export class ResearchEngine {
         const fetched = await this.waitAnswer(round, signal)
         if (fetched === undefined) return
         await this.options.store.writeAnswer(topic, n, fetched.answer)
-        await this.options.store.writeArtifacts(topic, n, fetched)
+        const written = await this.options.store.writeArtifacts(topic, n, fetched)
+        if (written.length > 0) {
+          round.artifacts = [...new Set([...(round.artifacts ?? []), ...written])]
+        }
         round.answeredAt = new Date().toISOString()
         await this.transition(topic, 'answered')
         this.emit({ type: 'answered', topicId: topic.id, round: n })
@@ -257,6 +260,7 @@ export class ResearchEngine {
       fallbackFiles = allFiles
     }
     round.files = files.length
+    round.attempts = (round.attempts ?? 0) + 1
     const result: SubmitResult = await this.options.transport.submit({
       topicId: topic.id,
       round: round.n,

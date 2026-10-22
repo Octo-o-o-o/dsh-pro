@@ -33,6 +33,10 @@ export interface RoundRecord {
   files: number
   fingerprint?: string
   submissionId?: string
+  /** How many submits this round has made; 1 means no retry yet. */
+  attempts?: number
+  /** Topic-relative artifacts produced by this round. */
+  artifacts?: string[]
 }
 
 export interface Topic {

@@ -71,6 +71,6 @@ for (const directory of ['research', 'design']) {
   await new Promise(resolve => setTimeout(resolve, 150))
 
   assert.equal(captured.tools, 1, `${manifest.name}: one tool`)
-  assert.equal(captured.routes, 4, `${manifest.name}: four routes`)
+  assert.equal(captured.routes, 4, `${manifest.name}: six routes`)
   console.log(`bundle smoke ok: ${manifest.name} ${JSON.stringify({ ...captured, clientSlots: slots.length, clientRequests: requests })}`)
 }
