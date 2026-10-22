@@ -145,7 +145,11 @@ export class ChatGptWebTransport implements Transport {
 
       await composer.fill(request.brief)
       const send = await firstVisible(page, SELECTORS.sendButton, 15_000)
-      if (send === undefined) throw new TransportError('send button not found', 'ui')
+      if (send === undefined) {
+        const composerText = await composer.innerText().catch(() => '')
+        console.error('SEND_DEBUG', JSON.stringify({ url: page.url(), composerText }))
+        throw new TransportError(`send button not found (composer ${composerText.length} chars)`, 'ui')
+      }
       await send.click()
 
       // A new chat first gets a local id and only later the server-assigned

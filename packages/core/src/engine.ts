@@ -214,7 +214,7 @@ export class ResearchEngine {
             ? await this.options.store.readQuestion(topic, 0)
             : await this.options.store.readQuestion(topic, n)
           const brief = stored ?? this.followUpBrief(topic)
-          if (stored === undefined) await this.options.store.writeQuestion(topic, n, brief)
+          if (n === 1 || stored === undefined) await this.options.store.writeQuestion(topic, n, brief)
           await this.transition(topic, 'uploading')
         }
 

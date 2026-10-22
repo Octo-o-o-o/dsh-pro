@@ -119,6 +119,8 @@ describe('engine', () => {
     expect(final.status).toBe('completed')
     expect(final.rounds).toHaveLength(2)
     expect(transport.submits).toHaveLength(2)
+    expect(transport.submits[0]?.brief).toContain('brief body')
+    expect(transport.submits[1]?.brief).toContain('继续主题')
     const dir = await store.dirOf(topic.id)
     const document = await readFile(join(dir, 'final.md'), 'utf8')
     expect(document).toContain('summary 2')
