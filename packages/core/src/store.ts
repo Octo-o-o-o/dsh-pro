@@ -42,8 +42,11 @@ function sanitizeSegment(value: string): string {
 
 export class ResearchStore {
   private dirs = new Map<string, string>()
+  private readonly options: StoreOptions
 
-  constructor(private readonly options: StoreOptions) {}
+  constructor(options: StoreOptions) {
+    this.options = options
+  }
 
   rootDir(): string {
     if (this.options.mode === 'local') {

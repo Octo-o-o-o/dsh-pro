@@ -125,13 +125,16 @@ export interface PollResult {
 export type TransportFailure = 'login' | 'upload' | 'ui' | 'network' | 'worker' | 'timeout'
 
 export class TransportError extends Error {
+  readonly failure: TransportFailure
+
   constructor(
     message: string,
-    readonly failure: TransportFailure,
+    failure: TransportFailure,
     options?: { cause?: unknown },
   ) {
     super(message, options)
     this.name = 'TransportError'
+    this.failure = failure
   }
 }
 

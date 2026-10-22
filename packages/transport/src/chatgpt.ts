@@ -51,8 +51,11 @@ async function firstVisible(page: Page, selector: string, timeoutMs: number): Pr
 export class ChatGptWebTransport implements Transport {
   private context?: BrowserContext
   private readonly submissions = new Map<string, Submission>()
+  private readonly options: ChatGptTransportOptions
 
-  constructor(private readonly options: ChatGptTransportOptions) {}
+  constructor(options: ChatGptTransportOptions) {
+    this.options = options
+  }
 
   get appUrl(): string {
     return this.options.appUrl ?? 'https://chatgpt.com/'

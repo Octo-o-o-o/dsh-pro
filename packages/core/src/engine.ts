@@ -40,9 +40,11 @@ export class ResearchEngine {
   private active?: ActiveRun
   private runs = new Map<string, ActiveRun>()
   private nextBrief = new Map<string, string | undefined>()
+  private readonly options: EngineOptions
   private readonly now: () => number
 
-  constructor(private readonly options: EngineOptions) {
+  constructor(options: EngineOptions) {
+    this.options = options
     this.now = options.now ?? (() => Date.now())
   }
 
