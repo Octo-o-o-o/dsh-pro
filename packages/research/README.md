@@ -10,13 +10,13 @@
 dsh plugin --profile desktop add chatgpt-pro-research
 ```
 
-安装后在 DSH 设置页填写轮次上限、记录位置（project / local）、原始答复目录与浏览器 profile。首次使用先登录一次：
+安装后在 DSH 设置页填写轮次上限、记录位置（project / local）与原始答复目录。网页通道固定单账号、单会话，使用本机 Google Chrome 和一个共享 profile；不支持多账号切换。首次使用先登录一次：
 
 ```text
 让 agent 调用 pro_research(action="login")
 ```
 
-弹出一个独立 Chrome 窗口，登录 ChatGPT 后关闭即可；登录态保存在 `~/.dsh/pro-research/browser`（与 GPT-Image Design 共用）。
+弹出一个独立 Chrome 窗口，登录 ChatGPT 后关闭即可；登录态保存在 `~/.dsh/pro-research/browser`（两个插件、一个账号共用）。
 
 ## 使用
 

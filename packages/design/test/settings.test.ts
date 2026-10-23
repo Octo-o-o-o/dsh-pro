@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { apply, resolveDesignConfig } from '../src/index.ts'
+import { resolveResearchConfig } from '../../research/src/index.ts'
 
 const cleanups: string[] = []
 
@@ -30,6 +31,13 @@ function fakeContext(tools: Tool[]): unknown {
 }
 
 describe('design settings', () => {
+  it('shares one fixed Chrome profile across both plugins', () => {
+    const design = resolveDesignConfig({})
+    const research = resolveResearchConfig({})
+    expect(design.browser.profileDir).toBe(research.browser.profileDir)
+    expect(design.browser.profileDir).toMatch(/pro-research[\\/]browser$/)
+  })
+
   it('maps flat settings into the image config and falls back to the environment key', () => {
     const previous = process.env.GPT_IMAGE_API_KEY
     try {

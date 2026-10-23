@@ -291,6 +291,20 @@ describe('engine', () => {
     expect(await readFile(join(dir, 'rounds', '02-question.md'), 'utf8')).toContain('follow-up brief')
   })
 
+  it('hands a capped result to review and can return it', async () => {
+    const { engine } = await harness({ doneAt: 99, rounds: 1 })
+    const topic = await engine.start(card({ rounds: 1 }))
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('capped')
+
+    const reviewing = await engine.markReviewing(topic.id)
+    expect(reviewing.status).toBe('reviewing')
+    const returned = await engine.cancelReview(topic.id)
+    expect(returned.status).toBe('capped')
+    const accepted = await engine.accept(topic.id)
+    expect(accepted.status).toBe('completed')
+  })
+
   it('accepts a capped topic as completed', async () => {
     const { engine } = await harness({ doneAt: 99, rounds: 1 })
     const topic = await engine.start(card({ rounds: 1 }))

@@ -12,6 +12,7 @@ export type Status =
   | 'adjudicating'
   | 'completed'
   | 'capped'
+  | 'reviewing'
   | 'stalled'
   | 'failed'
   | 'cancelled'

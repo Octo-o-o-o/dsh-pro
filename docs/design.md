@@ -19,7 +19,7 @@
 - DSH 里一条命令发起，后台无人值守跑完多轮；侧边栏可看状态与历史。
 - 材料一次列清、逐文件核对；已提交内容可选让 ChatGPT 自己读仓库，未提交内容才上传。
 - 记录按项目归档，覆盖选项可配置（仓库内或本机），follow-up 串在同一条主题下。
-- 单通道起步：一个浏览器 profile、一条会话链、一个执行队列。
+- 单通道起步：一个浏览器 profile、一条会话链、一个执行队列；浏览器固定为本机 Google Chrome，两个插件共享同一个 profile。
 
 非目标（第一阶段不做）：
 
@@ -128,7 +128,7 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 - `apply(ctx)` 注册服务、工具、设置页与远程方法；`ctx.effect()` 负责停 worker、关队列。
 - 工具只有一个入口：`pro_research(action: start|status|cancel|resume|list, ...)`，减少模型的选择面。
 - 技能通过 `ctx.skills.registerProvider` 注册（rank 350），body 从包内 `resources/skills/` 读取，不写用户目录、不复制文件。
-- 设置用 Schemastery schema；登录态只存在独立浏览器 profile，不进配置。
+- 设置用 Schemastery schema；登录态只存在共享的本机 Chrome profile，不进配置，也不允许按插件切换 profile。
 
 ## 6. 配置
 
@@ -136,7 +136,7 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `channel` | `web-pro` | 第一阶段固定 |
+| `channel` | `web` | 研究固定 `web`；设计插件可选 `web` / `api` |
 | `model` | `pro` | `pro` / `thinking`；启动时 `probe` 校验，不可用直接拒绝启动，不静默降级 |
 | `rounds` | `3` | 1–10，主题默认轮次上限 |
 | `stallMinutes` | `45` | 无进展判定：仅在生成指示消失且无完整答复时计时 |
@@ -149,7 +149,7 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 | `secretGlobs` | 见 6.4 | 禁止外发的路径模式 |
 | `rawAnswers` | `local` | 原始答复保存位置：`local` / `repo`；公开仓库强制 `local` |
 | `rawAnswersDir` | `~/.dsh/pro-research/raw` | `local` 模式的原文目录，可改绝对路径 |
-| `browser.profileDir` | `~/.dsh/pro-research/browser` | 独立 profile |
+| `browser.profileDir` | 固定 `~/.dsh/pro-research/browser` | 两个插件共享的 Chrome profile，不随设置切换 |
 | `browser.headless` | `false` | 无头仅用于自检，默认关闭 |
 
 ### 6.2 项目覆盖
@@ -286,7 +286,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
       "files": 3
     }
   ],
-  "channel": "web-pro",
+  "channel": "web",
   "model": "pro",
   "artifacts": ["final.md"]
 }
@@ -328,7 +328,7 @@ draft → queued → uploading → submitted → waiting → answered → adjudi
 ## 14. 安全与合规
 
 - 这是网页自动化，不是官方 API；ToS、风控与账号风险写进 README 首屏与设置页。
-- 登录态只存在独立浏览器 profile（权限 700），不进仓库、不进设置、不进日志。
+- 登录态只存在共享的本机 Chrome profile（权限 700），不进仓库、不进设置、不进日志。
 - 日志脱敏：不记录完整 prompt/答复，只记录哈希、长度与路径；调试快照保存在本机运行目录，默认 7 天后清理。
 - 插件声明最小能力：`fs-read`、`fs-write`（记录与材料）、`network`（浏览器）、`shell`（启动 worker）。
 - 不绕过验证码、2FA、付费墙；登录必须由用户手动完成。

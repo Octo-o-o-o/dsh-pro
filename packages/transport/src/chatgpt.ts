@@ -7,6 +7,13 @@ import { SELECTORS } from './selectors.ts'
 import { advanceCompletion } from './completion.ts'
 import { parseDataUrlImage } from './assets.ts'
 
+/**
+ * The web channel drives the installed Google Chrome only. There is no Edge or
+ * bundled-Chromium fallback: a single browser keeps one account and one profile
+ * across both plugins.
+ */
+const CHROME_CHANNEL = 'chrome'
+
 export interface ChatGptTransportOptions {
   profileDir: string
   headless?: boolean
@@ -109,7 +116,7 @@ export class ChatGptWebTransport implements Transport {
       args: ['--disable-blink-features=AutomationControlled'],
     }
     try {
-      const context = await chromium.launchPersistentContext(this.options.profileDir, { ...base, channel: 'chrome' })
+      const context = await chromium.launchPersistentContext(this.options.profileDir, { ...base, channel: CHROME_CHANNEL })
       context.on('close', () => {
         if (this.context === context) this.context = undefined
       })
@@ -117,7 +124,7 @@ export class ChatGptWebTransport implements Transport {
       return context
     } catch (error) {
       throw new TransportError(
-        `cannot launch Chrome with profile ${this.options.profileDir}; install Google Chrome or pass browser.headless=false plus a Playwright browser. ${error instanceof Error ? error.message : String(error)}`,
+        `cannot launch Google Chrome with profile ${this.options.profileDir}; install Google Chrome (the web channel has no Edge/Chromium fallback). ${error instanceof Error ? error.message : String(error)}`,
         'worker',
         { cause: error },
       )

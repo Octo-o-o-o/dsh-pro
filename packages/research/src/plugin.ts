@@ -54,7 +54,6 @@ const baseFields = {
   maxTotalMB: z.number().default(24).description('单轮附件总大小（MB）。'),
   rawAnswers: z.string().default('local').description('原始答复保存位置：local（本机目录）或 repo（随项目）。公开仓库请用 local。'),
   rawAnswersDir: z.string().default('').description('local 模式的原文目录；留空用 ~/.dsh/pro-research/raw。'),
-  browserProfile: z.string().default('').description('独立浏览器 profile 目录；留空用 ~/.dsh/pro-research/browser。'),
   headless: z.boolean().default(false).description('无头模式仅建议用于自检；首次登录必须有头。'),
   judgeProvider: z.string().default('').description('自动裁决使用的 LLM provider；留空则跑满轮次。'),
   judgeModel: z.string().default('').description('自动裁决使用的 model；与 provider 同时填写才启用。'),
@@ -102,7 +101,6 @@ export interface ResearchConfig {
   maxTotalMB?: number
   rawAnswers?: string
   rawAnswersDir?: string
-  browserProfile?: string
   headless?: boolean
   judgeProvider?: string
   judgeModel?: string
@@ -220,8 +218,9 @@ function resolveImageConfig(base: ImageApiConfig, config: ResearchConfig | undef
 
 export function resolvePluginConfig(spec: PluginSpec, config: ResearchConfig | undefined): ProConfig {
   const base = defaultConfig(join(homeDir(), spec.homeSubdir))
-  // Both plugins share one logged-in ChatGPT profile; existing installs keep
-  // their session because the old directory is reused.
+  // One ChatGPT account, one session: both plugins share the same installed
+  // Chrome profile. Deliberately not configurable, so a second plugin (or a
+  // copied settings file) cannot silently open a second account.
   base.browser = { ...base.browser, profileDir: join(homeDir(), 'pro-research', 'browser') }
   const design = spec.topicType === 'design'
   // The api channel is a design feature; research stays on the web session even
@@ -244,10 +243,7 @@ export function resolvePluginConfig(spec: PluginSpec, config: ResearchConfig | u
     ...(config?.maxTotalMB !== undefined ? { maxTotalMB: config.maxTotalMB } : {}),
     ...(config?.rawAnswers === 'repo' || config?.rawAnswers === 'local' ? { rawAnswers: config.rawAnswers } : {}),
     ...(config?.rawAnswersDir !== undefined && config.rawAnswersDir !== '' ? { rawAnswersDir: config.rawAnswersDir } : {}),
-    ...(config?.browserProfile !== undefined && config.browserProfile !== ''
-      ? { browser: { ...base.browser, profileDir: config.browserProfile } }
-      : {}),
-    ...(config?.headless !== undefined ? { browser: { ...base.browser, ...(config.browserProfile ? { profileDir: config.browserProfile } : {}), headless: config.headless } } : {}),
+    ...(config?.headless !== undefined ? { browser: { ...base.browser, headless: config.headless } } : {}),
     ...(config?.judgeProvider !== undefined && config.judgeProvider !== '' ? { judgeProvider: config.judgeProvider } : {}),
     ...(config?.judgeModel !== undefined && config.judgeModel !== '' ? { judgeModel: config.judgeModel } : {}),
   }
@@ -408,7 +404,7 @@ class ProResearchService {
           void this.notifyFinished(event.topicId, event.status)
         }
         if (event.type === 'finished' && event.status === 'capped' && this.config.autoReview) {
-          void this.notifyCappedReview(event.topicId)
+          void this.autoReviewRequest(event.topicId)
         }
       },
     })
@@ -526,6 +522,15 @@ class ProResearchService {
     } catch {
       // Notification is best-effort; the sidebar and records remain the truth.
     }
+  }
+
+  /** Automatic capped handoff: only a live session, and only mark it reviewing after delivery succeeds. */
+  private async autoReviewRequest(id: string): Promise<void> {
+    const wake = await this.notifyCappedReview(id)
+    if (!wake.ok) return
+    const entry = await this.entryFor(id)
+    if (entry === undefined) return
+    await this.engineFor(entry.root, entry.mode).markReviewing(id).catch(() => undefined)
   }
 
   /** Ask the originating agent to inspect a capped/failed result and decide. */
@@ -820,11 +825,18 @@ class ProResearchService {
     }
     if (action === 'review') {
       const topic = await this.storeAt(entry.root, entry.mode).load(id)
-      if (topic.status !== 'capped' && topic.status !== 'failed' && topic.status !== 'stalled') {
-        throw new Error(`topic ${id} is ${topic.status}; only capped/failed/stalled topics need review`)
+      if (topic.status !== 'capped' && topic.status !== 'reviewing' && topic.status !== 'failed' && topic.status !== 'stalled') {
+        throw new Error(`topic ${id} is ${topic.status}; only capped/reviewing/failed/stalled topics need review`)
       }
       const wake = await this.notifyCappedReview(id, true)
+      if (wake.ok && (topic.status === 'capped' || topic.status === 'reviewing')) {
+        const reviewing = await engine.markReviewing(id)
+        return { ...this.view(reviewing), wake }
+      }
       return { ...this.view(topic), wake }
+    }
+    if (action === 'review_cancel') {
+      return this.view(await engine.cancelReview(id))
     }
     if (action === 'human_check') {
       if (conclusion === undefined) throw new Error('conclusion is required')
@@ -834,10 +846,10 @@ class ProResearchService {
     }
     if (action === 'regenerate') {
       const topic = await this.storeAt(entry.root, entry.mode).load(id)
-      const finished = topic.status === 'completed' || topic.status === 'capped'
+      const finished = topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing'
       const recoverable = topic.status === 'failed' || topic.status === 'stalled'
       if (!finished && !recoverable) {
-        throw new Error(`topic ${id} is ${topic.status}; regenerate needs completed/capped or failed/stalled`)
+        throw new Error(`topic ${id} is ${topic.status}; regenerate needs completed/capped/reviewing or failed/stalled`)
       }
       const feedback = (note ?? '').trim()
       const brief = [
@@ -853,7 +865,7 @@ class ProResearchService {
         feedback,
       ))
     }
-    throw new Error('action must be resume, cancel, accept, review, wake, human_check or regenerate')
+    throw new Error('action must be resume, cancel, accept, review, review_cancel, wake, human_check or regenerate')
   }
 
   async handle(args: Record<string, unknown>, exec: ToolRunContext): Promise<Record<string, unknown>> {
@@ -910,6 +922,8 @@ class ProResearchService {
         return await this.act(this.requireId(args), 'wake')
       case 'review':
         return await this.act(this.requireId(args), 'review')
+      case 'review_cancel':
+        return await this.act(this.requireId(args), 'review_cancel')
       case 'regenerate':
         return await this.act(this.requireId(args), 'regenerate', undefined, typeof args.note === 'string' ? args.note : '')
       case 'probe': {
@@ -936,7 +950,7 @@ class ProResearchService {
         }
         return { login: await (this.transportFor() as ChatGptWebTransport).login() }
       default:
-        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, review, wake, regenerate, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, review, review_cancel, wake, regenerate, probe or login')
     }
   }
 
@@ -1059,6 +1073,7 @@ class ProResearchService {
         const engine = this.engineFor(entry.root, entry.mode)
         const recordedChannel: Channel = topic.channel === 'api' ? 'api' : 'web'
         if (recordedChannel !== this.config.channel) {
+          if (topic.status === 'reviewing') await engine.cancelReview(entry.id)
           if (active.has(topic.status)) {
             await engine.interrupt(entry.id, `这条记录来自 ${recordedChannel} 通道，当前配置为 ${this.config.channel}；已停止自动恢复，请核对后重新发起`)
             await this.notifyStalled(entry.id, 'unknown_submission')
@@ -1066,6 +1081,7 @@ class ProResearchService {
           continue
         }
         if (this.config.channel === 'api') {
+          if (topic.status === 'reviewing') await engine.cancelReview(entry.id)
           if (active.has(topic.status)) {
             await engine.interrupt(entry.id, 'API 生图请求在 DSH 重启后已丢失，本轮不会自动重发；已生成的图片见 artifacts，确认后可重新发起或取消')
             await this.notifyStalled(entry.id, 'unknown_submission')
@@ -1084,6 +1100,8 @@ class ProResearchService {
         } else if (topic.status === 'draft') {
           await engine.interrupt(entry.id, 'DSH 在启动阶段中断；已转入人工核对')
           await this.notifyStalled(entry.id, 'unknown_submission')
+        } else if (topic.status === 'reviewing') {
+          await engine.cancelReview(entry.id)
         } else if (active.has(topic.status)) {
           await engine.interrupt(entry.id, 'DSH 重启时任务尚未完成；已停止自动重发，请核对后恢复')
           await this.notifyStalled(entry.id, 'unknown_submission')
@@ -1396,19 +1414,19 @@ function toolDescription(spec: PluginSpec, config: ProConfig): string {
         `用 OpenAI 兼容生图 API（${config.image.model}）按方向生成设计图，保存到本地并出现在设计面板；此通道只出图，不产出 HTML demo。`,
         'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径、模型）；用户确认后传 confirmed=true。',
         'key 只读插件设置或环境变量 GPT_IMAGE_API_KEY，不要在会话里回显；probe 检查 base URL / key / 模型名。',
-        'action: start | continue | status | list | resume | cancel | human_check | accept | review | wake | regenerate | probe | login。',
+        'action: start | continue | status | list | resume | cancel | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
       ].join(' ')
     }
     return [
       '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
       'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-      'action: start | continue | status | list | resume | cancel | human_check | accept | review | wake | regenerate | probe | login。',
+      'action: start | continue | status | list | resume | cancel | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
     ].join(' ')
   }
   return [
     '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
     'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-    'action: start | continue | status | list | resume | cancel | human_check | accept | review | wake | regenerate | probe | login。',
+    'action: start | continue | status | list | resume | cancel | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
   ].join(' ')
 }
 
@@ -1436,7 +1454,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
     name: spec.tool,
     description: toolDescription(spec, resolved),
     parameters: {
-      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|review|wake|regenerate|probe|login' },
+      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|review|review_cancel|wake|regenerate|probe|login' },
       title: { type: 'string', description: '主题标题（start 必填）' },
       question: { type: 'string', description: '研究问题（start 必填）' },
       brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },

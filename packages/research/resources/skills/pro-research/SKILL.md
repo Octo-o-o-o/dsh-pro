@@ -10,6 +10,8 @@ short-description: Bounded, resumable web-Pro research with local records
 
 只在用户明确说「用 Pro 调研 / 让 Pro 看看 / Pro 设计」或同意你的提议时启动。普通问答、需要跑代码验证的任务、不能外发的材料，不要用。
 
+网页通道固定为**单账号、单会话**：两个插件共用本机 Google Chrome 与 `~/.dsh/pro-research/browser`，不并行多账号、不扇出、不合并多份答复；同一主题始终续原会话。
+
 ## 启动：先给研究卡，不要直接跑
 
 研究卡必须包含：

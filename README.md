@@ -16,7 +16,7 @@ dsh plugin --profile desktop add chatgpt-pro-research
 dsh plugin --profile desktop add gpt-image-design
 ```
 
-两个插件共用 `~/.dsh/pro-research/browser` 登录态，只需登录一次：
+两个插件共用 `~/.dsh/pro-research/browser` 登录态，只需登录一次。网页通道固定为单账号、单会话，浏览器用本机 Google Chrome：不做多账号并行、扇出或答复合并。
 
 ```text
 pro_research(action="login")        # 或 gpt_image_design(action="login")

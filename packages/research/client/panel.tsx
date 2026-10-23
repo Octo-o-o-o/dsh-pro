@@ -108,6 +108,7 @@ const STATUS_LABEL: Record<string, string> = {
   adjudicating: '裁决中',
   completed: '完成',
   capped: '待接受',
+  reviewing: '待原会话判断',
   stalled: '卡住',
   failed: '失败',
   cancelled: '已取消',
@@ -116,12 +117,13 @@ const STATUS_LABEL: Record<string, string> = {
 const STATUS_COLOR: Record<string, string> = {
   completed: '#2e7d32',
   capped: '#6a1b9a',
+  reviewing: '#3f7fbf',
   stalled: '#ed6c02',
   failed: '#c62828',
   cancelled: '#757575',
 }
 
-const ACTIVE = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating'])
+const ACTIVE = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating', 'reviewing'])
 
 const STALL_LABEL: Record<string, string> = {
   login: '登录失效',
@@ -297,6 +299,8 @@ function Panel(): ReturnType<typeof createElement> {
           const reason = wake?.reason ?? (wake === undefined ? '宿主未返回唤醒结果，请重启 DSH 后重试' : '原因未知')
           setNotice({ kind: 'error', text: `没能唤醒原会话：${reason}` })
         }
+      } else if (action === 'review_cancel') {
+        setNotice({ kind: 'ok', text: '已返回待接受' })
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
       }
@@ -365,8 +369,8 @@ function Panel(): ReturnType<typeof createElement> {
         `${STATUS_LABEL[topic.status] ?? topic.status} · ${topic.rounds}/${topic.rounds_cap} 轮`))))
 
   const hasArtifacts = (detail?.artifacts.length ?? 0) > 0
-  const canAccept = detail !== undefined && (detail.status === 'capped' || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts))
-  const canRegenerate = detail !== undefined && (detail.status === 'completed' || detail.status === 'capped' || detail.status === 'failed' || detail.status === 'stalled')
+  const canAccept = detail !== undefined && (detail.status === 'capped' || detail.status === 'reviewing' || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts))
+  const canRegenerate = detail !== undefined && (detail.status === 'completed' || detail.status === 'capped' || detail.status === 'reviewing' || detail.status === 'failed' || detail.status === 'stalled')
 
   const body = createElement('div', { style: { flex: 1, overflowY: 'auto', padding: 14, fontSize: 13, lineHeight: 1.6 } },
     error !== undefined ? createElement('div', { style: { color: '#c62828', marginBottom: 8 } }, `接口错误：${error}`) : undefined,
@@ -410,10 +414,13 @@ function Panel(): ReturnType<typeof createElement> {
             ? createElement('button', { onClick: () => { setRegenNote(''); setRegenOpen(true) }, style: buttonStyle() }, '重新生成')
             : undefined,
           canAccept
-            ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, detail?.status === 'capped' ? '接受结果' : '接受已有产物')
+            ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, detail?.status === 'capped' || detail?.status === 'reviewing' ? '接受结果' : '接受已有产物')
             : undefined,
-          detail.status === 'capped' || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts)
-            ? createElement('button', { onClick: () => void act('review'), style: buttonStyle() }, '请原会话判断')
+          detail.status === 'capped' || detail.status === 'reviewing' || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts)
+            ? createElement('button', { onClick: () => void act('review'), style: buttonStyle() }, detail.status === 'reviewing' ? '再次提醒原会话' : '请原会话判断')
+            : undefined,
+          detail.status === 'reviewing'
+            ? createElement('button', { onClick: () => void act('review_cancel'), style: buttonStyle() }, '返回待接受')
             : undefined,
           detail.status === 'completed'
             ? createElement('button', { onClick: () => void act('wake'), style: buttonStyle() }, '唤醒原会话')

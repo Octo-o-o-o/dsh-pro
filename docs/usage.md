@@ -13,7 +13,6 @@
 | `store` | project | 记录进仓库 `docs/research/`；`local` 进 `~/.dsh/pro-research/` |
 | `rawAnswers` | local | 原始答复默认只在本机；公开仓库保持 local |
 | `rawAnswersDir` | `~/.dsh/pro-research/raw` | 原文目录，可改绝对路径 |
-| `browserProfile` | `~/.dsh/pro-research/browser` | 独立浏览器 profile |
 | `headless` | false | 首次登录必须有头 |
 | `stallMinutes` | 45 | 无进展判定；生成中不计时 |
 | `maxRoundMinutes` | 90 | 单轮墙钟上限 |
@@ -24,6 +23,8 @@
 设计插件（`dsh-pro-design`）另有生图通道设置：`channel=web|api`，`api` 时填 `imageBaseUrl` / `imageApiKey` / `imageModel`（以及可选的 `imageSize` / `imageQuality` / `imageFormat` / `imageEdit` / `imageTimeoutSeconds`）。key 也可用环境变量 `GPT_IMAGE_API_KEY`；不需要登录，`gpt_image_design(action="probe")` 自检地址、key 与模型名。API 通道只出图片，不产出 HTML demo；`designs` 是每轮请求数（按服务商计费），未配置自动裁决时默认只跑 1 轮。详见 [gpt-image-design README](../packages/design/README.md)。
 
 设置页固定提示：运行期间 DSH 要开着（可最小化）；关掉后任务暂停、重开从回执恢复；锁屏尽力而为，不承诺关机跑完。
+
+网页通道固定为单账号、单会话：两个插件共用本机 Google Chrome 和同一个 profile `~/.dsh/pro-research/browser`，不提供多账号/多 profile 切换，也不合并多份答复。
 
 ### 登录一次
 

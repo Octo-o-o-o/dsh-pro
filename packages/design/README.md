@@ -17,7 +17,7 @@
 dsh plugin --profile desktop add gpt-image-design
 ```
 
-网页通道首次使用先登录（与研究插件共用同一浏览器 profile）：
+网页通道首次使用先登录（与研究插件共用同一个本机 Chrome profile、同一个 ChatGPT 账号；单账号、单会话，不做多账号并行）：
 
 ```text
 gpt_image_design(action="login")

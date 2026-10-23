@@ -10,6 +10,8 @@ short-description: Generate images and frontend demos through a web session or i
 
 只在用户明确说「出几张设计图 / 做个前端 demo / 让 ChatGPT 设计」或同意你的提议时启动。纯后端实现、需要跑代码验证的任务不要用。
 
+web 通道与研究插件共用同一个**本机 Chrome profile 和单账号**；一轮只在一个会话里提交，不做多账号并行，也不合并多份答复。
+
 ## 启动：先给设计卡
 
 设计卡必须包含：

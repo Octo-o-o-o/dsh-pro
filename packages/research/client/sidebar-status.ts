@@ -16,6 +16,7 @@ export interface SidebarStatusOptions {
 
 interface Counts {
   active: number
+  reviewing: number
   completed: number
   incomplete: number
   failed: number
@@ -27,7 +28,7 @@ function countTopics(
   topics: Array<{ topic_id?: string; status?: string; updated?: string }>,
   isSeen: (topic: { topic_id?: string; status?: string; updated?: string }) => boolean,
 ): Counts {
-  const counts: Counts = { active: 0, completed: 0, incomplete: 0, failed: 0 }
+  const counts: Counts = { active: 0, reviewing: 0, completed: 0, incomplete: 0, failed: 0 }
   for (const topic of topics) {
     switch (topic.status) {
       case 'queued':
@@ -37,6 +38,9 @@ function countTopics(
       case 'answered':
       case 'adjudicating':
         counts.active += 1
+        break
+      case 'reviewing':
+        counts.reviewing += 1
         break
       case 'completed':
         if (!isSeen(topic)) counts.completed += 1
@@ -62,6 +66,7 @@ interface BadgePart {
 
 const STATUS_TINT = {
   active: '#6f9fd0',
+  reviewing: '#5c88c4',
   incomplete: '#c39a4a',
   completed: '#5f9c7a',
   failed: '#c26a6a',
@@ -70,6 +75,7 @@ const STATUS_TINT = {
 function badgeParts(counts: Counts): BadgePart[] {
   const parts: BadgePart[] = []
   if (counts.active > 0) parts.push({ text: `${counts.active} 进行`, color: STATUS_TINT.active })
+  if (counts.reviewing > 0) parts.push({ text: `${counts.reviewing} 待判断`, color: STATUS_TINT.reviewing })
   if (counts.incomplete > 0) parts.push({ text: `${counts.incomplete} 待接受`, color: STATUS_TINT.incomplete })
   if (counts.completed > 0) parts.push({ text: `${counts.completed} 完成`, color: STATUS_TINT.completed })
   if (counts.failed > 0) parts.push({ text: `${counts.failed} 失败`, color: STATUS_TINT.failed })

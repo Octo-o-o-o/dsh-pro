@@ -167,13 +167,13 @@ export class ResearchEngine {
     return topic
   }
 
-  /** Human accepts a capped or artifact-bearing failed/stalled result. */
+  /** Human accepts a capped/reviewing or artifact-bearing failed/stalled result. */
   async accept(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
     if (topic.status === 'completed') return topic
     const withArtifacts = (topic.status === 'failed' || topic.status === 'stalled') && topic.artifacts.length > 0
-    if (topic.status !== 'capped' && !withArtifacts) {
-      throw new Error(`topic ${id} is ${topic.status}; only capped or failed/stalled with artifacts can be accepted`)
+    if (topic.status !== 'capped' && topic.status !== 'reviewing' && !withArtifacts) {
+      throw new Error(`topic ${id} is ${topic.status}; only capped/reviewing or failed/stalled with artifacts can be accepted`)
     }
     const existing = await this.options.store.readFinal(topic)
     const text = existing === undefined
@@ -185,10 +185,28 @@ export class ResearchEngine {
     return topic
   }
 
+  /** Move a capped topic to "waiting for the originating agent to judge". */
+  async markReviewing(id: string): Promise<Topic> {
+    const topic = await this.options.store.load(id)
+    if (topic.status === 'reviewing') return topic
+    if (topic.status !== 'capped') throw new Error(`topic ${id} is ${topic.status}; only capped can be handed to review`)
+    await this.transition(topic, 'reviewing')
+    return topic
+  }
+
+  /** Return a reviewing topic to the human acceptance queue. */
+  async cancelReview(id: string): Promise<Topic> {
+    const topic = await this.options.store.load(id)
+    if (topic.status === 'capped') return topic
+    if (topic.status !== 'reviewing') throw new Error(`topic ${id} is ${topic.status}; only reviewing can return to capped`)
+    await this.transition(topic, 'capped', { stopReason: '原会话判断请求已撤回；等待人工接受' })
+    return topic
+  }
+
   /** Mark an interrupted active topic for human review without resubmitting. */
   async interrupt(id: string, reason: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
-    if (topic.status === 'completed' || topic.status === 'capped' || topic.status === 'cancelled') return topic
+    if (topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing' || topic.status === 'cancelled') return topic
     if (topic.status === 'stalled') return topic
     await this.transition(topic, 'stalled', { stallReason: 'unknown_submission', stopReason: reason })
     return topic
@@ -217,7 +235,7 @@ export class ResearchEngine {
     if (recoverable && last !== undefined && last.answeredAt === undefined) {
       return await this.continue(id, brief, materials)
     }
-    const finished = topic.status === 'completed' || topic.status === 'capped' || recoverable
+    const finished = topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing' || recoverable
     if (!finished) throw new Error(`topic ${id} is ${topic.status}; regenerate needs a terminal topic`)
 
     if (topic.generations === undefined) {
@@ -258,10 +276,10 @@ export class ResearchEngine {
     const topic = await this.options.store.load(id)
     this.assertChannel(topic)
     if (brief.trim() === '') throw new Error('brief is required')
-    const finished = topic.status === 'completed' || topic.status === 'capped'
+    const finished = topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing'
     const recoverable = topic.status === 'failed' || topic.status === 'stalled'
     if (!finished && !recoverable) {
-      throw new Error(`topic ${id} is ${topic.status}; only completed/capped or failed/stalled topics accept a follow-up`)
+      throw new Error(`topic ${id} is ${topic.status}; only completed/capped/reviewing or failed/stalled topics accept a follow-up`)
     }
     const last = topic.rounds[topic.rounds.length - 1]
     const retryCurrent = recoverable && last !== undefined && last.answeredAt === undefined
@@ -379,7 +397,7 @@ export class ResearchEngine {
           await this.adjudicate(topic, last)
           if (signal.aborted) return
           topic = await this.options.store.load(id)
-          if (topic.status === 'completed' || topic.status === 'capped') return
+          if (topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing') return
           continue
         }
 
