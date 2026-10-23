@@ -1,0 +1,21 @@
+{
+  "n": 1,
+  "submissionId": "d384875d-cf34-4b03-9886-de4cf674ec2e",
+  "fingerprint": "c32850319e9463f10b4ca8327a0763eb8e743c0589407c958f07b5f42541a661",
+  "conversationUrl": "https://chatgpt.com/c/6adafa6f-1d4c-83e9-981b-1fdd4e49cb36",
+  "attachments": [
+    "engine.ts",
+    "types.ts",
+    "store.ts",
+    "materials.ts",
+    "config.ts",
+    "state.ts",
+    "plugin.ts",
+    "panel.tsx",
+    "chatgpt.ts",
+    "openai-images.ts",
+    "engine.test.ts",
+    "adjudication.md"
+  ],
+  "submittedAt": "2026-10-23T06:10:56.998Z"
+}

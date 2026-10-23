@@ -1,5 +1,9 @@
 # dsh-pro website
 
+> 人工裁决：选定 A「原生工作台」。设计结论与落地建议见 [`design.md`](design.md)；可直接双击的 demo 见 [`artifacts/round-03/code-01.html`](artifacts/round-03/code-01.html)。
+>
+> v1.1（2026-10-23）：顶部导航改为两个插件名；去除比喻文案，改为直白说明；加强分区底色与边界。
+
 - 状态：completed
 - 停止依据：未配置裁决模型，跑满轮次后交付
 - 通道：web-pro

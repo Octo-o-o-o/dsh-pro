@@ -1,0 +1,632 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile } from 'node:fs/promises'
+import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
+import type { ArchiveAsset, CodeBlock, FetchedAnswer, ImageAsset, PollResult, ReattachRequest, ReattachResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
+import { TransportError } from 'dsh-pro-core'
+import { SELECTORS } from './selectors.ts'
+import { advanceCompletion } from './completion.ts'
+import { parseDataUrlImage } from './assets.ts'
+
+/**
+ * The web channel drives the installed Google Chrome only. There is no Edge or
+ * bundled-Chromium fallback: a single browser keeps one account and one profile
+ * across both plugins.
+ */
+const CHROME_CHANNEL = 'chrome'
+
+export interface ChatGptTransportOptions {
+  profileDir: string
+  headless?: boolean
+  appUrl?: string
+  loginTimeoutMs?: number
+  /** Per-poll wait; the engine decides when the round as a whole is too old. */
+  pollSliceMs?: number
+}
+
+interface Submission {
+  page: Page
+  request: SubmitRequest
+  startedAt: number
+  lastText: string
+  stable: number
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
+function briefMarkers(brief: string): string[] {
+  const text = brief
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#>*_`|~]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (text === '') return []
+  const sentences = text
+    .split(/[。！？!?；;\n]/)
+    .map(item => item.trim())
+    .filter(item => item.length >= 8)
+  const candidates = [...new Set([...sentences, text])]
+    .sort((left, right) => right.length - left.length)
+    .map(item => item.slice(0, 80))
+  return candidates.slice(0, 3)
+}
+
+function extensionFor(mime: string): string {  if (mime.includes('jpeg')) return 'jpg'
+  if (mime.includes('webp')) return 'webp'
+  if (mime.includes('gif')) return 'gif'
+  if (mime.includes('svg')) return 'svg'
+  return 'png'
+}
+
+function isAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted === true
+}
+
+async function firstVisible(page: Page, selector: string, timeoutMs: number): Promise<Locator | undefined> {
+  const locator = page.locator(selector).first()
+  try {
+    await locator.waitFor({ state: 'visible', timeout: timeoutMs })
+    return locator
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Drives one persistent, isolated Chrome profile against chatgpt.com.
+ *
+ * The class is deliberately single-flight: one page per submission, and the
+ * engine queues topics, so two runs never share the composer. All failures
+ * are mapped to {@link TransportError} families the engine understands.
+ */
+export class ChatGptWebTransport implements Transport {
+  private context?: BrowserContext
+  private launching?: Promise<BrowserContext>
+  private readonly submissions = new Map<string, Submission>()
+  /** One visible tab per topic so later rounds update the same conversation. */
+  private readonly topicPages = new Map<string, Page>()
+  private readonly options: ChatGptTransportOptions
+
+  constructor(options: ChatGptTransportOptions) {
+    this.options = options
+  }
+
+  get appUrl(): string {
+    return this.options.appUrl ?? 'https://chatgpt.com/'
+  }
+
+  private async ensureContext(): Promise<BrowserContext> {
+    if (this.context !== undefined) return this.context
+    if (this.launching !== undefined) return this.launching
+    this.launching = this.launchContext()
+    try {
+      return await this.launching
+    } finally {
+      this.launching = undefined
+    }
+  }
+
+  private async launchContext(): Promise<BrowserContext> {
+    await mkdir(this.options.profileDir, { recursive: true })
+    const base = {
+      headless: this.options.headless ?? false,
+      acceptDownloads: true,
+      viewport: { width: 1440, height: 960 },
+      args: ['--disable-blink-features=AutomationControlled'],
+    }
+    try {
+      const context = await chromium.launchPersistentContext(this.options.profileDir, { ...base, channel: CHROME_CHANNEL })
+      context.on('close', () => {
+        if (this.context === context) this.context = undefined
+      })
+      this.context = context
+      return context
+    } catch (error) {
+      throw new TransportError(
+        `cannot launch Google Chrome with profile ${this.options.profileDir}; install Google Chrome (the web channel has no Edge/Chromium fallback). ${error instanceof Error ? error.message : String(error)}`,
+        'worker',
+        { cause: error },
+      )
+    }
+  }
+
+  async probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[] }> {
+    const context = await this.ensureContext()
+    const page = await context.newPage()
+    try {
+      await page.goto(this.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      const composer = await firstVisible(page, SELECTORS.composer, 20_000)
+      if (composer === undefined) {
+        const login = await firstVisible(page, SELECTORS.loginLink, 2_000)
+        return { ok: false, loggedIn: login === undefined ? false : true, model: '', available: [] }
+      }
+      const model = await this.readModel(page)
+      return { ok: true, loggedIn: true, model, available: model === '' ? [] : [model] }
+    } catch (error) {
+      throw new TransportError(`probe failed: ${error instanceof Error ? error.message : String(error)}`, 'network', { cause: error })
+    } finally {
+      await page.close().catch(() => undefined)
+    }
+  }
+
+  /** Interactive first login: opens the window and waits for the composer. */
+  async login(timeoutMs = this.options.loginTimeoutMs ?? 300_000): Promise<{ ok: boolean }> {
+    const context = await this.ensureContext()
+    const page = await context.newPage()
+    await page.goto(this.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    const composer = await firstVisible(page, SELECTORS.composer, timeoutMs)
+    if (composer === undefined) {
+      throw new TransportError('login was not completed before the timeout', 'login')
+    }
+    await page.close()
+    return { ok: true }
+  }
+
+  async submit(request: SubmitRequest): Promise<SubmitResult> {
+    const context = await this.ensureContext()
+    const existing = this.topicPages.get(request.topicId)
+    const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
+    this.topicPages.set(request.topicId, page)
+    try {
+      const target = request.session?.conversationUrl ?? this.appUrl
+      let reused = request.session?.conversationUrl !== undefined
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      let composer = await firstVisible(page, SELECTORS.composer, 30_000)
+      if (composer === undefined && reused) {
+        // The stored conversation is gone (deleted/another account): start a
+        // fresh chat; the engine's fallback material list keeps the round whole.
+        reused = false
+        await page.goto(this.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+        composer = await firstVisible(page, SELECTORS.composer, 30_000)
+      }
+      if (composer === undefined) throw new TransportError('composer not found; the session is probably logged out', 'login')
+
+      await this.trySelectModel(page, request.model)
+
+      const attachmentsToSend = reused ? request.files : (request.fallbackFiles ?? request.files)
+      if (attachmentsToSend.length > 0) {
+        const input = page.locator(SELECTORS.fileInput).first()
+        try {
+          await input.setInputFiles(attachmentsToSend, { timeout: 60_000 })
+        } catch (error) {
+          throw new TransportError(`cannot attach materials: ${error instanceof Error ? error.message : String(error)}`, 'upload', { cause: error })
+        }
+        await this.waitForAttachmentCards(page, attachmentsToSend)
+      }
+
+      await composer.fill(request.brief)
+      const send = await firstVisible(page, SELECTORS.sendButton, 15_000)
+      if (send === undefined) {
+        const composerText = await composer.innerText().catch(() => '')
+        console.error('SEND_DEBUG', JSON.stringify({ url: page.url(), composerText }))
+        throw new TransportError(`send button not found (composer ${composerText.length} chars)`, 'ui')
+      }
+      await send.click()
+
+      // A new chat first gets a local id and only later the server-assigned
+      // /c/<uuid> URL. Persist the addressable one, otherwise follow-ups
+      // cannot reopen the thread.
+      const conversationUrl = await this.waitForConversationUrl(page, 20_000)
+      const attachments = attachmentsToSend.map(file => file.split(/[\\/]/).pop() ?? file)
+      const submissionId = randomUUID()
+      const fingerprint = sha256(`${conversationUrl}\n${request.brief}\n${attachments.join('\n')}`)
+      this.submissions.set(submissionId, {
+        page,
+        request,
+        startedAt: Date.now(),
+        lastText: '',
+        stable: 0,
+      })
+      return { submissionId, fingerprint, attachments, conversationUrl }
+    } catch (error) {
+      await page.close().catch(() => undefined)
+      if (error instanceof TransportError) throw error
+      throw new TransportError(`submit failed: ${error instanceof Error ? error.message : String(error)}`, 'network', { cause: error })
+    }
+  }
+
+  /**
+   * Adopt an already-sent round after a restart. The prompt text is the proof:
+   * if it is not in the stored conversation, this round was never submitted.
+   */
+  async reattach(request: ReattachRequest): Promise<ReattachResult> {
+    const context = await this.ensureContext()
+    const existing = this.topicPages.get(request.topicId)
+    const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
+    this.topicPages.set(request.topicId, page)
+    try {
+      await page.goto(request.conversationUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      const composer = await firstVisible(page, SELECTORS.composer, 30_000)
+      if (composer === undefined) return { attached: false }
+      const markerList = briefMarkers(request.brief)
+      if (markerList.length === 0) return { attached: false }
+      const found = await page.evaluate(
+        texts => texts.some(text => (document.body.innerText ?? '').includes(text)),
+        markerList,
+      )
+      if (!found) return { attached: false }
+      const submissionId = randomUUID()
+      this.submissions.set(submissionId, {
+        page,
+        request: {
+          topicId: request.topicId,
+          round: request.round,
+          brief: request.brief,
+          files: [],
+          model: '',
+          session: { conversationUrl: request.conversationUrl, profileDir: this.options.profileDir },
+        },
+        startedAt: Date.now(),
+        lastText: '',
+        stable: 0,
+      })
+      return { attached: true, submissionId }
+    } catch (error) {
+      throw new TransportError(
+        `reattach failed: ${error instanceof Error ? error.message : String(error)}`,
+        'network',
+        { cause: error },
+      )
+    }
+  }
+
+  async poll(request: { submissionId: string; timeoutMs: number; signal?: AbortSignal }): Promise<PollResult> {
+    const submission = this.submissions.get(request.submissionId)
+    if (submission === undefined) return { state: 'unknown' }
+    if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
+    const page = submission.page
+    if (page.isClosed()) return { state: 'unknown' }
+
+    const deadline = Date.now() + Math.max(1_000, request.timeoutMs)
+    let progressed = false
+    try {
+      while (Date.now() < deadline) {
+        if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
+        if (page.isClosed()) return { state: 'unknown' }
+        const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
+        if (streaming) progressed = true
+        const text = streaming ? '' : await this.richAnswerText(page)
+        const next = advanceCompletion(
+          { lastText: submission.lastText, stable: submission.stable },
+          text,
+          streaming,
+        )
+        if (next.lastText !== submission.lastText) progressed = true
+        submission.lastText = next.lastText
+        submission.stable = next.stable
+        if (next.answered) return { state: 'answered', answer: next.lastText }
+        await page.waitForTimeout(3_000)
+      }
+      return { state: 'waiting', ...(progressed ? { progress: true } : {}) }
+    } catch (error) {
+      if (isAborted(request.signal)) throw error
+      if (page.isClosed()) return { state: 'unknown' }
+      if (error instanceof TransportError) throw error
+      throw new TransportError(
+        `poll failed: ${error instanceof Error ? error.message : String(error)}`,
+        'network',
+        { cause: error },
+      )
+    }
+  }
+
+  async fetch(request: { submissionId: string }): Promise<FetchedAnswer> {
+    const submission = this.submissions.get(request.submissionId)
+    if (submission === undefined) throw new TransportError('unknown submission', 'ui')
+    if (submission.page.isClosed()) throw new TransportError('conversation page is closed', 'ui')
+    const page = submission.page
+    const answer = await this.lastAssistantText(page)
+    const images = await this.collectImages(page)
+    const codeBlocks = await this.collectCodeBlocks(page)
+    const archives = await this.collectArchives(page)
+    if (answer === '' && images.length === 0 && codeBlocks.length === 0 && archives.length === 0) {
+      throw new TransportError('no assistant answer on the page', 'ui')
+    }
+    return {
+      answer,
+      ...(images.length > 0 ? { images } : {}),
+      ...(codeBlocks.length > 0 ? { codeBlocks } : {}),
+      ...(archives.length > 0 ? { archives } : {}),
+    }
+  }
+
+  /** Large images in the answer; blob URLs are read in-page, https through cookies. */
+  private async collectImages(page: Page): Promise<ImageAsset[]> {
+    const sources: string[] = await page.evaluate(selector => {
+      const seen = new Set<string>()
+      const out: string[] = []
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return out
+      for (const image of root.querySelectorAll('img')) {
+        const element = image as HTMLImageElement
+        if (element.naturalWidth < 300 || element.naturalHeight < 300) continue
+        if (element.closest('form') !== null || element.closest('[data-message-author-role="user"]') !== null) continue
+        if (element.src !== '' && !seen.has(element.src)) {
+          seen.add(element.src)
+          out.push(element.src)
+        }
+      }
+      return out
+    }, SELECTORS.assistantMessage)
+    const images: ImageAsset[] = []
+    for (const [index, source] of sources.slice(0, 8).entries()) {
+      try {
+        if (source.startsWith('data:')) {
+          const parsed = parseDataUrlImage(source)
+          if (parsed === undefined) continue
+          // Tiny data URLs are page chrome/file thumbnails, not generated art.
+          if (Buffer.from(parsed.base64, 'base64').byteLength < 20_000) continue
+          images.push({
+            name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(parsed.mime)}`,
+            mime: parsed.mime,
+            base64: parsed.base64,
+          })
+          continue
+        }
+        if (source.startsWith('blob:')) {
+          const dataUrl = await page.evaluate(async (src) => {
+            const response = await fetch(src)
+            const blob = await response.blob()
+            return await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(String(reader.result))
+              reader.onerror = () => reject(reader.error)
+              reader.readAsDataURL(blob)
+            })
+          }, source)
+          const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl)
+          if (match === null) continue
+          const mime = match[1] as string
+          images.push({
+            name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(mime)}`,
+            mime,
+            base64: (match[2] as string).replace(/\s/g, ''),
+          })
+        } else {
+          const response = await page.request.get(source)
+          if (!response.ok()) continue
+          const mime = (response.headers()['content-type'] ?? 'image/png').split(';')[0]?.trim() ?? 'image/png'
+          images.push({
+            name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(mime)}`,
+            mime,
+            base64: (await response.body()).toString('base64'),
+          })
+        }
+      } catch {
+        // One unreadable image must not fail the whole round.
+      }
+    }
+    return images
+  }
+
+  private async collectCodeBlocks(page: Page): Promise<CodeBlock[]> {
+    return await page.evaluate(selector => {
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return []
+      const filePattern = /([\w.-]+\.(?:html?|css|jsx?|tsx?|json|md|py|vue|svelte|sh|ya?ml))/i
+      const nameOf = (code: HTMLElement): string => {
+        const pre = code.closest('pre')
+        const header = pre?.parentElement
+        const candidates = [
+          code.getAttribute('data-filename'),
+          code.getAttribute('data-file-name'),
+          pre?.getAttribute('data-filename'),
+          pre?.getAttribute('data-file-name'),
+          pre?.getAttribute('title'),
+          header?.querySelector('[data-filename], [data-file-name], [class*="filename" i]')?.textContent ?? '',
+          (pre?.previousElementSibling?.textContent ?? '').trim(),
+          (code.textContent ?? '').split('\n')[0] ?? '',
+        ]
+        for (const candidate of candidates) {
+          if (candidate == null || candidate === '') continue
+          const match = filePattern.exec(candidate)
+          if (match !== null) return match[1] ?? ''
+        }
+        return ''
+      }
+      return [...root.querySelectorAll('pre code')]
+        .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
+        .slice(0, 20)
+        .map(code => ({
+          language: /language-([\w-]+)/.exec(code.className)?.[1] ?? '',
+          name: nameOf(code as HTMLElement),
+          text: code.textContent ?? '',
+        }))
+        .filter(block => block.text.trim() !== '')
+    }, SELECTORS.assistantMessage)
+  }
+
+  /** Download zip links rendered in the assistant answer (code interpreter downloads). */
+  private async collectArchives(page: Page): Promise<ArchiveAsset[]> {
+    const links = await page.evaluate(selector => {
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return []
+      const controls = [...root.querySelectorAll('a[href], button, [role="button"]')]
+        .filter(element => element.closest('form') === null && element.closest('[data-message-author-role="user"]') === null)
+      const picked: Array<{ href: string; label: string; marker: string; local: boolean }> = []
+      for (const control of controls) {
+        const element = control as HTMLElement & { href?: string }
+        const href = element instanceof HTMLAnchorElement ? element.href : ''
+        const label = (element.getAttribute('download') ?? element.textContent ?? '').trim()
+        const context = (element.closest('div, li, article')?.textContent ?? '').slice(0, 300)
+        const downloadable = label.toLowerCase().includes('.zip')
+          || href.toLowerCase().includes('.zip')
+          || (/download|下载|zip/i.test(label) && context.toLowerCase().includes('.zip'))
+        if (!downloadable) continue
+        const marker = `[data-dsh-zip="${picked.length}"]`
+        element.setAttribute('data-dsh-zip', String(picked.length))
+        picked.push({
+          href,
+          label,
+          marker,
+          local: href === '' || !/^(?:https?|blob|data):/i.test(href),
+        })
+        if (picked.length >= 3) break
+      }
+      return picked
+    }, SELECTORS.assistantMessage)
+    const archives: ArchiveAsset[] = []
+    for (const link of links) {
+      try {
+        let encoded = ''
+        let name = (link.label !== '' ? link.label : link.href.split('/').pop() ?? 'archive.zip').replace(/[^\w.-]/g, '_')
+        if (link.local) {
+          const [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: 10_000 }),
+            page.locator(link.marker).click(),
+          ])
+          const temp = await download.path()
+          if (temp === null) throw new Error('download had no local file')
+          const bytes = await readFile(temp)
+          if (bytes.length > 50 * 1024 * 1024) throw new Error('zip is larger than 50 MB')
+          encoded = bytes.toString('base64')
+          name = download.suggestedFilename().replace(/[^\w.-]/g, '_')
+        } else {
+          encoded = await page.evaluate(async href => {
+            const response = await fetch(href)
+            if (!response.ok) throw new Error(`zip download failed: ${response.status}`)
+            const bytes = new Uint8Array(await response.arrayBuffer())
+            if (bytes.byteLength > 50 * 1024 * 1024) throw new Error('zip is larger than 50 MB')
+            let binary = ''
+            for (let index = 0; index < bytes.length; index += 0x8000) {
+              binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+            }
+            return btoa(binary)
+          }, link.href)
+        }
+        archives.push({ name: name.endsWith('.zip') ? name : `${name}.zip`, base64: String(encoded) })
+      } catch {
+        // A dead/private download link must not fail the whole answer.
+      }
+    }
+    await page.evaluate(() => document.querySelectorAll('[data-dsh-zip]').forEach(node => node.removeAttribute('data-dsh-zip'))).catch(() => undefined)
+    return archives
+  }
+
+  async cancelSubmission(submissionId: string): Promise<void> {
+    const submission = this.submissions.get(submissionId)
+    if (submission === undefined) return
+    this.submissions.delete(submissionId)
+    for (const [topicId, page] of this.topicPages) {
+      if (page === submission.page) this.topicPages.delete(topicId)
+    }
+    await submission.page.close().catch(() => undefined)
+  }
+
+  async cancel(): Promise<void> {
+    const pages = new Set<Page>([
+      ...[...this.submissions.values()].map(submission => submission.page),
+      ...this.topicPages.values(),
+    ])
+    for (const page of pages) {
+      await page.close().catch(() => undefined)
+    }
+    this.submissions.clear()
+    this.topicPages.clear()
+  }
+
+  async close(): Promise<void> {
+    await this.cancel()
+    await this.context?.close().catch(() => undefined)
+    this.context = undefined
+  }
+
+  private async waitForConversationUrl(page: Page, timeoutMs: number): Promise<string> {
+    const pattern = /^https:\/\/chatgpt\.com\/c\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const url = page.url()
+      if (pattern.test(url)) return url
+      await page.waitForTimeout(500)
+    }
+    return page.url()
+  }
+
+  private async readModel(page: Page): Promise<string> {
+    const picker = await firstVisible(page, SELECTORS.modelPicker, 2_000)
+    if (picker === undefined) return ''
+    return (await picker.innerText().catch(() => '')).trim()
+  }
+
+  private async trySelectModel(page: Page, model: string): Promise<void> {
+    const picker = await firstVisible(page, SELECTORS.modelPicker, 2_000)
+    if (picker === undefined) return
+    const wanted = model.trim()
+    if (wanted === '') return
+    // The live picker lists menu items by display name (Pro, GPT-6, ...);
+    // "thinking" is an effort on the same picker, so it accepts Pro.
+    const pattern = /^thinking$/i.test(wanted) ? /pro|思考|thinking/i : new RegExp(wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    try {
+      await picker.click()
+      const option = page.getByRole('menuitem').filter({ hasText: pattern }).first()
+      await option.waitFor({ state: 'visible', timeout: 3_000 })
+      await option.click()
+    } catch {
+      await page.keyboard.press('Escape').catch(() => undefined)
+    }
+  }
+
+  private async waitForAttachmentCards(page: Page, files: string[]): Promise<void> {
+    for (const file of files) {
+      const name = file.split(/[\\/]/).pop() ?? file
+      // ChatGPT may append "(2)" before the extension on a name collision, so
+      // match the stem inside the composer rather than the exact filename.
+      const stem = name.replace(/\.[^.]+$/, '')
+      const needle = stem.length >= 3 ? stem : name
+      const card = page.locator('form').getByText(needle, { exact: false }).first()
+      try {
+        await card.waitFor({ state: 'visible', timeout: 120_000 })
+      } catch (error) {
+        throw new TransportError(`attachment card missing for ${name}`, 'upload', { cause: error })
+      }
+    }
+  }
+
+  private async richAnswerText(page: Page): Promise<string> {
+    const text = await this.lastAssistantText(page)
+    if (text !== '') return text
+    // Image-only answers have no text; use a short count/dimension fingerprint
+    // (never the base64 payload) so a gallery response still completes.
+    const fingerprint = await page.evaluate(selector => {
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return { images: [] as string[], codeLength: 0 }
+      const images = [...root.querySelectorAll('img')]
+        .filter(image => (image as HTMLImageElement).naturalWidth >= 300)
+        .map(image => `${(image as HTMLImageElement).naturalWidth}x${(image as HTMLImageElement).naturalHeight}`)
+      const codeLength = [...root.querySelectorAll('pre code')]
+        .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
+        .reduce((sum, code) => sum + (code.textContent?.length ?? 0), 0)
+      return { images, codeLength }
+    }, SELECTORS.assistantMessage)
+    if (fingerprint.images.length > 0) return `image:${fingerprint.images.length}:${fingerprint.images.join(',')}`
+    return fingerprint.codeLength > 0 ? `code:${fingerprint.codeLength}` : ''
+  }
+
+  private async lastAssistantText(page: Page): Promise<string> {
+    const messages = page.locator(SELECTORS.assistantMessage)
+    const count = await messages.count().catch(() => 0)
+    if (count === 0) return ''
+    return (await messages.nth(count - 1).innerText().catch(() => '')).trim()
+  }
+}

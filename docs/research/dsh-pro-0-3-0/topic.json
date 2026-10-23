@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "id": "topic-9cda",
+  "title": "dsh-pro 0.3.0 复核：从裁决到可实施补丁",
+  "type": "research",
+  "parent": "topic-e6fc",
+  "created": "2026-10-23T06:09:51.751Z",
+  "updated": "2026-10-23T06:23:42.745Z",
+  "status": "cancelled",
+  "roundsCap": 1,
+  "generations": [
+    {
+      "n": 1,
+      "createdAt": "2026-10-23T06:09:51.751Z",
+      "rounds": 1,
+      "reason": "初始任务",
+      "final": "finals/attempt-01.md"
+    }
+  ],
+  "rounds": [
+    {
+      "n": 1,
+      "files": 12,
+      "attempts": 1,
+      "generation": 1,
+      "submissionId": "d384875d-cf34-4b03-9886-de4cf674ec2e",
+      "fingerprint": "c32850319e9463f10b4ca8327a0763eb8e743c0589407c958f07b5f42541a661",
+      "submittedAt": "2026-10-23T06:10:56.998Z",
+      "answeredAt": "2026-10-23T06:11:06.310Z",
+      "verdict": "partial",
+      "done": false
+    }
+  ],
+  "channel": "web",
+  "model": "pro",
+  "successCriteria": [
+    "逐条复核 adjudication.md 中的 P0/P1，给出保留/降级/删除/补漏，并引用当前文件或可复现行为。",
+    "至少 10 条针对 0.3.0 的具体结论，其中至少 2 条是旧审计未覆盖的新问题；不重复已修复项。",
+    "复核 dispatch 补丁：覆盖崩溃窗口、reattach/continue/human_check 交互和 API 通道，至少指出一个剩余漏洞或明确证明没有。",
+    "给 P0-2 本轮消息锚点与 P0-3 材料快照的最优实现方案（改动点、字段/状态、失败语义）及最小验收断言，并说明先后顺序。",
+    "给 2 周内按投入/收益排序的行动计划，明确哪些建议应撤回或后置。",
+    "结论先行，中文，表格或分级列表；所有判断引用当前行号或行为，无法确认处标注“需实测”。"
+  ],
+  "artifacts": [
+    "final.md"
+  ],
+  "stopReason": "未配置裁决模型，跑满轮次后交付"
+}
