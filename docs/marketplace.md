@@ -6,8 +6,10 @@ Status snapshot: 2026-10-23 (Asia/Shanghai). Release workflow: [RELEASING.md](RE
 
 | Plugin | Public repo | Commit | Version |
 |---|---|---|---|
-| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `9e3853f1a64135b8c82eb098007a619057e5102e`（dsh.so 提交）/ `6eb3608cb8f45291f4f8741247dc364d246ad29b`（当前 HEAD） | `0.3.0` |
-| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `e29502c3350eb3ab0b69a7c3c66928ddbcf1faea`（dsh.so 提交）/ `a280273962ec95318da0eccdbbbea9061de80e5f`（当前 HEAD） | `0.3.0` |
+| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `9e3853f1a64135b8c82eb098007a619057e5102e`（dsh.so 提交）/ `8a9d57e`（当前 HEAD） | `0.3.1` |
+| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `e29502c3350eb3ab0b69a7c3c66928ddbcf1faea`（dsh.so 提交）/ `25dcce3`（当前 HEAD） | `0.3.1` |
+
+0.3.1 was released on 2026-10-23; the dsh.pub / dsh.so submissions below still point at 0.3.0 and need re-submission before they reflect this version.
 
 Both public repos are generated from this monorepo by `node scripts/sync-dist.mjs`; `lib/` is committed there for dsh.pub and `github:` installs. The monorepo remains the source of truth.
 

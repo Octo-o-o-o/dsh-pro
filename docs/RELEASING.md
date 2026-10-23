@@ -167,8 +167,8 @@ git -C C:\WorkSpace\dsh-plugins\chatgpt-pro-research push origin vX.Y.Z
 
 | 插件 | 版本 | 发布仓库 HEAD | 市场 |
 |---|---|---|---|
-| `chatgpt-pro-research` | `0.3.0` | `6eb3608` | dsh.so 已提交待审；dsh.pub PR #152 等 #155 修复 |
-| `gpt-image-design` | `0.3.0` | `a280273` | dsh.so 已提交待审；dsh.pub #153 已合入，目录集成被 #155 卡住 |
+| `chatgpt-pro-research` | `0.3.1` | `8a9d57e` | dsh.so 0.3.0 已提交待审；dsh.pub PR #152 等 #155 修复；0.3.1 待重新提交 |
+| `gpt-image-design` | `0.3.1` | `25dcce3` | dsh.so 0.3.0 已提交待审；dsh.pub #153 已合入，目录集成被 #155 卡住；0.3.1 待重新提交 |
 
 市场阻塞详情、PR/issue 链接见 [docs/marketplace.md](marketplace.md)。
 
