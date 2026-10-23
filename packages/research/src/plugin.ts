@@ -740,6 +740,14 @@ class ProResearchService {
       const wake = await this.notifyAccepted(id, accepted)
       return { ...this.view(accepted), wake }
     }
+    if (action === 'wake') {
+      const topic = await this.storeAt(entry.root, entry.mode).load(id)
+      if (topic.status !== 'completed' && topic.status !== 'capped') {
+        throw new Error(`topic ${id} is ${topic.status}; only completed/capped topics can wake their session`)
+      }
+      const wake = await this.notifyAccepted(id, topic)
+      return { ...this.view(topic), wake }
+    }
     if (action === 'human_check') {
       if (conclusion === undefined) throw new Error('conclusion is required')
       const reason = note ?? ''

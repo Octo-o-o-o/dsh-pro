@@ -284,6 +284,12 @@ function Panel(): ReturnType<typeof createElement> {
         } else {
           setNotice({ kind: 'error', text: `已接受结果，但没能唤醒原会话：${result.wake?.reason ?? '原因未知'}` })
         }
+      } else if (action === 'wake') {
+        if (result.wake?.ok === true) {
+          setNotice({ kind: 'ok', text: result.wake.resumed === true ? '已恢复原会话' : '原会话已唤醒' })
+        } else {
+          setNotice({ kind: 'error', text: `没能唤醒原会话：${result.wake?.reason ?? '原因未知'}` })
+        }
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
       }
@@ -386,6 +392,9 @@ function Panel(): ReturnType<typeof createElement> {
             : undefined,
           canAccept
             ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, detail?.status === 'capped' ? '接受结果' : '接受已有产物')
+            : undefined,
+          detail.status === 'completed'
+            ? createElement('button', { onClick: () => void act('wake'), style: buttonStyle() }, '唤醒原会话')
             : undefined,
           detail.status === 'stalled'
             ? createElement('span', { style: { display: 'flex', gap: 8 } },
