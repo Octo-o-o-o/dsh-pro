@@ -31,7 +31,7 @@ dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#<40-ch
 dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#<40-char-commit>
 ```
 
-npm 上现有 `0.2.x`；本仓库的 `0.3.0` 以 Git/dsh.pub 分发为准：
+npm 上现有 `0.2.x`；本仓库的 `0.3.1` 以 Git/dsh.pub 分发为准：
 
 ```bash
 dsh plugin --profile <profile> add chatgpt-pro-research
@@ -89,9 +89,9 @@ node scripts/release-dist.mjs --push     # 推送两个发布仓库 + v<version>
 ## 验证边界
 
 - 真实 ChatGPT 页面已验证：登录、单轮提交、附件、同会话两轮、图片生成抓取（1448×1086 PNG 抓回并解码）。
-- 当前源码版本为 `0.3.0`；本机 `desktop` profile 使用本地构建产物，重启 DSH 后才加载新 bundle。
+- 当前源码版本为 `0.3.1`；本机 `desktop` profile 使用本地构建产物，客户端面板刷新即可加载，host bundle 在重启 DSH 后加载。
 - 重启 DSH 后两个入口与路由已确认：`/chatgpt-pro-research/topics`、`/gpt-image-design/topics` 均 200 且返回空列表；侧边栏 R/X 图标经 16/32px 黑白底渲染核对。
-- 设计面板的画廊与 iframe demo 目前是静态渲染/路由测试，未在 GUI 里实际点开验证。
+- 设计/调研面板已在 desktop GUI 实际点开验证（2026-10-23，1722/1100/900/390）：主题列表、搜索/筛选、详情 tabs、图片查看器、demo 查看器、继续一轮弹窗；Research 完成主题 2 版 4 轮、Design 完成主题 7 图 + demo + final.md。
 - API 生图通道已用本地假服务验证：请求体、b64/url 落盘、参考图 multipart、401/超时/部分失败映射、取消，以及插件→引擎→`artifacts/` 的整轮流程；**未对真实服务商**（OpenAI 等）出图与计费验证。
 - 未覆盖：页面改版、超长回答、真实网页断线恢复、账号风控/ToS；本地消息锚点/fixture 只证明代码路径，不等于 chatgpt.com DOM 已验收。
 

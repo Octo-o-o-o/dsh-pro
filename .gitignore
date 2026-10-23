@@ -21,3 +21,4 @@ research-tmp/
 .asar-extract/
 .badge-preview.*
 .sidebar-status.iife.js
+.tmp/

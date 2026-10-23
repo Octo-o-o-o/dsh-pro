@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "id": "topic-509c",
+  "title": "dsh-pro panel ui v2",
+  "type": "design",
+  "parent": null,
+  "created": "2026-10-23T10:37:41.670Z",
+  "updated": "2026-10-23T12:08:36.858Z",
+  "status": "cancelled",
+  "roundsCap": 2,
+  "designs": 3,
+  "generations": [
+    {
+      "n": 1,
+      "createdAt": "2026-10-23T10:37:41.670Z",
+      "rounds": 2,
+      "reason": "初始任务"
+    }
+  ],
+  "rounds": [
+    {
+      "n": 1,
+      "files": 3,
+      "attempts": 1,
+      "generation": 1,
+      "designs": 3,
+      "dispatch": {
+        "attemptId": "a0340a8c-be18-45bf-82f8-842acfc6d00d",
+        "at": "2026-10-23T10:37:41.742Z",
+        "requestHash": "e8503192f059cb5f11e5e87db070d856bc710898010739932833cb1ee122edd7",
+        "observedAt": "2026-10-23T10:37:57.067Z"
+      },
+      "submissionId": "9bb20260-c388-4bd1-badf-105ec0c78c30",
+      "fingerprint": "43432a199c388e1b0a500ec4c203a6beaef2b1ce5a5ad96dbbdb1a892bd84193",
+      "submittedAt": "2026-10-23T10:37:57.072Z"
+    }
+  ],
+  "channel": "web",
+  "model": "pro",
+  "successCriteria": [
+    "3 张 1722×997 级桌面方向图，每张同时给出列表 + 详情，并标出 Research 与 Design 的内容差异",
+    "列表在 240–320px 可读：状态、两行标题、类型、轮次、更新时间、产物/卡住标记齐全；含选中、悬停、空态、加载态",
+    "详情有清晰的标题/状态/主操作/轮次/产物层级；Research 的 final.md 与轮次表、Design 的图片画廊与 demo 各有明确重点",
+    "单文件 HTML demo 可离线在 iframe 打开，能切换 Research/Design、列表/详情、浅色/深色，并用真实字段与示例数据",
+    "设计只使用现有 /topics、/topic 字段与状态机动作，不新增后端接口；浅色/深色均与 DSH 中性 UI 协调",
+    "提供一份可执行的落地映射：信息块→字段、主/次/危险操作→action，并说明哪些需要新增前端状态"
+  ],
+  "artifacts": [
+    "artifacts/round-01/design-board.png",
+    "design.md"
+  ],
+  "stopReason": "设计由宿主人工接管；方向板与 design.md 已回收"
+}
