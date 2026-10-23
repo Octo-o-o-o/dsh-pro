@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { unzipSync, zipSync } from 'fflate'
@@ -110,6 +110,10 @@ async function replaceFile(temp: string, target: string): Promise<void> {
   }
 }
 
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT'
+}
+
 export class ResearchStore {
   private dirs = new Map<string, string>()
   private readonly options: StoreOptions
@@ -145,6 +149,17 @@ export class ResearchStore {
     const temp = `${path}.tmp-${process.pid}-${Date.now()}`
     await writeFile(temp, text, 'utf8')
     await replaceFile(temp, path)
+  }
+
+  private async appendJsonLine(path: string, value: unknown): Promise<void> {
+    await mkdir(dirname(path), { recursive: true })
+    await appendFile(path, `${JSON.stringify(value)}\n`, 'utf8')
+  }
+
+  /** Append one auditable event; callers may treat this as best-effort. */
+  async appendEvent(topic: Topic, event: Record<string, unknown> & { type: string }): Promise<void> {
+    const dir = await this.dirOf(topic.id)
+    await this.appendJsonLine(join(dir, 'events.ndjson'), { at: new Date().toISOString(), ...event })
   }
 
   private async uniqueDir(slug: string, id: string): Promise<string> {
@@ -282,24 +297,27 @@ export class ResearchStore {
     try {
       const dir = await this.dirOf(topic.id)
       return await readFile(join(dir, 'rounds', `${pad(round)}-question.md`), 'utf8')
-    } catch {
-      return undefined
+    } catch (error) {
+      if (isMissing(error)) return undefined
+      throw new Error(`cannot read question for round ${round}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
   async readMaterialPaths(topic: Topic): Promise<string[]> {
+    let raw: string
     try {
       const dir = await this.dirOf(topic.id)
-      const parsed = JSON.parse(await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')) as {
-        materials?: Array<{ path?: unknown }>
-      }
+      raw = await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')
+      const parsed = JSON.parse(raw) as { materials?: Array<{ path?: unknown }> }
+      if (!Array.isArray(parsed.materials)) throw new Error('manifest materials is not an array')
       const materialsRoot = join(dir, 'materials')
-      return (parsed.materials ?? [])
+      return parsed.materials
         .map(item => item.path)
         .filter((path): path is string => typeof path === 'string' && path !== '')
         .map(path => isAbsolute(path) ? path : join(materialsRoot, path))
-    } catch {
-      return []
+    } catch (error) {
+      if (isMissing(error)) return []
+      throw new Error(`cannot read material manifest: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -311,8 +329,12 @@ export class ResearchStore {
     let existing: MaterialRef[] = []
     try {
       const parsed = JSON.parse(await readFile(file, 'utf8')) as { materials?: MaterialRef[] }
-      if (Array.isArray(parsed.materials)) existing = parsed.materials
-    } catch {
+      if (!Array.isArray(parsed.materials)) throw new Error('manifest materials is not an array')
+      existing = parsed.materials
+    } catch (error) {
+      if (!isMissing(error)) {
+        throw new Error(`cannot merge material manifest: ${error instanceof Error ? error.message : String(error)}`)
+      }
       // No manifest yet: the merge starts from the new refs alone.
     }
     const byPath = new Map(existing.map(item => [item.source ?? item.path, item]))
@@ -334,14 +356,15 @@ export class ResearchStore {
       const parsed = JSON.parse(await readFile(join(dir, 'rounds', `${pad(round)}-materials.json`), 'utf8')) as {
         materials?: MaterialRef[]
       }
-      if (!Array.isArray(parsed.materials)) return undefined
+      if (!Array.isArray(parsed.materials)) throw new Error('round materials is not an array')
       const materialsRoot = join(dir, 'materials')
       return parsed.materials.map(item => ({
         ...item,
         path: isAbsolute(item.path) ? item.path : join(materialsRoot, item.path),
       }))
-    } catch {
-      return undefined
+    } catch (error) {
+      if (isMissing(error)) return undefined
+      throw new Error(`cannot read round ${round} materials: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -352,18 +375,25 @@ export class ResearchStore {
 
   async readLocator(topicId: string): Promise<SessionLocator | undefined> {
     try {
-      return JSON.parse(await readFile(join(this.options.localRoot, 'sessions', `${topicId}.json`), 'utf8')) as SessionLocator
-    } catch {
-      return undefined
+      const parsed = JSON.parse(await readFile(join(this.options.localRoot, 'sessions', `${topicId}.json`), 'utf8')) as SessionLocator
+      if (typeof parsed.conversationUrl !== 'string' || parsed.conversationUrl === '') {
+        throw new Error('locator conversationUrl is missing')
+      }
+      return parsed
+    } catch (error) {
+      if (isMissing(error)) return undefined
+      throw new Error(`cannot read session locator for ${topicId}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
-  async writeAnswer(topic: Topic, round: number, answer: string): Promise<void> {
+  async writeAnswer(topic: Topic, round: number, answer: string): Promise<string> {
+    const hash = createHash('sha256').update(answer, 'utf8').digest('hex')
     await this.atomic(join(this.rawTopicDir(topic.id), `${pad(round)}-answer.md`), answer)
     if (this.options.rawAnswers === 'repo' && this.options.mode === 'project') {
       const dir = await this.dirOf(topic.id)
       await this.atomic(join(dir, 'rounds', `${pad(round)}-answer.md`), answer)
     }
+    return hash
   }
 
   /** Persist images, code blocks and downloadable archives under `<topic>/artifacts/round-NN/`. */
@@ -497,6 +527,20 @@ export class ResearchStore {
   async writeReceipt(topic: Topic, round: number, receipt: Receipt): Promise<void> {
     const dir = await this.dirOf(topic.id)
     await this.atomic(join(dir, 'receipts', `${pad(round)}.json`), `${JSON.stringify(receipt, null, 2)}\n`)
+    await this.appendJsonLine(join(dir, 'receipts', 'history.ndjson'), {
+      at: new Date().toISOString(),
+      round,
+      receipt,
+    })
+  }
+
+  /** Merge the answer hash/timestamp into the existing receipt without losing submit fields. */
+  async patchReceipt(topic: Topic, round: number, patch: Partial<Receipt>): Promise<Receipt | undefined> {
+    const existing = await this.readReceipt(topic, round)
+    if (existing === undefined) return undefined
+    const next = { ...existing, ...patch }
+    await this.writeReceipt(topic, round, next)
+    return next
   }
 
   async writeFinal(topic: Topic, text: string): Promise<void> {
@@ -524,6 +568,7 @@ export class ResearchStore {
   async writeHumanCheck(topic: Topic, check: HumanCheck): Promise<void> {
     const dir = await this.dirOf(topic.id)
     await this.atomic(join(dir, 'human-check.json'), `${JSON.stringify(check, null, 2)}\n`)
+    await this.appendJsonLine(join(dir, 'human-checks.ndjson'), check)
   }
 
   async readReceipt(topic: Topic, round: number): Promise<Receipt | undefined> {

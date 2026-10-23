@@ -26,13 +26,13 @@ dsh plugin --profile desktop add chatgpt-pro-research
 action=start, confirmed=true, title, question, brief, criteria[], materials[], rounds
 ```
 
-其余动作：`status`、`list`、`resume`、`cancel`、`human_check`、`probe`、`login`。
+其余动作：`status`、`list`、`continue`、`regenerate`、`accept`、`review`、`review_cancel`、`wake`、`resume`、`cancel`、`human_check`、`probe`、`login`。
 
-侧边栏「Pro Research」面板列出主题、轮次、状态与记录路径；卡住时可恢复、取消或人工核对。
+侧边栏「Pro Research」面板列出主题、轮次、状态与记录路径；可继续一轮、重新生成、接受、请原会话判断、恢复、取消或人工核对。
 
 ## 桌面加载
 
-前端使用 DSH `0.2.1-rc.2` 的 `window.__ModuleLoader__.load()` 惰性模块格式，共用宿主 React，并通过 `slots.inject()` 等待主面板与侧边栏槽位就绪。源码安装前先在仓库根目录运行 `npm run build` 和 `node scripts/smoke-bundle.mjs`；重建后确认 profile 中的安装产物已同步。本机 `file:` 安装的产物是硬链接，可随重建一起更新，复制或打包安装则需重新安装。
+前端使用 DSH `0.2.1-rc.2` 的 `window.__ModuleLoader__.load()` 惰性模块格式，共用宿主 React，并通过 `slots.inject()` 等待主面板与侧边栏槽位就绪。源码安装前先在仓库根目录运行 `npm run build` 和 `node scripts/smoke-bundle.mjs`；重建后确认 profile 中的安装产物已同步。本机 `file:` 安装的产物是硬链接，可随重建一起更新；复制或打包安装则需重新安装。**网页通道使用本机 Google Chrome，两个插件共享同一个 profile；同一 profile 只允许一个宿主持有 lease，第二个宿主会返回 busy。**
 
 ## 记录
 

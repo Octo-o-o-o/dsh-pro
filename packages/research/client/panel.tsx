@@ -190,6 +190,9 @@ function Panel(): ReturnType<typeof createElement> {
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | undefined>(undefined)
   const [regenOpen, setRegenOpen] = useState(false)
   const [regenNote, setRegenNote] = useState('')
+  const [continueOpen, setContinueOpen] = useState(false)
+  const [continueNote, setContinueNote] = useState('')
+  const [continueDesigns, setContinueDesigns] = useState('')
   const [checkOpen, setCheckOpen] = useState<'submitted' | 'not_submitted' | 'reopen' | undefined>(undefined)
   const [checkNote, setCheckNote] = useState('')
   const [viewer, setViewer] = useState<Viewer | undefined>(undefined)
@@ -274,13 +277,17 @@ function Panel(): ReturnType<typeof createElement> {
   }, [viewer])
 
   const act = useCallback(async (action: string, conclusion?: string, note?: string) => {
-    if (selected === undefined) return
+    const target = detail?.topic_id
+    if (selected === undefined || target === undefined || target !== selected) {
+      setNotice({ kind: 'error', text: '主题正在切换，请等详情加载完成后再操作' })
+      return
+    }
     try {
-      const result = await postAction<{ topic: TopicRow & { wake?: { ok: boolean; resumed?: boolean; reason?: string } } }>({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
+      const result = await postAction<{ topic: TopicRow & { wake?: { ok: boolean; resumed?: boolean; reason?: string } } }>({ action, topic_id: target, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
       const wake = result.topic?.wake
       if (action === 'accept') {
         setDetail(current => current === undefined ? current : { ...current, status: 'completed' })
-        if (result.topic?.updated !== undefined) markTopicSeen(config.panelId, selected, result.topic.updated)
+        if (result.topic?.updated !== undefined) markTopicSeen(config.panelId, target, result.topic.updated)
         if (wake?.ok === true) {
           setNotice({ kind: 'ok', text: wake.resumed === true ? '已接受结果，并恢复了原会话' : '已接受结果，原会话已唤醒' })
         } else {
@@ -306,31 +313,100 @@ function Panel(): ReturnType<typeof createElement> {
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
       }
-      await loadDetail(selected)
+      await loadDetail(target)
       await loadList()
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
       setError(undefined)
       setNotice({ kind: 'error', text: message })
     }
-  }, [selected, loadDetail, loadList])
+  }, [selected, detail, loadDetail, loadList])
+
+  const runPanelAction = useCallback(async (action: 'probe' | 'login') => {
+    setNotice({ kind: 'ok', text: action === 'probe' ? '正在自检…' : '正在打开登录窗口…' })
+    try {
+      const result = await postAction<Record<string, any>>({ action })
+      if (action === 'probe') {
+        const probe = result.probe ?? {}
+        const ok = probe.ok === true
+        const parts = [
+          `通道 ${String(result.channel ?? '?')}`,
+          ok ? '自检通过' : '自检未通过',
+          probe.loggedIn === true ? '已登录' : '未登录',
+          probe.model !== undefined && probe.model !== '' ? `模型 ${String(probe.model)}` : undefined,
+          typeof probe.reason === 'string' && probe.reason !== '' ? `原因 ${probe.reason}` : undefined,
+        ].filter((part): part is string => part !== undefined)
+        setNotice({ kind: ok ? 'ok' : 'error', text: parts.join(' · ') })
+      } else {
+        const login = result.login ?? {}
+        setNotice({ kind: login.ok === false ? 'error' : 'ok', text: String(login.note ?? '登录流程完成') })
+      }
+    } catch (cause) {
+      setError(undefined)
+      setNotice({ kind: 'error', text: cause instanceof Error ? cause.message : String(cause) })
+    }
+  }, [])
 
   const submitRegenerate = useCallback(async () => {
-    if (selected === undefined) return
+    const target = detail?.topic_id
+    if (selected === undefined || target === undefined || target !== selected) {
+      setNotice({ kind: 'error', text: '主题正在切换，请等详情加载完成后再操作' })
+      return
+    }
     try {
-      await postAction<{ topic: TopicRow }>({ action: 'regenerate', topic_id: selected, note: regenNote.trim() })
+      await postAction<{ topic: TopicRow }>({ action: 'regenerate', topic_id: target, note: regenNote.trim() })
       setNotice({ kind: 'ok', text: '已提交重新生成' })
       setDetail(current => current === undefined ? current : { ...current, status: 'queued' })
       setRegenOpen(false)
       setRegenNote('')
-      await loadDetail(selected)
+      await loadDetail(target)
       await loadList()
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
       setError(undefined)
       setNotice({ kind: 'error', text: message })
     }
-  }, [selected, regenNote, loadDetail, loadList])
+  }, [selected, detail, regenNote, loadDetail, loadList])
+
+  const submitContinue = useCallback(async () => {
+    const target = detail?.topic_id
+    if (selected === undefined || target === undefined || target !== selected) {
+      setNotice({ kind: 'error', text: '主题正在切换，请等详情加载完成后再操作' })
+      return
+    }
+    const brief = continueNote.trim()
+    if (brief === '') {
+      setNotice({ kind: 'error', text: '请填写这一轮要补充的问题' })
+      return
+    }
+    let designs: number | undefined
+    if (detail?.type === 'design') {
+      designs = continueDesigns.trim() === '' ? detail.designs ?? 3 : Number(continueDesigns)
+      if (!Number.isInteger(designs) || designs < 1 || designs > 6) {
+        setNotice({ kind: 'error', text: '方向数必须是 1–6 的整数' })
+        return
+      }
+    }
+    try {
+      await postAction<{ topic: TopicRow }>({
+        action: 'continue',
+        topic_id: target,
+        brief,
+        ...(designs !== undefined ? { designs } : {}),
+      })
+      setNotice({ kind: 'ok', text: '已追加一轮' })
+      setDetail(current => current === undefined ? current : { ...current, status: 'queued' })
+      setContinueOpen(false)
+      setContinueNote('')
+      setContinueDesigns('')
+      await loadDetail(target)
+      await loadList()
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(undefined)
+      setNotice({ kind: 'error', text: message })
+    }
+  }, [selected, detail, continueNote, continueDesigns, loadDetail, loadList])
 
   const submitHumanCheck = useCallback(async () => {
     if (selected === undefined || checkOpen === undefined) return
@@ -377,6 +453,7 @@ function Panel(): ReturnType<typeof createElement> {
     || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts)
   )
   const canRegenerate = detail !== undefined && (detail.status === 'completed' || detail.status === 'capped' || detail.status === 'reviewing' || detail.status === 'failed' || detail.status === 'stalled')
+  const canContinue = detail !== undefined && (detail.status === 'completed' || detail.status === 'capped' || detail.status === 'reviewing' || detail.status === 'failed' || detail.status === 'stalled')
 
   const body = createElement('div', { style: { flex: 1, overflowY: 'auto', padding: 14, fontSize: 13, lineHeight: 1.6 } },
     error !== undefined ? createElement('div', { style: { color: '#c62828', marginBottom: 8 } }, `接口错误：${error}`) : undefined,
@@ -413,12 +490,17 @@ function Panel(): ReturnType<typeof createElement> {
           : undefined,
         detail.path !== undefined ? createElement('div', { style: { opacity: 0.5, marginBottom: 10, wordBreak: 'break-all', fontSize: 11 } }, detail.path) : undefined,
         createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 } },
+          createElement('button', { onClick: () => void runPanelAction('probe'), style: buttonStyle() }, '自检'),
+          createElement('button', { onClick: () => void runPanelAction('login'), style: buttonStyle() }, '登录'),
           ACTIVE.has(detail.status) ? createElement('button', { onClick: () => void act('cancel'), style: buttonStyle() }, '取消') : undefined,
           detail.status === 'stalled' || detail.status === 'failed'
             ? createElement('button', { onClick: () => void act('resume'), style: buttonStyle() }, '恢复')
             : undefined,
           canRegenerate
             ? createElement('button', { onClick: () => { setRegenNote(''); setRegenOpen(true) }, style: buttonStyle() }, '重新生成')
+            : undefined,
+          canContinue
+            ? createElement('button', { onClick: () => { setContinueNote(''); setContinueDesigns(''); setContinueOpen(true) }, style: buttonStyle() }, '继续一轮')
             : undefined,
           canAccept
             ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, detail?.status === 'capped' || detail?.status === 'reviewing' ? '接受结果' : '接受已有产物')
@@ -479,6 +561,66 @@ function Panel(): ReturnType<typeof createElement> {
                 onClick: () => void submitRegenerate(),
                 style: { ...buttonStyle(), borderColor: 'rgba(111,159,208,.55)', background: 'rgba(111,159,208,.16)' },
               }, '提交重新生成'))))
+          : undefined,
+        continueOpen
+          ? createElement('div', {
+            style: {
+              maxWidth: 640,
+              marginBottom: 18,
+              padding: '12px 14px',
+              border: '1px solid rgba(127,127,127,.22)',
+              borderRadius: 10,
+              background: 'rgba(127,127,127,.05)',
+              boxSizing: 'border-box',
+            },
+          },
+          createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 } },
+            createElement('div', { style: { fontSize: 12, fontWeight: 600 } }, '继续一轮'),
+            createElement('div', { style: { fontSize: 11, opacity: 0.55 } }, '只追加一轮；一次继续不会顺带跑完剩余上限')),
+          createElement('textarea', {
+            value: continueNote,
+            onChange: (event: { target: { value: string } }) => setContinueNote(event.target.value),
+            rows: 3,
+            placeholder: '这一轮只补充什么？例如：只查部署风险；只改配色，保留版式',
+            style: {
+              width: '100%',
+              boxSizing: 'border-box',
+              resize: 'vertical',
+              padding: '8px 10px',
+              borderRadius: 8,
+              border: '1px solid rgba(127,127,127,.3)',
+              background: 'transparent',
+              color: 'inherit',
+              fontSize: 12,
+              lineHeight: 1.55,
+            },
+          }),
+          detail.type === 'design'
+            ? createElement('div', { style: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, opacity: 0.75 } },
+              createElement('span', {}, '本轮方向数'),
+              createElement('input', {
+                type: 'number',
+                min: 1,
+                max: 6,
+                value: continueDesigns,
+                placeholder: String(detail.designs ?? 3),
+                onChange: (event: { target: { value: string } }) => setContinueDesigns(event.target.value),
+                style: {
+                  width: 64,
+                  padding: '4px 6px',
+                  borderRadius: 6,
+                  border: '1px solid rgba(127,127,127,.3)',
+                  background: 'transparent',
+                  color: 'inherit',
+                },
+              }))
+            : undefined,
+          createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 } },
+            createElement('button', { onClick: () => { setContinueOpen(false); setContinueNote(''); setContinueDesigns('') }, style: buttonStyle() }, '取消'),
+            createElement('button', {
+              onClick: () => void submitContinue(),
+              style: { ...buttonStyle(), borderColor: 'rgba(111,159,208,.55)', background: 'rgba(111,159,208,.16)' },
+            }, '提交继续')))
           : undefined,
         checkOpen !== undefined
           ? createElement('div', {

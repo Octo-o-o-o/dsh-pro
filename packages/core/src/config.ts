@@ -107,6 +107,11 @@ const ROUND_MIN = 1
 const ROUND_MAX = 10
 const IMAGE_FORMATS: readonly ImageFormat[] = ['png', 'jpeg', 'webp']
 
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')
+}
+
 /**
  * Fail before the first billable request. The key check is optional because the
  * plugin resolves `GPT_IMAGE_API_KEY` after the settings layer has run.
@@ -120,6 +125,9 @@ export function assertImageApiConfig(image: ImageApiConfig, options?: { requireK
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('imageBaseUrl must use http or https')
+  }
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+    throw new Error('imageBaseUrl must use https unless it points at localhost/loopback')
   }
   if (image.model.trim() === '') throw new Error('imageModel is required for the api channel')
   if (!IMAGE_FORMATS.includes(image.format)) throw new Error('imageFormat must be png, jpeg or webp')

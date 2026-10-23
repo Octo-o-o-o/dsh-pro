@@ -33,6 +33,8 @@ interface Submission {
   assistantBaseline: number
   /** User turns already on the page before this submission was clicked. */
   userBaseline: number
+  /** Copy/terminal controls already present before this submission was clicked. */
+  copyBaseline: number
 }
 
 function sha256(value: string): string {
@@ -249,6 +251,7 @@ export class ChatGptWebTransport implements Transport {
       await this.settleMessages(page)
       const assistantBaseline = await page.locator(SELECTORS.assistantMessage).count().catch(() => 0)
       const userBaseline = await page.locator(SELECTORS.userMessage).count().catch(() => 0)
+      const copyBaseline = await page.locator(SELECTORS.copyButton).count().catch(() => 0)
 
       await this.trySelectModel(page, request.model)
 
@@ -291,6 +294,7 @@ export class ChatGptWebTransport implements Transport {
         stable: 0,
         assistantBaseline,
         userBaseline,
+        copyBaseline,
       })
       return { submissionId, fingerprint, attachments, conversationUrl }
     } catch (error) {
@@ -332,6 +336,7 @@ export class ChatGptWebTransport implements Transport {
         stable: 0,
         assistantBaseline,
         userBaseline: 0,
+        copyBaseline: 0,
       })
       return { attached: true, submissionId }
     } catch (error) {
@@ -367,7 +372,9 @@ export class ChatGptWebTransport implements Transport {
         if (next.lastText !== submission.lastText) progressed = true
         submission.lastText = next.lastText
         submission.stable = next.stable
-        if (next.answered) return { state: 'answered', answer: next.lastText }
+        if (next.answered && await this.terminalSignal(page, submission, next.lastText, next.stable)) {
+          return { state: 'answered', answer: next.lastText }
+        }
         await page.waitForTimeout(3_000)
       }
       return { state: 'waiting', ...(progressed ? { progress: true } : {}) }
@@ -381,6 +388,33 @@ export class ChatGptWebTransport implements Transport {
         { cause: error },
       )
     }
+  }
+
+  /**
+   * Text is considered finished only when the page exposes a terminal control
+   * (copy) for this turn, not merely because the text stopped changing. When
+   * the page has no copy control at all, require four stable polls as a
+   * conservative fallback for image/code-only variants.
+   */
+  private async terminalSignal(
+    page: Page,
+    submission: Submission,
+    text: string,
+    stable: number,
+  ): Promise<boolean> {
+    if (text.startsWith('image:') || text.startsWith('code:')) return true
+    const messages = page.locator(SELECTORS.assistantMessage)
+    const count = await messages.count().catch(() => 0)
+    if (count > submission.assistantBaseline) {
+      const copy = messages.nth(count - 1).locator(SELECTORS.copyButton).first()
+      if (await copy.isVisible().catch(() => false)) return true
+    }
+    const copies = page.locator(SELECTORS.copyButton)
+    const total = await copies.count().catch(() => 0)
+    if (total > submission.copyBaseline) {
+      return await copies.nth(total - 1).isVisible().catch(() => false)
+    }
+    return total === 0 && stable >= 4
   }
 
   async fetch(request: { submissionId: string }): Promise<FetchedAnswer> {

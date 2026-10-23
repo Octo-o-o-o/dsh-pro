@@ -35,8 +35,15 @@ export interface OpenAIImageOptions {
 const MAX_IMAGES = 6
 const MAX_REFERENCES = 4
 const MAX_REFERENCE_BYTES = 25 * 1024 * 1024
+const MAX_IMAGE_BYTES = 50 * 1024 * 1024
+const MAX_BASE64_CHARS = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 4_096
 const MIN_IMAGE_BYTES = 1_024
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')
+}
 
 interface Reference {
   name: string
@@ -113,6 +120,9 @@ function redact(text: string): string {
   return text
     .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')
+    .replace(/(api-key["'\s:=]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')
+    .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, 'AIza***')
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '***')
     .slice(0, 800)
 }
 
@@ -185,6 +195,9 @@ export class OpenAIImageTransport implements Transport {
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new TransportError('imageBaseUrl 必须以 http:// 或 https:// 开头', 'config')
+    }
+    if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+      throw new TransportError('imageBaseUrl 只有本机回环地址允许 http；远程服务商请用 https', 'config')
     }
     if (this.options.apiKey === '') {
       throw new TransportError('imageApiKey 为空：在插件设置里填写，或设置环境变量 GPT_IMAGE_API_KEY', 'config')
@@ -558,11 +571,43 @@ export class OpenAIImageTransport implements Transport {
     const match = /^data:([^;,]+);base64,(.*)$/s.exec(value.trim())
     const mime = match?.[1] ?? mimeForFormat(this.options.format)
     const base64 = (match?.[2] ?? value).replace(/\s+/g, '')
+    if (base64.length > MAX_BASE64_CHARS) {
+      throw new TransportError(`生图 API 返回的 base64 超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
+    }
     const bytes = Buffer.from(base64, 'base64')
     if (bytes.byteLength < MIN_IMAGE_BYTES) {
       throw new TransportError(`生图 API 返回的图片过小（${bytes.byteLength} 字节），按失败处理`, 'network')
     }
+    if (bytes.byteLength > MAX_IMAGE_BYTES) {
+      throw new TransportError(`生图 API 返回的图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
+    }
     return { mime: detectMime(bytes) ?? mime, base64 }
+  }
+
+  private async readImageBody(response: Response): Promise<Buffer> {
+    const declared = Number(response.headers.get('content-length') ?? '')
+    if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+      throw new TransportError(`下载的图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
+    }
+    if (response.body === null) return Buffer.alloc(0)
+    const reader = response.body.getReader()
+    const chunks: Buffer[] = []
+    let total = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.byteLength
+        if (total > MAX_IMAGE_BYTES) {
+          await reader.cancel().catch(() => undefined)
+          throw new TransportError(`下载的图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
+        }
+        chunks.push(Buffer.from(value))
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    return Buffer.concat(chunks)
   }
 
   private async download(url: string, signal: AbortSignal): Promise<ImageAsset> {
@@ -571,6 +616,9 @@ export class OpenAIImageTransport implements Transport {
       target = new URL(url, this.options.baseUrl)
     } catch {
       throw new TransportError(`生图 API 返回了非法图片地址：${redact(url)}`, 'config')
+    }
+    if (target.protocol !== 'https:' && !(target.protocol === 'http:' && (isLoopbackHost(target.hostname) || target.origin === this.origin()))) {
+      throw new TransportError('生图 API 返回了非 https 的图片地址；只允许 https 或本机/同源地址', 'config')
     }
     // Only attach the credential to the configured origin; signed CDN URLs reject it.
     const sameOrigin = target.origin === this.origin()
@@ -585,7 +633,7 @@ export class OpenAIImageTransport implements Transport {
       throw this.networkError(error)
     }
     if (!response.ok) throw new TransportError(`下载生成图片失败（HTTP ${response.status}）`, 'network')
-    const bytes = Buffer.from(await response.arrayBuffer())
+    const bytes = await this.readImageBody(response)
     if (bytes.byteLength < MIN_IMAGE_BYTES) {
       throw new TransportError(`下载到的图片过小（${bytes.byteLength} 字节），按失败处理`, 'network')
     }

@@ -480,6 +480,31 @@ class ProResearchService {
     }
   }
 
+  /**
+   * Registry is a cache, not the source of truth. At startup also scan the
+   * current project root and every root already named in the registry, so a
+   * lost/stale registry does not hide an interrupted topic.
+   */
+  private async knownEntries(): Promise<RegistryEntry[]> {
+    const entries = await this.readRegistry()
+    const seen = new Set(entries.map(entry => entry.id))
+    const roots = new Set<string>([this.rootFor(''), ...entries.map(entry => entry.root)])
+    for (const root of roots) {
+      for (const mode of ['project', 'local'] as const) {
+        try {
+          for (const topic of await this.storeAt(root, mode).list()) {
+            if (seen.has(topic.id)) continue
+            seen.add(topic.id)
+            entries.push({ id: topic.id, root, mode, title: topic.title, updated: topic.updated })
+          }
+        } catch {
+          // A missing/unreadable root is not a reason to stop recovering others.
+        }
+      }
+    }
+    return entries
+  }
+
   private async writeRegistry(entries: RegistryEntry[]): Promise<void> {
     await mkdir(dirname(this.registryFile), { recursive: true })
     const temp = `${this.registryFile}.${randomUUID()}.tmp`
@@ -925,8 +950,14 @@ class ProResearchService {
           : []
         const refs = paths.length > 0 ? this.withSources(cwd, await buildManifest(cwd, paths, undefined, this.config.secretGlobs)) : []
         assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
-        const { engine } = await this.find(cwd, id)
-        return this.view(await engine.continue(id, brief, refs))
+        const { engine, topic } = await this.find(cwd, id)
+        const requestedDesigns = typeof args.designs === 'number' ? args.designs : undefined
+        if (requestedDesigns !== undefined && (!Number.isInteger(requestedDesigns) || requestedDesigns < 1 || requestedDesigns > 6)) {
+          throw new Error('designs must be an integer between 1 and 6')
+        }
+        const designs = topic.type === 'design' ? (requestedDesigns ?? topic.designs ?? this.config.designs) : undefined
+        const followUp = designs === undefined ? brief : this.withDesignCount(brief, designs)
+        return this.view(await engine.continue(id, followUp, refs, designs))
       }
       case 'cancel': {
         const id = this.requireId(args)
@@ -1109,7 +1140,7 @@ class ProResearchService {
    */
   async recoverActive(): Promise<void> {
     const active = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating'])
-    const entries = await this.readRegistry()
+    const entries = await this.knownEntries()
     for (const entry of entries) {
       try {
         const store = this.storeAt(entry.root, entry.mode)
@@ -1305,6 +1336,10 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
           ? body.conclusion
           : undefined
         const note = typeof body.note === 'string' ? body.note : undefined
+        if (action === 'probe' || action === 'login') {
+          sendJson(res, 200, await service.handle({ action }, { agent: undefined } as never))
+          return
+        }
         sendJson(res, 200, { topic: await service.act(id, action, conclusion, note) })
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })

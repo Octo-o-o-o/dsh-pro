@@ -478,6 +478,42 @@ describe('engine', () => {
     expect(transport.submits).toHaveLength(3)
   })
 
+  it('treats one continue as one authorized round after an early completion', async () => {
+    let calls = 0
+    const judge: Judge = async () => {
+      calls += 1
+      return calls === 1
+        ? { verdict: 'accepted', reason: 'enough', done: true, summary: 'done' }
+        : { verdict: 'partial', reason: 'more needed', done: false, summary: 'more' }
+    }
+    const { engine, transport } = await harness({ doneAt: 1, rounds: 3, judge })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('completed')
+
+    await engine.continue(topic.id, 'one more question')
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.rounds).toHaveLength(2)
+    expect(final.roundsCap).toBe(3)
+    expect(final.status).toBe('capped')
+    expect(transport.submits).toHaveLength(2)
+  })
+
+  it('carries a per-round design count on continue', async () => {
+    const { engine, transport } = await harness({ doneAt: 99, rounds: 3 })
+    const topic = await engine.start(card({ type: 'design', designs: 3, rounds: 1 }))
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('capped')
+
+    await engine.continue(topic.id, 'one direction only', undefined, 1)
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(transport.submits[1]?.designs).toBe(1)
+    expect(final.rounds[1]?.designs).toBe(1)
+    expect(final.status).toBe('capped')
+  })
+
   it('cancels an in-flight run', async () => {
     const transport = new FakeTransport(['first answer'])
     transport.hang = true
@@ -491,5 +527,23 @@ describe('engine', () => {
     await engine.drain()
     const final = await engine.status(topic.id)
     expect(final.status).toBe('cancelled')
+  })
+
+  it('records the answer hash and append-only status/answer events', async () => {
+    const { engine, store } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const dir = await store.dirOf(topic.id)
+    const receipt = JSON.parse(await readFile(join(dir, 'receipts', '01.json'), 'utf8')) as {
+      answerSha256?: string
+      answeredAt?: string
+    }
+    expect(receipt.answerSha256).toHaveLength(64)
+    expect(receipt.answeredAt).toBeTruthy()
+    const events = await readFile(join(dir, 'events.ndjson'), 'utf8')
+    expect(events).toContain('"type":"status"')
+    expect(events).toContain('"type":"answered"')
+    const history = await readFile(join(dir, 'receipts', 'history.ndjson'), 'utf8')
+    expect(history).toContain('"answerSha256"')
   })
 })

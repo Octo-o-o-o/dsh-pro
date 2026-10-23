@@ -52,6 +52,8 @@ export interface RoundRecord {
   dispatch?: DispatchIntent
   /** How many submits this round has made; 1 means no retry yet. */
   attempts?: number
+  /** Design directions requested for this round; falls back to the topic default. */
+  designs?: number
   /** Topic-relative artifacts produced by this round. */
   artifacts?: string[]
 }
@@ -68,6 +70,10 @@ export interface Topic {
   stallReason?: StallReason
   roundsCap: number
   designs?: number
+  /** Effective round ceiling for the current invocation (continue/regenerate). */
+  runThrough?: number
+  /** Design count to apply to the next round created for this topic. */
+  nextDesigns?: number
   /** One entry per generation: the initial run and each explicit regeneration. */
   generations?: GenerationRecord[]
   rounds: RoundRecord[]

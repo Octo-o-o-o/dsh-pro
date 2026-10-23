@@ -3,6 +3,8 @@
 状态：设计稿 v0.1 · 2026-10-22 · **实施中**（M1–M4 完成，真实网页传输已验证；桌面加载与 npm 发布待做）
 范围：第一阶段交付 Pro 调研（`dsh-pro-research`）；Pro 设计（`dsh-pro-design`）复用同一核心，验证后再发布。整套 OctoWorkFlow 约定与交付/评审技能排在第三阶段。
 
+> **本文是原始设计稿，不是当前能力清单。** 当前实现边界以 [README](../README.md) 和 [自审核决](research/dsh-pro-0-2-0/adjudication.md) 为准；文中 worker 子进程、心跳、`events.ndjson`、`index.json`、固定 2 秒轮询、profile 700 等描述属于规划/历史，不应直接当作已交付能力。
+
 ## 1. 要解决的问题
 
 1. **时间**：一轮十几到几十分钟、可能多轮，人不能守着；手动发经常被打断、被忘掉。

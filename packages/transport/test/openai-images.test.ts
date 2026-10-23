@@ -240,6 +240,15 @@ describe('OpenAIImageTransport', () => {
     expect(server.requests).toHaveLength(0)
   })
 
+  it('refuses plaintext http for a remote image endpoint', async () => {
+    const transport = new OpenAIImageTransport({
+      baseUrl: 'http://example.com/v1',
+      apiKey: 'test-key',
+      model: 'gpt-image-1',
+    })
+    await expect(transport.submit(request())).rejects.toThrow(/https/)
+  })
+
   it('accepts a full generation endpoint with query parameters', async () => {
     const server = await startServer((_request, response) => json(response, 200, imageBody()))
     const transport = transportFor(`${server.origin}/openai/deployments/d/images/generations?api-version=2024-10-21`)

@@ -226,11 +226,16 @@ export class ResearchEngine {
     delete topic.reviewFrom
     delete topic.reviewStopReason
     delete topic.reviewStallReason
+    delete topic.runThrough
+    delete topic.nextDesigns
     const existing = await this.options.store.readFinal(topic)
     const text = existing === undefined
       ? this.finalDocument(topic, undefined, '人工接受结果', 'completed')
       : `${existing.replace(/^- 状态：.*$/m, '- 状态：completed').trimEnd()}\n- 人工接受：${new Date().toISOString()}\n`
-    await this.options.store.writeFinal(topic, text)
+    const accepted = text.includes('（未生成摘要；见各轮裁决与原始答复）')
+      ? `${text}- 人工接受说明：未生成自动摘要，结论见原始答复。\n`
+      : text
+    await this.options.store.writeFinal(topic, accepted)
     await this.transition(topic, 'completed', { stopReason: '人工接受结果' })
     this.emit({ type: 'finished', topicId: topic.id, status: 'completed' })
     return topic
@@ -322,6 +327,8 @@ export class ResearchEngine {
     })
     const next = topic.rounds.length + 1
     topic.roundsCap = Math.max(topic.roundsCap, next + budget - 1)
+    topic.runThrough = next + budget - 1
+    delete topic.nextDesigns
     delete topic.nextBrief
     await this.options.store.writeQuestion(topic, next, brief)
     const staged = await this.options.store.addMaterials(topic, materials ?? [])
@@ -340,10 +347,13 @@ export class ResearchEngine {
    * The round limit grows when the follow-up would exceed it, because this is
    * the user-confirmed "+1 round" the design requires.
    */
-  async continue(id: string, brief: string, materials?: MaterialRef[]): Promise<Topic> {
+  async continue(id: string, brief: string, materials?: MaterialRef[], designs?: number): Promise<Topic> {
     const topic = await this.options.store.load(id)
     this.assertChannel(topic)
     if (brief.trim() === '') throw new Error('brief is required')
+    if (designs !== undefined && (!Number.isInteger(designs) || designs < 1 || designs > 6)) {
+      throw new Error('designs must be an integer between 1 and 6')
+    }
     const finished = topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing'
     const recoverable = topic.status === 'failed' || topic.status === 'stalled'
     if (!finished && !recoverable) {
@@ -361,15 +371,22 @@ export class ResearchEngine {
       const current = topic.generations?.find(item => item.n === (last.generation ?? 1))
       const budget = current?.rounds ?? this.generationBudget(topic)
       topic.roundsCap = Math.max(topic.roundsCap, last.n + budget - 1)
+      // A retry replaces the failed attempt within the same generation budget.
+      topic.runThrough = last.n + budget - 1
       delete last.submissionId
       delete last.fingerprint
       delete last.submittedAt
       delete last.verdict
       delete last.done
       delete last.dispatch
-    } else if (next > topic.roundsCap) {
-      topic.roundsCap = next
+    } else {
+      if (next > topic.roundsCap) topic.roundsCap = next
+      // One explicit continue is one authorized round, even when the previous
+      // run finished early and the historical cap has room left.
+      topic.runThrough = next
     }
+    if (topic.type === 'design' && designs !== undefined) topic.nextDesigns = designs
+    else delete topic.nextDesigns
     delete topic.nextBrief
     await this.options.store.writeQuestion(topic, next, brief)
     const staged = await this.options.store.addMaterials(topic, materials ?? [])
@@ -482,7 +499,8 @@ export class ResearchEngine {
 
         const pending = last !== undefined && last.answeredAt === undefined ? last : undefined
         const n = pending !== undefined ? pending.n : topic.rounds.length + 1
-        if (pending === undefined && n > topic.roundsCap) {
+        const effectiveCap = topic.runThrough ?? topic.roundsCap
+        if (pending === undefined && n > effectiveCap) {
           await this.finishCapped(topic, '达到轮次上限')
           return
         }
@@ -490,6 +508,9 @@ export class ResearchEngine {
         let round = pending ?? topic.rounds.find(item => item.n === n)
         if (round === undefined) {
           round = { n, files: 0, attempts: 0, generation: topic.generations?.at(-1)?.n ?? 1 }
+          const requestedDesigns = topic.nextDesigns ?? topic.designs
+          if (topic.type === 'design' && requestedDesigns !== undefined) round.designs = requestedDesigns
+          delete topic.nextDesigns
           topic.rounds.push(round)
           const stored = n === 1
             ? await this.options.store.readQuestion(topic, 0)
@@ -511,13 +532,22 @@ export class ResearchEngine {
 
         const fetched = await this.waitAnswer(round, signal)
         if (fetched === undefined) return
-        await this.options.store.writeAnswer(topic, n, fetched.answer)
+        const answerHash = await this.options.store.writeAnswer(topic, n, fetched.answer)
         const written = await this.options.store.writeArtifacts(topic, n, fetched)
         if (written.length > 0) {
           round.artifacts = [...new Set([...(round.artifacts ?? []), ...written])]
         }
         round.answeredAt = new Date().toISOString()
         await this.transition(topic, 'answered')
+        await this.options.store.patchReceipt(topic, n, {
+          answerSha256: answerHash,
+          answeredAt: round.answeredAt,
+        }).catch(() => undefined)
+        await this.options.store.appendEvent(topic, {
+          type: 'answered',
+          round: n,
+          answerSha256: answerHash,
+        }).catch(() => undefined)
         this.emit({ type: 'answered', topicId: topic.id, round: n })
         topic = await this.options.store.load(id)
       }
@@ -531,7 +561,10 @@ export class ResearchEngine {
     if (round.dispatch !== undefined && round.submissionId === undefined) {
       throw new TransportError('previous dispatch was never observed; human check is required before any resend', 'ui')
     }
-    const brief = (await this.options.store.readQuestion(topic, round.n)) ?? ''
+    const brief = await this.options.store.readQuestion(topic, round.n)
+    if (brief === undefined) {
+      throw new TransportError(`question file is missing for round ${round.n}; refusing to send an empty prompt`, 'ui')
+    }
     const locator = await this.options.store.readLocator(topic.id)
     const allFiles = await this.options.store.readMaterialPaths(topic)
     let files = allFiles
@@ -552,7 +585,7 @@ export class ResearchEngine {
         brief,
         files,
         model: topic.model,
-        ...(topic.designs !== undefined ? { designs: topic.designs } : {}),
+        ...((round.designs ?? topic.designs) !== undefined ? { designs: round.designs ?? topic.designs } : {}),
       }),
     }
     round.dispatch = intent
@@ -566,7 +599,7 @@ export class ResearchEngine {
       files,
       ...(fallbackFiles !== undefined ? { fallbackFiles } : {}),
       model: topic.model,
-      ...(topic.designs !== undefined ? { designs: topic.designs } : {}),
+      ...((round.designs ?? topic.designs) !== undefined ? { designs: round.designs ?? topic.designs } : {}),
       session: locator ?? null,
     })
     round.dispatch = { ...intent, observedAt: new Date().toISOString() }
@@ -634,14 +667,24 @@ export class ResearchEngine {
     await this.options.store.writeVerdict(topic, round.n, verdictText)
     round.verdict = result.verdict
     round.done = result.done
+    await this.options.store.appendEvent(topic, {
+      type: 'verdict',
+      round: round.n,
+      verdict: result.verdict,
+      done: result.done,
+    }).catch(() => undefined)
     this.emit({ type: 'round', topicId: topic.id, round: round.n, verdict: result.verdict })
     if (result.done) {
+      delete topic.runThrough
+      delete topic.nextDesigns
       await this.options.store.writeFinal(topic, this.finalDocument(topic, result.summary, result.reason, 'completed'))
       await this.transition(topic, 'completed', { stopReason: result.reason })
       this.emit({ type: 'finished', topicId: topic.id, status: 'completed' })
       return
     }
-    if (round.n >= topic.roundsCap) {
+    if (round.n >= (topic.runThrough ?? topic.roundsCap)) {
+      delete topic.runThrough
+      delete topic.nextDesigns
       await this.options.store.writeFinal(topic, this.finalDocument(topic, result.summary, result.reason, 'capped'))
       await this.transition(topic, 'capped', { stopReason: result.reason })
       this.emit({ type: 'finished', topicId: topic.id, status: 'capped' })
@@ -680,6 +723,8 @@ export class ResearchEngine {
   }
 
   private async finishCapped(topic: Topic, reason: string): Promise<void> {
+    delete topic.runThrough
+    delete topic.nextDesigns
     await this.options.store.writeFinal(topic, this.finalDocument(topic, undefined, reason, 'capped'))
     await this.transition(topic, 'capped', { stopReason: reason })
     this.emit({ type: 'finished', topicId: topic.id, status: 'capped' })
@@ -762,6 +807,12 @@ export class ResearchEngine {
     }
     if (next !== 'stalled') delete topic.stallReason
     await this.options.store.save(topic)
+    await this.options.store.appendEvent(topic, {
+      type: 'status',
+      status: next,
+      ...(extra?.stallReason !== undefined ? { reason: extra.stallReason } : {}),
+      ...(extra?.stopReason !== undefined ? { stopReason: extra.stopReason } : {}),
+    }).catch(() => undefined)
     this.emit({
       type: 'status',
       topicId: topic.id,

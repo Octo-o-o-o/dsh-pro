@@ -188,4 +188,41 @@ describe('project store', () => {
     const { dir } = await store.create(card(), 3, 'pro', 'web-pro')
     expect(dir.startsWith(join(root, 'local', 'projects'))).toBe(true)
   })
+
+  it('fails closed when a material manifest or locator is corrupt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic, dir } = await store.create(card(), 3, 'pro', 'web')
+    await writeFile(join(dir, 'materials', 'manifest.json'), '{ not-json', 'utf8')
+    await expect(store.readMaterialPaths(topic)).rejects.toThrow(/material manifest/)
+
+    await mkdir(join(root, 'sessions'), { recursive: true })
+    await writeFile(join(root, 'sessions', `${topic.id}.json`), '{ not-json', 'utf8')
+    await expect(store.readLocator(topic.id)).rejects.toThrow(/session locator/)
+  })
+
+  it('keeps every human check in an append-only history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic, dir } = await store.create(card(), 3, 'pro', 'web')
+    await store.writeHumanCheck(topic, { at: '2026-10-23T01:00:00.000Z', conclusion: 'submitted', note: 'first' })
+    await store.writeHumanCheck(topic, { at: '2026-10-23T02:00:00.000Z', conclusion: 'not_submitted', note: 'second' })
+    const lines = (await readFile(join(dir, 'human-checks.ndjson'), 'utf8')).trim().split('\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toContain('"not_submitted"')
+  })
 })

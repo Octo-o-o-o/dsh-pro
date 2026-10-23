@@ -47,16 +47,16 @@ npm run build
 node scripts/smoke-bundle.mjs
 ```
 
-`smoke-bundle.mjs` 会按 DSH 的方式加载两个 host bundle 与两个前端 bundle（惰性 CJS factory、共享 React、等待槽位声明），断言每个插件 1 个工具、4 条路由、2 个前端槽位。
+`smoke-bundle.mjs` 会按 DSH 的方式加载两个 host bundle 与两个前端 bundle（惰性 CJS factory、共享 React、等待槽位声明），断言每个插件 1 个工具、9 条路由、2 个前端槽位。
 
 ## 验证边界
 
 - 真实 ChatGPT 页面已验证：登录、单轮提交、附件、同会话两轮、图片生成抓取（1448×1086 PNG 抓回并解码）。
-- npm 已发布 `chatgpt-pro-research@0.2.0` 与 `gpt-image-design@0.2.0`；`desktop` profile 已切到 npm 版本。
+- 当前源码版本为 `0.3.0`；本机 `desktop` profile 使用本地构建产物，重启 DSH 后才加载新 bundle。
 - 重启 DSH 后两个入口与路由已确认：`/chatgpt-pro-research/topics`、`/gpt-image-design/topics` 均 200 且返回空列表；侧边栏 R/X 图标经 16/32px 黑白底渲染核对。
 - 设计面板的画廊与 iframe demo 目前是静态渲染/路由测试，未在 GUI 里实际点开验证。
 - API 生图通道已用本地假服务验证：请求体、b64/url 落盘、参考图 multipart、401/超时/部分失败映射、取消，以及插件→引擎→`artifacts/` 的整轮流程；**未对真实服务商**（OpenAI 等）出图与计费验证。
-- 未覆盖：页面改版、超长回答、断线恢复、账号风控/ToS。
+- 未覆盖：页面改版、超长回答、真实网页断线恢复、账号风控/ToS；本地消息锚点/fixture 只证明代码路径，不等于 chatgpt.com DOM 已验收。
 
 ## 许可证
 
