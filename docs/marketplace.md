@@ -1,6 +1,6 @@
 # Marketplace submissions
 
-Status snapshot: 2026-10-23 (Asia/Shanghai).
+Status snapshot: 2026-10-23 (Asia/Shanghai). Release workflow: [RELEASING.md](RELEASING.md).
 
 ## Coordinates
 

@@ -58,9 +58,10 @@ docs/
   design.md    # 原始设计文档
   usage.md     # 研究插件的使用说明
 scripts/
-  build.mjs        # 构建两个插件的 lib/
-  make-icons.mjs   # 从 R/X 标记生成市场图标
-  sync-dist.mjs    # 生成两个发布仓库
+  build.mjs          # 构建两个插件的 lib/
+  make-icons.mjs     # 从 R/X 标记生成市场图标
+  sync-dist.mjs      # 生成两个发布仓库
+  release-dist.mjs   # 校验/构建/同步/提交/推送发布仓库
 ```
 
 ## 开发
@@ -76,6 +77,14 @@ node scripts/smoke-bundle.mjs
 `smoke-bundle.mjs` 会按 DSH 的方式加载两个 host bundle 与两个前端 bundle（惰性 CJS factory、共享 React、等待槽位声明），断言每个插件 1 个工具、9 条路由、2 个前端槽位。
 
 发布仓库由 `node scripts/sync-dist.mjs` 生成；`lib/`、`resources/`、`locale/`、`icon.svg` 和 README 从本仓库同步过去。**不要直接改发布仓库的 `lib/`**。
+
+完整开发/发版流程、版本与 tag 规则、市场重新提交步骤见 [docs/RELEASING.md](docs/RELEASING.md)。常用命令：
+
+```bash
+node scripts/release-dist.mjs --check    # 校验 + 测试，不写文件
+node scripts/release-dist.mjs --apply    # build + smoke + sync + 本地提交
+node scripts/release-dist.mjs --push     # 推送两个发布仓库 + v<version> tag
+```
 
 ## 验证边界
 

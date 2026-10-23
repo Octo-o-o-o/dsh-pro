@@ -8,7 +8,9 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "sync:dist": "node scripts/sync-dist.mjs",
+    "release:dist": "node scripts/release-dist.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
