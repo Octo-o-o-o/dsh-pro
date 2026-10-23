@@ -39,6 +39,10 @@ function artifactFileName(value: string): string {
   return base.replace(/[^\w.-]/g, '_').slice(0, 100) || 'artifact'
 }
 
+function isHtmlSource(text: string): boolean {
+  return /^\s*(?:<!doctype\s+html|<html[\s>])/i.test(text.slice(0, 512))
+}
+
 function extensionForLanguage(language: string): string {
   switch (language.toLowerCase()) {
     case 'html':
@@ -356,7 +360,9 @@ export class ResearchStore {
       added.push(relative(dir, target).replace(/\\/g, '/'))
     }
     for (const [index, block] of blocks.entries()) {
-      const target = join(base, `code-${pad(index + 1)}.${extensionForLanguage(block.language)}`)
+      const guessed = extensionForLanguage(block.language)
+      const extension = guessed === 'txt' && isHtmlSource(block.text) ? 'html' : guessed
+      const target = join(base, `code-${pad(index + 1)}.${extension}`)
       await mkdir(dirname(target), { recursive: true })
       await writeFile(target, block.text, 'utf8')
       added.push(relative(dir, target).replace(/\\/g, '/'))

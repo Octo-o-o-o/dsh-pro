@@ -73,9 +73,15 @@ interface GenerationRow {
   final?: string
 }
 
+interface ArtifactInfo {
+  path: string
+  kind: 'image' | 'demo' | 'code' | 'file'
+}
+
 interface TopicDetail extends TopicRow {
   created?: string
   generations?: GenerationRow[]
+  artifact_details?: ArtifactInfo[]
   path?: string
   rounds_detail?: RoundRow[]
 }
@@ -180,6 +186,7 @@ function Panel(): ReturnType<typeof createElement> {
   const [regenOpen, setRegenOpen] = useState(false)
   const [regenNote, setRegenNote] = useState('')
   const [viewer, setViewer] = useState<Viewer | undefined>(undefined)
+  const [viewerNotice, setViewerNotice] = useState<string | undefined>(undefined)
   showViewer = setViewer
 
   useEffect(() => {
@@ -245,6 +252,10 @@ function Panel(): ReturnType<typeof createElement> {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [selected, loadDetail, loadList])
+
+  useEffect(() => {
+    setViewerNotice(undefined)
+  }, [viewer])
 
   useEffect(() => {
     if (viewer === undefined) return
@@ -433,7 +444,11 @@ function Panel(): ReturnType<typeof createElement> {
   return createElement('div', { style: { display: 'flex', height: '100%', minHeight: 0, color: 'inherit' } },
     list,
     body,
-    viewer !== undefined ? renderViewer(viewer) : undefined)
+    viewer !== undefined ? renderViewer(viewer, {
+      basePath: detail?.path,
+      notice: viewerNotice,
+      onNotice: setViewerNotice,
+    }) : undefined)
 }
 
 function statusPill(status: string): ReturnType<typeof createElement> {
@@ -452,7 +467,13 @@ function statusPill(status: string): ReturnType<typeof createElement> {
   }, STATUS_LABEL[status] ?? status)
 }
 
-function renderViewer(view: Viewer): ReturnType<typeof createElement> {
+interface ViewerOptions {
+  basePath?: string
+  notice?: string
+  onNotice: (text: string) => void
+}
+
+function renderViewer(view: Viewer, options: ViewerOptions): ReturnType<typeof createElement> {
   const body = view.kind === 'image' && view.src !== undefined
     ? createElement('img', {
       src: view.src,
@@ -512,14 +533,105 @@ function renderViewer(view: Viewer): ReturnType<typeof createElement> {
   },
   createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid rgba(127,127,127,.2)' } },
     createElement('div', { style: { fontWeight: 600, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, view.title),
-    view.path !== undefined && view.topicId !== undefined
-      ? createElement('button', {
-        onClick: () => void revealArtifact(view.topicId as string, view.path as string),
-        style: buttonStyle(),
-      }, '在文件夹中')
-      : undefined,
     createElement('button', { onClick: () => showViewer(undefined), style: buttonStyle() }, '关闭')),
-  createElement('div', { style: { overflow: 'auto', background: view.kind === 'frame' ? '#fff' : 'transparent' } }, body)))
+  createElement('div', { style: { overflow: 'auto', flex: 1, minHeight: 0, background: view.kind === 'frame' ? '#fff' : 'transparent' } }, body),
+  viewerActions(view, options)))
+
+function viewerActions(view: Viewer, options: ViewerOptions): ReturnType<typeof createElement> | undefined {
+  const buttons: ReturnType<typeof createElement>[] = []
+  const run = (label: string, success: string, task: () => Promise<void>): ReturnType<typeof createElement> => createElement('button', {
+    key: label,
+    onClick: () => {
+      options.onNotice('处理中…')
+      void task()
+        .then(() => options.onNotice(success))
+        .catch((error: unknown) => options.onNotice(error instanceof Error ? error.message : String(error)))
+    },
+    style: buttonStyle(),
+  }, label)
+
+  if (view.kind === 'image' && view.src !== undefined) {
+    buttons.push(run('复制图片', '图片已复制到剪贴板', () => copyImage(view.src as string)))
+  }
+  if (view.path !== undefined) {
+    const native = fullPath(options.basePath, view.path)
+    buttons.push(run('复制路径', '文件路径已复制', () => navigator.clipboard.writeText(native)))
+    if (view.topicId !== undefined) {
+      buttons.push(run('打开原文件', '已请求打开原文件', () => openArtifact(view.topicId as string, view.path as string, false)))
+      buttons.push(run('在文件夹中显示', '已在文件夹中定位', () => openArtifact(view.topicId as string, view.path as string, true)))
+    }
+  }
+  if (buttons.length === 0 && options.notice === undefined) return undefined
+  return createElement('div', {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      flexWrap: 'wrap',
+      padding: '9px 14px',
+      borderTop: '1px solid rgba(127,127,127,.2)',
+      background: 'rgba(127,127,127,.04)',
+    },
+  },
+  buttons,
+  createElement('span', { style: { marginLeft: 'auto', fontSize: 11, opacity: 0.65 } }, options.notice ?? ''))
+}
+
+async function copyImage(src: string): Promise<void> {
+  if (navigator.clipboard === undefined || typeof ClipboardItem === 'undefined') {
+    throw new Error('当前环境不支持复制图片')
+  }
+  const response = await fetch(src)
+  if (!response.ok) throw new Error(`读取图片失败：${response.status}`)
+  const blob = await response.blob()
+  let png = blob
+  if (blob.type !== 'image/png') {
+    const bitmap = await createImageBitmap(blob)
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const context = canvas.getContext('2d')
+    if (context === null) throw new Error('无法转换图片')
+    context.drawImage(bitmap, 0, 0)
+    png = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(candidate => candidate === null ? reject(new Error('无法转换图片')) : resolve(candidate), 'image/png')
+    })
+  }
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+}
+
+function fullPath(base: string | undefined, path: string): string {
+  if (base === undefined || base === '') return path
+  const separator = base.includes('\\') ? '\\' : '/'
+  return `${base.replace(/[\\/]+$/, '')}${separator}${path.replace(/[\\/]/g, separator)}`
+}
+
+async function openArtifact(topicId: string, path: string, reveal: boolean): Promise<void> {
+  const response = await fetch(`${config.routes}/open`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ topic_id: topicId, path, reveal }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    let message = text === '' ? `${response.status}` : text
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown }
+      if (typeof parsed.error === 'string') message = parsed.error
+    } catch {
+      // Keep the raw body.
+    }
+    throw new Error(message)
+  }
+}
+}
+
+function artifactKind(detail: TopicDetail, path: string): ArtifactInfo['kind'] {
+  const known = detail.artifact_details?.find(item => item.path === path)
+  if (known !== undefined) return known.kind
+  if (/\.(png|jpe?g|webp|gif|svg)$/i.test(path)) return 'image'
+  if (/\.html?$/i.test(path)) return 'demo'
+  return 'code'
 }
 
 function assetUrl(topicId: string, path: string): string {
@@ -535,12 +647,13 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
       createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
         artifacts.map(path => artifactChip(detail.topic_id, path))))
   }
-  const images = artifacts.filter(path => /\.(png|jpe?g|webp|gif|svg)$/i.test(path))
-  const demos = artifacts.filter(path => /\.html?$/i.test(path))
+  const images = artifacts.filter(path => artifactKind(detail, path) === 'image')
+  const demos = artifacts.filter(path => artifactKind(detail, path) === 'demo')
+  const files = artifacts.filter(path => artifactKind(detail, path) !== 'image')
   return createElement('div', { style: { marginTop: 14 } },
     images.length > 0
       ? createElement('div', {},
-        createElement('div', { style: { fontWeight: 600, marginBottom: 6 } }, '图片'),
+        createElement('div', { style: { fontWeight: 600, marginBottom: 6 } }, '全部图片'),
         createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 } },
           images.map(path => createElement('button', {
             key: path,
@@ -562,6 +675,28 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
           title: path,
           style: { width: '100%', height: 420, border: '1px solid rgba(127,127,127,.25)', borderRadius: 8, background: '#fff' },
         })))
+      : undefined,
+    files.length > 0
+      ? createElement('div', { style: { marginTop: 12 } },
+        createElement('div', { style: { fontWeight: 600, marginBottom: 6 } }, '代码与文件'),
+        createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+          files.flatMap(path => {
+            const chips = [artifactChip(detail.topic_id, path)]
+            if (artifactKind(detail, path) === 'demo') {
+              chips.push(createElement('button', {
+                key: `preview-${path}`,
+                onClick: () => showViewer({
+                  kind: 'frame',
+                  title: path.split('/').pop() ?? path,
+                  topicId: detail.topic_id,
+                  src: assetUrl(detail.topic_id, path),
+                  path,
+                }),
+                style: chipStyle(),
+              }, `预览 ${path.split('/').pop() ?? path}`))
+            }
+            return chips
+          })))
       : undefined,
     createElement('div', { style: { marginTop: 8, opacity: 0.6, fontSize: 11, wordBreak: 'break-all' } }, artifacts.join('、')))
 }
@@ -646,13 +781,54 @@ function renderRoundRows(detail: TopicDetail, round: RoundRow, label: string): R
     cell(createElement('button', { onClick: () => void openAnswer(detail.topic_id, round.n), style: chipStyle() }, '查看回答'), { whiteSpace: 'nowrap' }))
 
   if (artifacts.length === 0) return [main]
+  const images = artifacts.filter(path => artifactKind(detail, path) === 'image')
+  const files = artifacts.filter(path => artifactKind(detail, path) !== 'image')
   const extra = createElement('tr', { key: `artifacts-${round.n}` },
     createElement('td', {
       colSpan: 7,
-      style: { padding: '0 8px 8px', borderBottom: '1px solid rgba(127,127,127,.13)' },
+      style: { padding: '0 8px 10px', borderBottom: '1px solid rgba(127,127,127,.13)' },
     },
-    createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', padding: '6px 0 2px' } },
-      artifacts.map(path => artifactChip(detail.topic_id, path)))))
+    createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8 } },
+      images.length > 0
+        ? createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+          images.map(path => createElement('button', {
+            key: path,
+            onClick: () => openViewerImage(detail.topic_id, path),
+            title: '查看大图',
+            style: {
+              padding: 0,
+              border: '1px solid rgba(127,127,127,.22)',
+              borderRadius: 8,
+              background: 'transparent',
+              cursor: 'zoom-in',
+              overflow: 'hidden',
+            },
+          }, createElement('img', {
+            src: assetUrl(detail.topic_id, path),
+            alt: path,
+            style: { width: 148, height: 96, objectFit: 'cover', display: 'block' },
+          }))))
+        : undefined,
+      files.length > 0
+        ? createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+          files.flatMap(path => {
+            const chips = [artifactChip(detail.topic_id, path)]
+            if (artifactKind(detail, path) === 'demo') {
+              chips.push(createElement('button', {
+                key: `preview-${path}`,
+                onClick: () => showViewer({
+                  kind: 'frame',
+                  title: path.split('/').pop() ?? path,
+                  topicId: detail.topic_id,
+                  src: assetUrl(detail.topic_id, path),
+                  path,
+                }),
+                style: chipStyle(),
+              }, `预览 ${path.split('/').pop() ?? path}`))
+            }
+            return chips
+          }))
+        : undefined)))
   return [main, extra]
 }
 
@@ -710,14 +886,6 @@ async function fetchText(url: string): Promise<string> {
   const response = await fetch(url, { headers: { accept: 'text/plain, text/markdown' } })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
   return await response.text()
-}
-
-async function revealArtifact(topicId: string, path: string): Promise<void> {
-  await fetch(`${config.routes}/open`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ topic_id: topicId, path }),
-  }).catch(() => undefined)
 }
 
 function formatTime(value: string | undefined): string {

@@ -150,6 +150,10 @@ function homeDir(): string {
   return process.env.DSH_HOME ?? join(homedir(), '.dsh')
 }
 
+function isHtmlSource(text: string): boolean {
+  return /^\s*(?:<!doctype\s+html|<html[\s>])/i.test(text.slice(0, 512))
+}
+
 function mimeFor(path: string): string {
   switch (extname(path).toLowerCase()) {
     case '.png': return 'image/png'
@@ -589,7 +593,48 @@ class ProResearchService {
     const store = this.storeAt(entry.root, entry.mode)
     const topic = await store.load(id)
     const dir = await store.dirOf(id)
-    return { ...this.view(topic), root: entry.root, store: entry.mode, path: dir, rounds_detail: topic.rounds }
+    return {
+      ...this.view(topic),
+      root: entry.root,
+      store: entry.mode,
+      path: dir,
+      artifact_details: await this.artifactDetails(dir, topic),
+      rounds_detail: topic.rounds,
+    }
+  }
+
+  private async artifactDetails(dir: string, topic: Topic): Promise<Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'file' }>> {
+    const root = resolve(dir, 'artifacts')
+    const details: Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'file' }> = []
+    for (const path of topic.artifacts) {
+      if (path === 'final.md') continue
+      const target = resolve(dir, path)
+      if (target !== root && !target.startsWith(`${root}${sep}`)) continue
+      const extension = extname(target).toLowerCase()
+      if (/^\.(png|jpe?g|webp|gif|svg)$/.test(extension)) {
+        details.push({ path, kind: 'image' })
+        continue
+      }
+      if (extension === '.html' || extension === '.htm') {
+        details.push({ path, kind: 'demo' })
+        continue
+      }
+      if (/^\.(txt|md|markdown)$/.test(extension)) {
+        try {
+          const head = (await readFile(target, 'utf8')).slice(0, 512)
+          details.push({ path, kind: isHtmlSource(head) ? 'demo' : 'code' })
+        } catch {
+          details.push({ path, kind: 'file' })
+        }
+        continue
+      }
+      if (/^\.(css|js|jsx|ts|tsx|json|html)$/.test(extension)) {
+        details.push({ path, kind: 'code' })
+        continue
+      }
+      details.push({ path, kind: 'file' })
+    }
+    return details
   }
 
   /** Serve one recorded artifact; the path must stay inside `<topic>/artifacts/`. */  async readArtifact(id: string, relativePath: string): Promise<{ bytes: Buffer; mime: string }> {
@@ -603,7 +648,12 @@ class ProResearchService {
       throw new Error('artifact path escapes the topic')
     }
     const bytes = await readFile(target)
-    return { bytes, mime: mimeFor(target) }
+    const textMime = mimeFor(target)
+    if (textMime.startsWith('text/plain') || textMime.startsWith('text/markdown')) {
+      const head = bytes.subarray(0, 512).toString('utf8')
+      if (isHtmlSource(head)) return { bytes, mime: 'text/html; charset=utf-8' }
+    }
+    return { bytes, mime: textMime }
   }
 
   /** Raw answer text for one round; shown in a new tab from the panel. */
@@ -646,6 +696,25 @@ class ProResearchService {
       : process.platform === 'darwin'
         ? spawn('open', ['-R', target], { detached: true, stdio: 'ignore' })
         : spawn('xdg-open', [dirname(target)], { detached: true, stdio: 'ignore' })
+    child.unref()
+  }
+
+  /** Open one topic file with the OS default application. */
+  async openFile(id: string, relativePath: string): Promise<void> {
+    const entry = await this.entryFor(id)
+    if (entry === undefined) throw new Error(`unknown topic: ${id}`)
+    const store = this.storeAt(entry.root, entry.mode)
+    const dir = await store.dirOf(id)
+    const target = resolve(dir, relativePath)
+    if (target !== dir && !target.startsWith(`${dir}${sep}`)) {
+      throw new Error('path escapes the topic')
+    }
+    await access(target)
+    const child = process.platform === 'win32'
+      ? spawn('cmd.exe', ['/c', 'start', '', target], { detached: true, stdio: 'ignore', windowsHide: true })
+      : process.platform === 'darwin'
+        ? spawn('open', [target], { detached: true, stdio: 'ignore' })
+        : spawn('xdg-open', [target], { detached: true, stdio: 'ignore' })
     child.unref()
   }
 
@@ -1170,7 +1239,8 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
         const body = await readJsonBody(req)
         const id = typeof body.topic_id === 'string' ? body.topic_id : ''
         const relativePath = typeof body.path === 'string' ? body.path : ''
-        await service.revealFile(id, relativePath)
+        if (body.reveal === false) await service.openFile(id, relativePath)
+        else await service.revealFile(id, relativePath)
         sendJson(res, 200, { ok: true })
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
