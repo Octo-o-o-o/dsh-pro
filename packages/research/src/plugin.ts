@@ -130,8 +130,20 @@ interface RegistryEntry {
 }
 
 interface LiveAgent {
+  id?: string
   inject(message: unknown): void
   followup?(message: unknown): void
+  whenIdle?(): Promise<void>
+}
+
+interface AgentHandle {
+  agent: LiveAgent
+  dispose(): Promise<void>
+}
+
+interface AgentFactory {
+  get(id: string): LiveAgent | undefined
+  resume?(options: { resumeSessionId: string }): Promise<AgentHandle>
 }
 
 function homeDir(): string {
@@ -255,6 +267,8 @@ class ProResearchService {
   private readonly engines = new Map<string, ResearchEngine>()
   private readonly stores = new Map<string, ResearchStore>()
   private readonly topicSessions = new Map<string, string>()
+  private readonly wakeHandles = new Map<string, AgentHandle>()
+  private agentFactory?: AgentFactory
   private registryChain: Promise<void> = Promise.resolve()
   private transport?: ChatGptWebTransport
   private imageTransport?: OpenAIImageTransport
@@ -511,24 +525,43 @@ class ProResearchService {
    * A human accepted a result. Wake the originating conversation so the agent
    * continues whatever it was doing before it handed this topic off.
    */
-  private async notifyAccepted(id: string, topic: Topic): Promise<void> {
+  useAgentFactory(factory: AgentFactory): void {
+    this.agentFactory = factory
+  }
+
+  private async wakeSession(sessionId: string, text: string): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
+    const agents = this.agentFactory ?? this.ctx.get('agents') as AgentFactory | undefined
+    if (agents === undefined) return { ok: false, reason: 'agents 服务不可用' }
+    let agent = agents.get(sessionId)
+    let resumed = false
+    if (agent === undefined && agents.resume !== undefined) {
+      try {
+        const handle = await agents.resume({ resumeSessionId: sessionId })
+        this.wakeHandles.set(sessionId, handle)
+        agent = handle.agent
+        resumed = true
+      } catch (error) {
+        return { ok: false, reason: `恢复会话失败：${error instanceof Error ? error.message : String(error)}` }
+      }
+    }
+    if (agent === undefined) return { ok: false, reason: '原会话已不存在或未加载' }
+    if (agent.followup === undefined) return { ok: false, reason: '当前运行时不支持唤醒会话' }
+    agent.followup(createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'plugin', plugin: this.spec.name },
+    }))
+    return { ok: true, ...(resumed ? { resumed: true } : {}) }
+  }
+
+  private async notifyAccepted(id: string, topic: Topic): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
     try {
       const entry = await this.entryFor(id)
       const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
-      if (sessionId === undefined) return
-      const agents = this.ctx.get('agents') as { get(id: string): LiveAgent | undefined } | undefined
-      const agent = agents?.get(sessionId)
-      if (agent === undefined || agent.followup === undefined) return
+      if (sessionId === undefined) return { ok: false, reason: '原会话 id 未记录' }
       const dir = await this.storeAt(entry?.root ?? this.rootFor(''), entry?.mode ?? this.config.store).dirOf(id)
-      agent.followup(createUserMessage({
-        content: [{
-          type: 'text',
-          text: `<system-reminder>用户已接受「${topic.title}」的当前结果，视为验收通过。请继续这个主题之前被搁置的后续工作，不要重复已经完成的研究/设计轮次。产物目录：${dir}，最终汇总：${join(dir, 'final.md')}。</system-reminder>`,
-        }],
-        source: { kind: 'plugin', plugin: this.spec.name },
-      }))
-    } catch {
-      // Best-effort: acceptance is already persisted.
+      return await this.wakeSession(sessionId, `<system-reminder>用户已接受「${topic.title}」的当前结果，视为验收通过。请继续这个主题之前被搁置的后续工作，不要重复已经完成的研究/设计轮次。产物目录：${dir}，最终汇总：${join(dir, 'final.md')}。</system-reminder>`)
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -635,8 +668,8 @@ class ProResearchService {
     if (action === 'cancel') return this.view(await engine.cancel(id))
     if (action === 'accept') {
       const accepted = await engine.accept(id)
-      await this.notifyAccepted(id, accepted)
-      return this.view(accepted)
+      const wake = await this.notifyAccepted(id, accepted)
+      return { ...this.view(accepted), wake }
     }
     if (action === 'human_check') {
       if (conclusion === undefined) throw new Error('conclusion is required')
@@ -918,6 +951,8 @@ class ProResearchService {
   dispose(): void {
     this.imageTransport?.dispose()
     this.imageTransport = undefined
+    for (const handle of this.wakeHandles.values()) void handle.dispose()
+    this.wakeHandles.clear()
     this.shared?.release()
     this.shared = undefined
     this.transport = undefined
@@ -1178,6 +1213,10 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       return () => clearTimeout(timer)
     }, `${spec.name}: recover interrupted rounds`)
     registerSkill(ctx as ServiceContext, spec)
+    ;(ctx as ServiceContext).inject(['agents'], scoped => {
+      const factory = scoped.get('agents') as AgentFactory | undefined
+      if (factory !== undefined) service.useAgentFactory(factory)
+    })
     ;(ctx as ServiceContext).inject(['webServer'], scoped => registerRoutes(scoped, service, spec))
   ;(ctx as ServiceContext).tools.register(defineTool({
     name: spec.tool,

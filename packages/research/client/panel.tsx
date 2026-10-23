@@ -132,7 +132,7 @@ function channelLabel(channel: string | undefined): string | undefined {
 }
 
 async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { accept: 'application/json' } })
+  const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
   return await response.json() as T
 }
@@ -193,16 +193,16 @@ function Panel(): ReturnType<typeof createElement> {
       const data = await getJson<{ topics: TopicRow[] }>(`${config.routes}/topics`)
       setTopics(data.topics)
       setError(undefined)
-      if (selected === undefined && data.topics[0] !== undefined) setSelected(data.topics[0].topic_id)
+      setSelected(current => current ?? data.topics[0]?.topic_id)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
-  }, [selected])
+  }, [])
 
   const loadDetail = useCallback(async (id: string) => {
     try {
       const data = await getJson<{ topic: TopicDetail }>(`${config.routes}/topic?id=${encodeURIComponent(id)}`)
-      setDetail(data.topic)
+      setDetail(current => current === undefined || current.topic_id === id ? data.topic : current)
       setError(undefined)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -220,7 +220,31 @@ function Panel(): ReturnType<typeof createElement> {
     void loadDetail(selected)
     const timer = setInterval(() => { void loadDetail(selected) }, POLL_MS)
     return () => clearInterval(timer)
-  }, [selected, loadDetail, topics])
+  }, [selected, loadDetail])
+
+  useEffect(() => {
+    if (selected === undefined || detail === undefined) return
+    const listed = topics.find(topic => topic.topic_id === selected)
+    if (listed !== undefined && listed.status !== detail.status) {
+      void loadDetail(selected)
+    }
+  }, [topics, selected, detail, loadDetail])
+
+  useEffect(() => {
+    const refresh = (): void => {
+      if (selected !== undefined) void loadDetail(selected)
+      void loadList()
+    }
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [selected, loadDetail, loadList])
 
   useEffect(() => {
     if (viewer === undefined) return
@@ -240,11 +264,15 @@ function Panel(): ReturnType<typeof createElement> {
       note = input.trim()
     }
     try {
-      const result = await postAction<{ topic: TopicRow }>({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
+      const result = await postAction<{ topic: TopicRow; wake?: { ok: boolean; resumed?: boolean; reason?: string } }>({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
       if (action === 'accept') {
         setDetail(current => current === undefined ? current : { ...current, status: 'completed' })
         if (result.topic?.updated !== undefined) markTopicSeen(config.panelId, selected, result.topic.updated)
-        setNotice({ kind: 'ok', text: '已接受结果' })
+        if (result.wake?.ok === true) {
+          setNotice({ kind: 'ok', text: result.wake.resumed === true ? '已接受结果，并恢复了原会话' : '已接受结果，原会话已唤醒' })
+        } else {
+          setNotice({ kind: 'error', text: `已接受结果，但没能唤醒原会话：${result.wake?.reason ?? '原因未知'}` })
+        }
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
       }
