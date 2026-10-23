@@ -69,13 +69,14 @@ interface RoundRow {
 interface GenerationRow {
   n: number
   createdAt: string
+  rounds?: number
   reason?: string
   final?: string
 }
 
 interface ArtifactInfo {
   path: string
-  kind: 'image' | 'demo' | 'code' | 'file'
+  kind: 'image' | 'demo' | 'code' | 'archive' | 'file'
 }
 
 interface TopicDetail extends TopicRow {
@@ -106,7 +107,7 @@ const STATUS_LABEL: Record<string, string> = {
   answered: '已答复',
   adjudicating: '裁决中',
   completed: '完成',
-  capped: '到轮次上限',
+  capped: '待接受',
   stalled: '卡住',
   failed: '失败',
   cancelled: '已取消',
@@ -284,6 +285,12 @@ function Panel(): ReturnType<typeof createElement> {
         } else {
           setNotice({ kind: 'error', text: `已接受结果，但没能唤醒原会话：${result.wake?.reason ?? '原因未知'}` })
         }
+      } else if (action === 'review') {
+        if (result.wake?.ok === true) {
+          setNotice({ kind: 'ok', text: result.wake.resumed === true ? '已恢复原会话，请它判断是否接受' : '已把结果交给原会话判断' })
+        } else {
+          setNotice({ kind: 'error', text: `没能通知原会话：${result.wake?.reason ?? '原因未知'}` })
+        }
       } else if (action === 'wake') {
         if (result.wake?.ok === true) {
           setNotice({ kind: 'ok', text: result.wake.resumed === true ? '已恢复原会话' : '原会话已唤醒' })
@@ -379,7 +386,7 @@ function Panel(): ReturnType<typeof createElement> {
         detail.stall_reason !== null ? createElement('div', { style: { color: '#ed6c02', marginBottom: 8, fontSize: 12 } }, `卡住原因：${STALL_LABEL[detail.stall_reason] ?? detail.stall_reason}（${detail.stall_reason}）`) : undefined,
         detail.stop_reason !== null ? createElement('div', { style: { marginBottom: 8, fontSize: 12, opacity: 0.72 } }, `停止依据：${detail.stop_reason}`) : undefined,
         detail.status === 'capped' && (detail.stop_reason ?? '').includes('未配置裁决模型')
-          ? createElement('div', { style: { marginBottom: 8, fontSize: 11, color: '#ed6c02' } }, '未配置自动裁决：跑满轮次不会自动判定成功；请接受结果或重新生成。')
+          ? createElement('div', { style: { marginBottom: 8, fontSize: 11, color: '#ed6c02' } }, '未配置自动裁决：跑满轮次后进入待接受。可以接受、重新生成，或点「请原会话判断」。')
           : undefined,
         detail.path !== undefined ? createElement('div', { style: { opacity: 0.5, marginBottom: 10, wordBreak: 'break-all', fontSize: 11 } }, detail.path) : undefined,
         createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 } },
@@ -392,6 +399,9 @@ function Panel(): ReturnType<typeof createElement> {
             : undefined,
           canAccept
             ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, detail?.status === 'capped' ? '接受结果' : '接受已有产物')
+            : undefined,
+          detail.status === 'capped' || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts)
+            ? createElement('button', { onClick: () => void act('review'), style: buttonStyle() }, '请原会话判断')
             : undefined,
           detail.status === 'completed'
             ? createElement('button', { onClick: () => void act('wake'), style: buttonStyle() }, '唤醒原会话')
@@ -640,7 +650,12 @@ function artifactKind(detail: TopicDetail, path: string): ArtifactInfo['kind'] {
   if (known !== undefined) return known.kind
   if (/\.(png|jpe?g|webp|gif|svg)$/i.test(path)) return 'image'
   if (/\.html?$/i.test(path)) return 'demo'
+  if (/\.zip$/i.test(path)) return 'archive'
   return 'code'
+}
+
+function bundleUrl(topicId: string, round: number): string {
+  return `${config.routes}/bundle?id=${encodeURIComponent(topicId)}&round=${round}`
 }
 
 function assetUrl(topicId: string, path: string): string {
@@ -734,6 +749,10 @@ function renderGenerations(detail: TopicDetail, rounds: RoundRow[]): ReturnType<
           ? createElement('span', { style: { fontSize: 11, opacity: 0.62, flex: 1, minWidth: 160 } }, generation.reason)
           : undefined,
         generation.createdAt !== '' ? createElement('span', { style: { fontSize: 11, opacity: 0.45 } }, formatTime(generation.createdAt)) : undefined,
+        generation.rounds !== undefined
+          ? createElement('span', { style: { fontSize: 11, opacity: 0.5, fontVariantNumeric: 'tabular-nums' } },
+            `${(groups.get(generation.n) ?? []).length}/${generation.rounds} 轮`)
+          : undefined,
         generation.final !== undefined
           ? createElement('button', {
             onClick: () => void openTopicFile(detail.topic_id, generation.final as string),
@@ -787,7 +806,15 @@ function renderRoundRows(detail: TopicDetail, round: RoundRow, label: string): R
     cell(round.submittedAt !== undefined ? formatTime(round.submittedAt) : '—', { whiteSpace: 'nowrap', opacity: 0.7 }),
     cell(round.answeredAt !== undefined ? formatTime(round.answeredAt) : ACTIVE.has(detail.status) ? '进行中' : '—', { whiteSpace: 'nowrap', opacity: 0.7 }),
     cell(attempts > 1 ? String(attempts - 1) : '—', { whiteSpace: 'nowrap', opacity: attempts > 1 ? 0.9 : 0.45 }),
-    cell(createElement('button', { onClick: () => void openAnswer(detail.topic_id, round.n), style: chipStyle() }, '查看回答'), { whiteSpace: 'nowrap' }))
+    cell(createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+      createElement('button', { onClick: () => void openAnswer(detail.topic_id, round.n), style: chipStyle() }, '查看回答'),
+      artifacts.length > 0
+        ? createElement('a', {
+          href: bundleUrl(detail.topic_id, round.n),
+          download: `round-${String(round.n).padStart(2, '0')}.zip`,
+          style: { ...chipStyle(), textDecoration: 'none' },
+        }, '下载 ZIP')
+        : undefined), { whiteSpace: 'nowrap' }))
 
   if (artifacts.length === 0) return [main]
   const images = artifacts.filter(path => artifactKind(detail, path) === 'image')
@@ -849,6 +876,15 @@ function artifactChip(topicId: string, path: string): ReturnType<typeof createEl
       onClick: () => openViewerImage(topicId, path),
       style: chipStyle(),
       title: '查看大图',
+    }, name)
+  }
+  if (/\.zip$/i.test(path)) {
+    return createElement('a', {
+      key: path,
+      href: assetUrl(topicId, path),
+      download: name,
+      style: { ...chipStyle(), textDecoration: 'none' },
+      title: '下载压缩包',
     }, name)
   }
   if (/\.html?$/i.test(path)) {

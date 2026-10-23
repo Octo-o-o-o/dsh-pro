@@ -38,6 +38,7 @@ export interface ProConfig {
   maxRoundMinutes: number
   store: StoreMode
   autoStart: boolean
+  autoReview: boolean
   notify: 'stall-only' | 'all'
   maxFiles: number
   maxTotalMB: number
@@ -89,6 +90,7 @@ export function defaultConfig(home: string): ProConfig {
     maxRoundMinutes: 90,
     store: 'project',
     autoStart: false,
+    autoReview: true,
     notify: 'stall-only',
     maxFiles: 12,
     maxTotalMB: 24,

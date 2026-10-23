@@ -75,6 +75,8 @@ export interface HumanCheck {
 export interface GenerationRecord {
   n: number
   createdAt: string
+  /** Rounds this version is allowed to run (its own budget). */
+  rounds?: number
   /** Why this version was requested, e.g. the user's regeneration feedback. */
   reason?: string
   /** Topic-relative archived final for this version. */
@@ -172,13 +174,22 @@ export interface ImageAsset {
 /** One fenced code block from the answer (frontend demos live here). */
 export interface CodeBlock {
   language: string
+  /** Filename hint from the fence/header, when ChatGPT exposes one. */
+  name?: string
   text: string
+}
+
+/** A downloadable archive linked from the answer (often a code-interpreter zip). */
+export interface ArchiveAsset {
+  name: string
+  base64: string
 }
 
 export interface FetchedAnswer {
   answer: string
   images?: ImageAsset[]
   codeBlocks?: CodeBlock[]
+  archives?: ArchiveAsset[]
   snapshotPath?: string
 }
 

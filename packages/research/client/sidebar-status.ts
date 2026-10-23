@@ -70,7 +70,7 @@ const STATUS_TINT = {
 function badgeParts(counts: Counts): BadgePart[] {
   const parts: BadgePart[] = []
   if (counts.active > 0) parts.push({ text: `${counts.active} 进行`, color: STATUS_TINT.active })
-  if (counts.incomplete > 0) parts.push({ text: `${counts.incomplete} 未完成`, color: STATUS_TINT.incomplete })
+  if (counts.incomplete > 0) parts.push({ text: `${counts.incomplete} 待接受`, color: STATUS_TINT.incomplete })
   if (counts.completed > 0) parts.push({ text: `${counts.completed} 完成`, color: STATUS_TINT.completed })
   if (counts.failed > 0) parts.push({ text: `${counts.failed} 失败`, color: STATUS_TINT.failed })
   return parts

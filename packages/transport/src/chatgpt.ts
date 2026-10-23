@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
-import type { CodeBlock, ImageAsset, PollResult, ReattachRequest, ReattachResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
+import type { ArchiveAsset, CodeBlock, FetchedAnswer, ImageAsset, PollResult, ReattachRequest, ReattachResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
 import { TransportError } from 'dsh-pro-core'
 import { SELECTORS } from './selectors.ts'
 import { advanceCompletion } from './completion.ts'
@@ -303,7 +303,7 @@ export class ChatGptWebTransport implements Transport {
     }
   }
 
-  async fetch(request: { submissionId: string }): Promise<{ answer: string; snapshotPath?: string }> {
+  async fetch(request: { submissionId: string }): Promise<FetchedAnswer> {
     const submission = this.submissions.get(request.submissionId)
     if (submission === undefined) throw new TransportError('unknown submission', 'ui')
     if (submission.page.isClosed()) throw new TransportError('conversation page is closed', 'ui')
@@ -311,13 +311,15 @@ export class ChatGptWebTransport implements Transport {
     const answer = await this.lastAssistantText(page)
     const images = await this.collectImages(page)
     const codeBlocks = await this.collectCodeBlocks(page)
-    if (answer === '' && images.length === 0 && codeBlocks.length === 0) {
+    const archives = await this.collectArchives(page)
+    if (answer === '' && images.length === 0 && codeBlocks.length === 0 && archives.length === 0) {
       throw new TransportError('no assistant answer on the page', 'ui')
     }
     return {
       answer,
       ...(images.length > 0 ? { images } : {}),
       ...(codeBlocks.length > 0 ? { codeBlocks } : {}),
+      ...(archives.length > 0 ? { archives } : {}),
     }
   }
 
@@ -389,14 +391,72 @@ export class ChatGptWebTransport implements Transport {
   }
 
   private async collectCodeBlocks(page: Page): Promise<CodeBlock[]> {
-    return await page.evaluate(() => [...document.querySelectorAll('main pre code')]
-      .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
-      .slice(0, 20)
-      .map(code => ({
-        language: /language-([\w-]+)/.exec(code.className)?.[1] ?? '',
-        text: code.textContent ?? '',
-      }))
-      .filter(block => block.text.trim() !== ''))
+    return await page.evaluate(() => {
+      const filePattern = /([\w.-]+\.(?:html?|css|jsx?|tsx?|json|md|py|vue|svelte|sh|ya?ml))/i
+      const nameOf = (code: HTMLElement): string => {
+        const pre = code.closest('pre')
+        const header = pre?.parentElement
+        const candidates = [
+          code.getAttribute('data-filename'),
+          code.getAttribute('data-file-name'),
+          pre?.getAttribute('data-filename'),
+          pre?.getAttribute('data-file-name'),
+          pre?.getAttribute('title'),
+          header?.querySelector('[data-filename], [data-file-name], [class*="filename" i]')?.textContent ?? '',
+          (pre?.previousElementSibling?.textContent ?? '').trim(),
+          (code.textContent ?? '').split('\n')[0] ?? '',
+        ]
+        for (const candidate of candidates) {
+          if (candidate == null || candidate === '') continue
+          const match = filePattern.exec(candidate)
+          if (match !== null) return match[1] ?? ''
+        }
+        return ''
+      }
+      return [...document.querySelectorAll('main pre code')]
+        .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
+        .slice(0, 20)
+        .map(code => ({
+          language: /language-([\w-]+)/.exec(code.className)?.[1] ?? '',
+          name: nameOf(code as HTMLElement),
+          text: code.textContent ?? '',
+        }))
+        .filter(block => block.text.trim() !== '')
+    })
+  }
+
+  /** Download zip links rendered in the assistant answer (code interpreter downloads). */
+  private async collectArchives(page: Page): Promise<ArchiveAsset[]> {
+    const links = await page.evaluate(() => [...document.querySelectorAll('main a[href]')]
+      .filter(anchor => anchor.closest('form') === null && anchor.closest('[data-message-author-role="user"]') === null)
+      .map(anchor => {
+        const element = anchor as HTMLAnchorElement
+        const label = (element.getAttribute('download') ?? element.textContent ?? '').trim()
+        return { href: element.href, label }
+      })
+      .filter(link => link.href !== '' && (link.label.toLowerCase().endsWith('.zip') || link.href.toLowerCase().includes('.zip')))
+      .slice(0, 3))
+    const archives: ArchiveAsset[] = []
+    for (const link of links) {
+      try {
+        const encoded = await page.evaluate(async href => {
+          const response = await fetch(href)
+          if (!response.ok) throw new Error(`zip download failed: ${response.status}`)
+          const bytes = new Uint8Array(await response.arrayBuffer())
+          if (bytes.byteLength > 50 * 1024 * 1024) throw new Error('zip is larger than 50 MB')
+          let binary = ''
+          for (let index = 0; index < bytes.length; index += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+          }
+          return btoa(binary)
+        }, link.href)
+        const name = (link.label !== '' ? link.label : link.href.split('/').pop() ?? 'archive.zip').replace(/[^\w.-]/g, '_')
+        archives.push({ name: name.endsWith('.zip') ? name : `${name}.zip`, base64: String(encoded) })
+      } catch {
+        // A dead/private download link must not fail the whole answer.
+      }
+    }
+    return archives
   }
 
   async cancelSubmission(submissionId: string): Promise<void> {

@@ -1,5 +1,6 @@
 import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { unzipSync, zipSync } from 'fflate'
 import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
 
@@ -37,6 +38,17 @@ function pad(n: number): string {
 function artifactFileName(value: string): string {
   const base = value.split(/[\\/]/).pop() ?? 'artifact'
   return base.replace(/[^\w.-]/g, '_').slice(0, 100) || 'artifact'
+}
+
+function artifactRelativePath(value: string): string {
+  const parts = value
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(part => part !== '' && part !== '.' && part !== '..')
+    .map(part => part.replace(/[^\w.-]/g, '_').slice(0, 60))
+    .filter(part => part !== '')
+    .slice(-4)
+  return parts.length > 0 ? parts.join('/') : 'artifact'
 }
 
 function isHtmlSource(text: string): boolean {
@@ -169,7 +181,7 @@ export class ResearchStore {
       status: 'draft',
       roundsCap,
       ...(card.designs !== undefined ? { designs: card.designs } : {}),
-      generations: [{ n: 1, createdAt: now, reason: '初始任务' }],
+      generations: [{ n: 1, createdAt: now, rounds: roundsCap, reason: '初始任务' }],
       rounds: [],
       channel,
       model,
@@ -344,11 +356,12 @@ export class ResearchStore {
     }
   }
 
-  /** Persist images and code blocks under `<topic>/artifacts/round-NN/`. */
+  /** Persist images, code blocks and downloadable archives under `<topic>/artifacts/round-NN/`. */
   async writeArtifacts(topic: Topic, round: number, fetched: FetchedAnswer): Promise<string[]> {
     const images = fetched.images ?? []
     const blocks = fetched.codeBlocks ?? []
-    if (images.length === 0 && blocks.length === 0) return []
+    const archives = fetched.archives ?? []
+    if (images.length === 0 && blocks.length === 0 && archives.length === 0) return []
     const dir = await this.dirOf(topic.id)
     const base = join(dir, 'artifacts', `round-${pad(round)}`)
     const added: string[] = []
@@ -359,18 +372,85 @@ export class ResearchStore {
       await writeFile(target, Buffer.from(image.base64, 'base64'))
       added.push(relative(dir, target).replace(/\\/g, '/'))
     }
+    const used = new Set<string>()
     for (const [index, block] of blocks.entries()) {
       const guessed = extensionForLanguage(block.language)
       const extension = guessed === 'txt' && isHtmlSource(block.text) ? 'html' : guessed
-      const target = join(base, `code-${pad(index + 1)}.${extension}`)
+      const hinted = block.name === undefined || block.name.trim() === '' ? '' : artifactRelativePath(block.name.trim())
+      const withExtension = hinted === ''
+        ? `code-${pad(index + 1)}.${extension}`
+        : /\.[a-z0-9]+$/i.test(hinted) ? hinted : `${hinted}.${extension}`
+      let name = withExtension
+      let suffix = 1
+      while (used.has(name.toLowerCase())) {
+        suffix += 1
+        name = `${withExtension.replace(/\.[a-z0-9]+$/i, '')}-${suffix}${/\.[a-z0-9]+$/i.exec(withExtension)?.[0] ?? ''}`
+      }
+      used.add(name.toLowerCase())
+      const target = join(base, name)
       await mkdir(dirname(target), { recursive: true })
       await writeFile(target, block.text, 'utf8')
       added.push(relative(dir, target).replace(/\\/g, '/'))
+    }
+    for (const [index, archive] of archives.entries()) {
+      const bytes = Buffer.from(archive.base64, 'base64')
+      if (bytes.length === 0) continue
+      const archiveName = artifactFileName(archive.name === '' ? `archive-${pad(index + 1)}.zip` : archive.name)
+      const zipName = archiveName.toLowerCase().endsWith('.zip') ? archiveName : `${archiveName}.zip`
+      const target = join(base, zipName)
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, bytes)
+      added.push(relative(dir, target).replace(/\\/g, '/'))
+      try {
+        const entries = unzipSync(new Uint8Array(bytes))
+        const rootName = zipName.replace(/\.zip$/i, '')
+        let count = 0
+        let total = 0
+        for (const [entry, data] of Object.entries(entries)) {
+          const normalized = entry.replace(/\\/g, '/')
+          if (normalized.endsWith('/') || normalized.startsWith('/') || normalized.split('/').includes('..')) continue
+          if (normalized.startsWith('__MACOSX/') || data.length === 0) continue
+          count += 1
+          total += data.length
+          if (count > 100 || total > 50 * 1024 * 1024) break
+          const nested = join(base, rootName, normalized)
+          await mkdir(dirname(nested), { recursive: true })
+          await writeFile(nested, data)
+          added.push(relative(dir, nested).replace(/\\/g, '/'))
+        }
+      } catch {
+        // Invalid/encrypted zip: keep the original archive for manual handling.
+      }
     }
     for (const artifact of added) {
       if (!topic.artifacts.includes(artifact)) topic.artifacts.push(artifact)
     }
     return added
+  }
+
+  /** Build a downloadable zip for one round without touching the topic files. */
+  async bundleRound(topic: Topic, round: number): Promise<{ name: string; bytes: Buffer }> {
+    const dir = await this.dirOf(topic.id)
+    const base = resolve(dir, 'artifacts', `round-${pad(round)}`)
+    const prefix = `artifacts/round-${pad(round)}/`
+    const files: Record<string, Uint8Array> = {}
+    let total = 0
+    for (const path of topic.artifacts) {
+      if (!path.startsWith(prefix)) continue
+      const target = resolve(dir, path)
+      if (target !== base && !target.startsWith(`${base}${sep}`)) continue
+      try {
+        const bytes = await readFile(target)
+        total += bytes.length
+        if (total > 100 * 1024 * 1024) throw new Error('round artifacts exceed 100 MB')
+        files[path.slice(prefix.length)] = bytes
+      } catch {
+        // Skip one unreadable file; the rest of the bundle is still useful.
+      }
+    }
+    if (Object.keys(files).length === 0) throw new Error(`round ${round} has no artifacts to bundle`)
+    const zipped = zipSync(files, { level: 6 })
+    return { name: `round-${pad(round)}.zip`, bytes: Buffer.from(zipped) }
   }
 
   async readAnswer(topic: Topic, round: number): Promise<string | undefined> {

@@ -331,12 +331,14 @@ describe('engine', () => {
     expect(regenerated.status).toBe('queued')
     expect(regenerated.generations?.map(item => item.n)).toEqual([1, 2])
     expect(regenerated.generations?.[1]?.reason).toBe('上一版太保守')
+    expect(regenerated.generations?.[1]?.rounds).toBe(3)
     expect(await readFile(join(dir, 'rounds', '02-question.md'), 'utf8')).toContain('换一个方向')
 
     await engine.drain()
     const final = await engine.status(topic.id)
     expect(final.rounds[0]?.generation).toBe(1)
     expect(final.rounds[1]?.generation).toBe(2)
+    expect(final.rounds.filter(round => round.generation === 2)).toHaveLength(3)
     expect(await readFile(join(dir, 'finals', 'attempt-01.md'), 'utf8')).toContain('状态：completed')
   })
 

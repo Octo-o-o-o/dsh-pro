@@ -199,6 +199,15 @@ export class ResearchEngine {
    * round to the current one. Failed rounds without an answer are retried in
    * place; finished topics get a fresh generation.
    */
+  /**
+   * Each version gets its own round budget, so a regeneration can run as many
+   * rounds as the initial task did instead of stopping after a single round.
+   */
+  private generationBudget(topic: Topic): number {
+    const configured = topic.generations?.[0]?.rounds ?? this.options.config.rounds
+    return Number.isInteger(configured) && configured >= 1 ? configured : 1
+  }
+
   async regenerate(id: string, brief: string, reason: string, materials?: MaterialRef[]): Promise<Topic> {
     const topic = await this.options.store.load(id)
     this.assertChannel(topic)
@@ -212,7 +221,7 @@ export class ResearchEngine {
     if (!finished) throw new Error(`topic ${id} is ${topic.status}; regenerate needs a terminal topic`)
 
     if (topic.generations === undefined) {
-      topic.generations = [{ n: 1, createdAt: topic.created, reason: '初始任务' }]
+      topic.generations = [{ n: 1, createdAt: topic.created, rounds: this.generationBudget(topic), reason: '初始任务' }]
     }
     // Older topics finished before generations existed: archive their current
     // final as generation 1 before starting generation 2.
@@ -220,10 +229,16 @@ export class ResearchEngine {
       const previous = await this.options.store.readFinal(topic)
       if (previous !== undefined) await this.options.store.writeFinal(topic, previous)
     }
+    const budget = this.generationBudget(topic)
     const generation = (topic.generations.at(-1)?.n ?? 1) + 1
-    topic.generations.push({ n: generation, createdAt: new Date().toISOString(), reason: reason.trim() || '用户重新生成' })
+    topic.generations.push({
+      n: generation,
+      createdAt: new Date().toISOString(),
+      rounds: budget,
+      reason: reason.trim() || '用户重新生成',
+    })
     const next = topic.rounds.length + 1
-    if (next > topic.roundsCap) topic.roundsCap = next
+    topic.roundsCap = Math.max(topic.roundsCap, next + budget - 1)
     delete topic.nextBrief
     await this.options.store.writeQuestion(topic, next, brief)
     const staged = await this.options.store.addMaterials(topic, materials ?? [])
@@ -254,6 +269,9 @@ export class ResearchEngine {
     if (retryCurrent) {
       // The previous attempt never produced an answer: replace it with the
       // user's feedback instead of appending a round that runTopic would skip.
+      const current = topic.generations?.find(item => item.n === (last.generation ?? 1))
+      const budget = current?.rounds ?? this.generationBudget(topic)
+      topic.roundsCap = Math.max(topic.roundsCap, last.n + budget - 1)
       delete last.submissionId
       delete last.fingerprint
       delete last.submittedAt

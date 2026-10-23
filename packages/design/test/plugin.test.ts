@@ -40,7 +40,7 @@ function fakeContext(captured: Captured) {
 }
 
 describe('design plugin wiring', () => {
-  it('registers the image tool, four routes and the design skill', async () => {
+  it('registers the image tool, eight routes and the design skill', async () => {
     const captured: Captured = { tools: [], routes: [], skills: [] }
     apply(fakeContext(captured) as never, { store: 'local' })
     await Promise.resolve()
@@ -53,6 +53,7 @@ describe('design plugin wiring', () => {
       '/gpt-image-design/action',
       '/gpt-image-design/answer',
       '/gpt-image-design/asset',
+      '/gpt-image-design/bundle',
       '/gpt-image-design/file',
       '/gpt-image-design/open',
       '/gpt-image-design/topic',

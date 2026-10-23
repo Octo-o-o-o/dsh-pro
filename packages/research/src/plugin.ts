@@ -46,6 +46,7 @@ const baseFields = {
   model: z.string().default('pro').description('ChatGPT 页面上的模型：pro 或 thinking。'),
   store: z.string().default('project').description('研究记录位置：project（仓库 docs/research）或 local（DSH 本机）。'),
   autoStart: z.boolean().default(false).description('研究卡是否跳过点击直接开跑。'),
+  autoReview: z.boolean().default(true).description('capped 后唤醒原会话检查产物，决定接受或继续；无原会话时只显示待接受。'),
   notify: z.string().default('stall-only').description('通知策略：stall-only 只在卡住时提醒，all 完成也提醒。'),
   stallMinutes: z.number().step(1).min(1).default(45).description('无进展判定分钟数；生成中不计时。'),
   maxRoundMinutes: z.number().step(1).min(1).default(90).description('单轮墙钟上限（分钟）。'),
@@ -93,6 +94,7 @@ export interface ResearchConfig {
   imageTimeoutSeconds?: number
   store?: string
   autoStart?: boolean
+  autoReview?: boolean
   notify?: string
   stallMinutes?: number
   maxRoundMinutes?: number
@@ -167,6 +169,7 @@ function mimeFor(path: string): string {
     case '.css': return 'text/css; charset=utf-8'
     case '.js': return 'text/javascript; charset=utf-8'
     case '.json': return 'application/json; charset=utf-8'
+    case '.zip': return 'application/zip'
     case '.md':
     case '.markdown': return 'text/markdown; charset=utf-8'
     case '.txt': return 'text/plain; charset=utf-8'
@@ -226,6 +229,7 @@ export function resolvePluginConfig(spec: PluginSpec, config: ResearchConfig | u
     ...(config?.model !== undefined ? { model: config.model } : {}),
     ...(config?.store === 'local' || config?.store === 'project' ? { store: config.store } : {}),
     ...(config?.autoStart !== undefined ? { autoStart: config.autoStart } : {}),
+    ...(config?.autoReview !== undefined ? { autoReview: config.autoReview } : {}),
     ...(config?.notify === 'all' || config?.notify === 'stall-only' ? { notify: config.notify } : {}),
     ...(config?.stallMinutes !== undefined ? { stallMinutes: config.stallMinutes } : {}),
     ...(config?.maxRoundMinutes !== undefined ? { maxRoundMinutes: config.maxRoundMinutes } : {}),
@@ -396,6 +400,9 @@ class ProResearchService {
         if (event.type === 'finished' && this.config.notify === 'all') {
           void this.notifyFinished(event.topicId, event.status)
         }
+        if (event.type === 'finished' && event.status === 'capped' && this.config.autoReview) {
+          void this.notifyCappedReview(event.topicId)
+        }
       },
     })
     this.engines.set(key, engine)
@@ -502,6 +509,27 @@ class ProResearchService {
     }
   }
 
+  /** Ask the originating agent to inspect a capped/failed result and decide. */
+  private async notifyCappedReview(id: string): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
+    try {
+      const entry = await this.entryFor(id)
+      const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
+      if (sessionId === undefined) return { ok: false, reason: '原会话 id 未记录' }
+      const topic = entry === undefined ? undefined : await this.storeAt(entry.root, entry.mode).load(id).catch(() => undefined)
+      if (topic === undefined) return { ok: false, reason: '主题不存在' }
+      const dir = await this.storeAt(entry?.root ?? this.rootFor(''), entry?.mode ?? this.config.store).dirOf(id)
+      const state = topic.status === 'capped' ? '已到轮次上限' : topic.status === 'failed' ? '失败' : '停下等待核对'
+      return await this.wakeSession(sessionId, `<system-reminder>Pro 主题「${topic.title}」${state}，结果等待确认。请先检查产物和判据：
+- 满足：调用 ${this.spec.tool} action=accept topic_id=${id}
+- 还需改进：调用 ${this.spec.tool} action=regenerate topic_id=${id} note="具体问题"
+- 需要继续研究但不用换版：调用 ${this.spec.tool} action=continue topic_id=${id} brief="下一轮问题"
+产物目录：${dir}
+最终汇总：${join(dir, 'final.md')}</system-reminder>`)
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   /** Quiet reminder for the opt-in `notify=all` mode. */
   private async notifyFinished(id: string, status: 'completed' | 'capped' | 'cancelled'): Promise<void> {
     try {
@@ -603,9 +631,9 @@ class ProResearchService {
     }
   }
 
-  private async artifactDetails(dir: string, topic: Topic): Promise<Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'file' }>> {
+  private async artifactDetails(dir: string, topic: Topic): Promise<Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'archive' | 'file' }>> {
     const root = resolve(dir, 'artifacts')
-    const details: Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'file' }> = []
+    const details: Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'archive' | 'file' }> = []
     for (const path of topic.artifacts) {
       if (path === 'final.md') continue
       const target = resolve(dir, path)
@@ -617,6 +645,10 @@ class ProResearchService {
       }
       if (extension === '.html' || extension === '.htm') {
         details.push({ path, kind: 'demo' })
+        continue
+      }
+      if (extension === '.zip') {
+        details.push({ path, kind: 'archive' })
         continue
       }
       if (/^\.(txt|md|markdown)$/.test(extension)) {
@@ -663,6 +695,17 @@ class ProResearchService {
     const store = this.storeAt(entry.root, entry.mode)
     const topic = await store.load(id)
     return await store.readAnswer(topic, round)
+  }
+
+  /** Read a text file (final.md, verdict, question) from inside a topic. */
+  /** Bundle one round's artifacts into a zip for download. */
+  async bundleArtifacts(id: string, round: number): Promise<{ name: string; bytes: Buffer }> {
+    const entry = await this.entryFor(id)
+    if (entry === undefined) throw new Error(`unknown topic: ${id}`)
+    const store = this.storeAt(entry.root, entry.mode)
+    const topic = await store.load(id)
+    if (!Number.isInteger(round) || round < 1) throw new Error('round is required')
+    return await store.bundleRound(topic, round)
   }
 
   /** Read a text file (final.md, verdict, question) from inside a topic. */
@@ -748,6 +791,14 @@ class ProResearchService {
       const wake = await this.notifyAccepted(id, topic)
       return { ...this.view(topic), wake }
     }
+    if (action === 'review') {
+      const topic = await this.storeAt(entry.root, entry.mode).load(id)
+      if (topic.status !== 'capped' && topic.status !== 'failed' && topic.status !== 'stalled') {
+        throw new Error(`topic ${id} is ${topic.status}; only capped/failed/stalled topics need review`)
+      }
+      const wake = await this.notifyCappedReview(id)
+      return { ...this.view(topic), wake }
+    }
     if (action === 'human_check') {
       if (conclusion === undefined) throw new Error('conclusion is required')
       const reason = note ?? ''
@@ -775,7 +826,7 @@ class ProResearchService {
         feedback,
       ))
     }
-    throw new Error('action must be resume, cancel, accept, human_check or regenerate')
+    throw new Error('action must be resume, cancel, accept, review, wake, human_check or regenerate')
   }
 
   async handle(args: Record<string, unknown>, exec: ToolRunContext): Promise<Record<string, unknown>> {
@@ -828,6 +879,8 @@ class ProResearchService {
       }
       case 'accept':
         return await this.act(this.requireId(args), 'accept')
+      case 'review':
+        return await this.act(this.requireId(args), 'review')
       case 'regenerate':
         return await this.act(this.requireId(args), 'regenerate', undefined, typeof args.note === 'string' ? args.note : '')
       case 'probe': {
@@ -854,7 +907,7 @@ class ProResearchService {
         }
         return { login: await (this.transportFor() as ChatGptWebTransport).login() }
       default:
-        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, regenerate, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, review, regenerate, probe or login')
     }
   }
 
@@ -1196,6 +1249,30 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
 
   scoped.effect(() => webServer.register({
     kind: 'exact',
+    path: `${spec.routes}/bundle`,
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const id = url.searchParams.get('id') ?? ''
+      const round = Number(url.searchParams.get('round') ?? '0')
+      try {
+        const bundle = await service.bundleArtifacts(id, round)
+        res.writeHead(200, {
+          'content-type': 'application/zip',
+          'content-disposition': `attachment; filename="${bundle.name}"`,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        })
+        res.end(bundle.bytes)
+      } catch (error) {
+        sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), `${spec.name}: bundle route`)
+
+  scoped.effect(() => webServer.register({
+    kind: 'exact',
     path: `${spec.routes}/answer`,
     handler: async (req, res) => {
       const denied = reject(req)
@@ -1264,19 +1341,19 @@ function toolDescription(spec: PluginSpec, config: ProConfig): string {
         `用 OpenAI 兼容生图 API（${config.image.model}）按方向生成设计图，保存到本地并出现在设计面板；此通道只出图，不产出 HTML demo。`,
         'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径、模型）；用户确认后传 confirmed=true。',
         'key 只读插件设置或环境变量 GPT_IMAGE_API_KEY，不要在会话里回显；probe 检查 base URL / key / 模型名。',
-        'action: start | continue | status | list | resume | cancel | human_check | accept | regenerate | probe | login。',
+        'action: start | continue | status | list | resume | cancel | human_check | accept | review | regenerate | probe | login。',
       ].join(' ')
     }
     return [
       '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
       'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-      'action: start | continue | status | list | resume | cancel | human_check | accept | regenerate | probe | login。',
+      'action: start | continue | status | list | resume | cancel | human_check | accept | review | regenerate | probe | login。',
     ].join(' ')
   }
   return [
     '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
     'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-    'action: start | continue | status | list | resume | cancel | human_check | accept | regenerate | probe | login。',
+    'action: start | continue | status | list | resume | cancel | human_check | accept | review | regenerate | probe | login。',
   ].join(' ')
 }
 
@@ -1300,7 +1377,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
     name: spec.tool,
     description: toolDescription(spec, resolved),
     parameters: {
-      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|regenerate|probe|login' },
+      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|review|regenerate|probe|login' },
       title: { type: 'string', description: '主题标题（start 必填）' },
       question: { type: 'string', description: '研究问题（start 必填）' },
       brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },
