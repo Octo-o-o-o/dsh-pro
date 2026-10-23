@@ -5,8 +5,8 @@
   "type": "design",
   "parent": null,
   "created": "2026-10-22T14:18:11.302Z",
-  "updated": "2026-10-23T01:22:14.781Z",
-  "status": "waiting",
+  "updated": "2026-10-23T01:30:02.063Z",
+  "status": "failed",
   "roundsCap": 3,
   "designs": 3,
   "rounds": [
@@ -56,5 +56,6 @@
     "artifacts/round-02/image-04.png",
     "artifacts/round-02/image-05.png",
     "final.md"
-  ]
+  ],
+  "stopReason": "page.waitForTimeout: Target page, context or browser has been closed"
 }

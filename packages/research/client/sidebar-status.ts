@@ -55,13 +55,29 @@ function countTopics(
   return counts
 }
 
+interface BadgePart {
+  text: string
+  color: string
+}
+
+const STATUS_TINT = {
+  active: '#6f9fd0',
+  incomplete: '#c39a4a',
+  completed: '#5f9c7a',
+  failed: '#c26a6a',
+}
+
+function badgeParts(counts: Counts): BadgePart[] {
+  const parts: BadgePart[] = []
+  if (counts.active > 0) parts.push({ text: `${counts.active} 进行`, color: STATUS_TINT.active })
+  if (counts.incomplete > 0) parts.push({ text: `${counts.incomplete} 未完成`, color: STATUS_TINT.incomplete })
+  if (counts.completed > 0) parts.push({ text: `${counts.completed} 完成`, color: STATUS_TINT.completed })
+  if (counts.failed > 0) parts.push({ text: `${counts.failed} 失败`, color: STATUS_TINT.failed })
+  return parts
+}
+
 function badgeText(counts: Counts): string {
-  const parts: string[] = []
-  if (counts.active > 0) parts.push(`${counts.active} 进行`)
-  if (counts.incomplete > 0) parts.push(`${counts.incomplete} 未完成`)
-  if (counts.completed > 0) parts.push(`${counts.completed} 完成`)
-  if (counts.failed > 0) parts.push(`${counts.failed} 失败`)
-  return parts.join(' · ')
+  return badgeParts(counts).map(part => part.text).join(' · ')
 }
 
 /** Pure summary used by the badge and by tests. */
@@ -77,6 +93,7 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
 
   let badge: HTMLSpanElement | undefined
   let text = ''
+  let parts: BadgePart[] = []
   let disposed = false
   let polling = false
   let attachTimer: number | undefined
@@ -90,9 +107,29 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
     return undefined
   }
 
-  const applyText = (next: string): void => {
+  const renderBadge = (target: HTMLSpanElement): void => {
+    target.replaceChildren()
+    parts.forEach((part, index) => {
+      if (index > 0) {
+        const separator = document.createElement('span')
+        separator.textContent = '·'
+        separator.style.opacity = '.35'
+        separator.style.margin = '0 2px'
+        target.appendChild(separator)
+      }
+      const span = document.createElement('span')
+      span.textContent = part.text
+      span.style.color = part.color
+      target.appendChild(span)
+    })
+    target.dataset.text = text
+  }
+
+  const applyText = (next: string, nextParts: BadgePart[]): void => {
+    const changed = text !== next
     text = next
-    if (badge !== undefined && badge.textContent !== text) badge.textContent = text
+    parts = nextParts
+    if (badge !== undefined && changed) renderBadge(badge)
     ensureMounted()
   }
 
@@ -113,12 +150,11 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
       return
     }
     if (badge !== undefined && badge.parentElement === row) {
-      if (badge.textContent !== text) badge.textContent = text
+      if (badge.dataset.text !== text) renderBadge(badge)
       return
     }
     badge = document.createElement('span')
     badge.dataset.dshProBadge = options.panelId
-    badge.textContent = text
     badge.setAttribute('aria-hidden', 'true')
     badge.style.cssText = [
       'margin-left:auto',
@@ -126,12 +162,14 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
       'align-items:center',
       'flex:0 0 auto',
       'font-size:10px',
+      'font-weight:500',
       'line-height:1',
-      'opacity:.62',
+      'opacity:.8',
       'white-space:nowrap',
       'font-variant-numeric:tabular-nums',
       'pointer-events:none',
     ].join(';')
+    renderBadge(badge)
     row.appendChild(badge)
   }
 
@@ -142,10 +180,11 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
       const response = await fetch(`${options.routes}/topics`, { headers: { accept: 'application/json' } })
       if (!response.ok) return
       const data = await response.json() as { topics?: Array<{ topic_id?: string; status?: string; updated?: string }> }
-      applyText(sidebarStatusText(
+      const counts = countTopics(
         data.topics ?? [],
         topic => isTopicSeen(options.panelId, topic.topic_id ?? '', topic.updated),
-      ))
+      )
+      applyText(badgeText(counts), badgeParts(counts))
     } catch {
       // The host may still be starting; poll again on the next tick.
     } finally {

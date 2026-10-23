@@ -130,6 +130,7 @@ interface RegistryEntry {
 
 interface LiveAgent {
   inject(message: unknown): void
+  followup?(message: unknown): void
 }
 
 function homeDir(): string {
@@ -461,10 +462,35 @@ class ProResearchService {
           type: 'text',
           text: `<system-reminder>Pro 研究「${title}」卡住了${reason === undefined ? '' : `（${reason}）`}。在侧边栏「Pro」里查看现场，然后恢复、取消或人工核对。</system-reminder>`,
         }],
-        source: { kind: 'plugin', plugin: 'dsh-pro-research' },
+        source: { kind: 'plugin', plugin: this.spec.name },
       }))
     } catch {
       // Notification is best-effort; the sidebar and records remain the truth.
+    }
+  }
+
+  /**
+   * A human accepted a capped result. Wake the originating conversation so the
+   * agent continues whatever it was doing before it handed this topic off.
+   */
+  private async notifyAccepted(id: string, topic: Topic): Promise<void> {
+    try {
+      const entry = await this.entryFor(id)
+      const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
+      if (sessionId === undefined) return
+      const agents = this.ctx.get('agents') as { get(id: string): LiveAgent | undefined } | undefined
+      const agent = agents?.get(sessionId)
+      if (agent === undefined || agent.followup === undefined) return
+      const dir = await this.storeAt(entry?.root ?? this.rootFor(''), entry?.mode ?? this.config.store).dirOf(id)
+      agent.followup(createUserMessage({
+        content: [{
+          type: 'text',
+          text: `<system-reminder>用户已接受「${topic.title}」的当前结果，视为验收通过。请继续这个主题之前被搁置的后续工作，不要重复已经完成的研究/设计轮次。产物目录：${dir}，最终汇总：${join(dir, 'final.md')}。</system-reminder>`,
+        }],
+        source: { kind: 'plugin', plugin: this.spec.name },
+      }))
+    } catch {
+      // Best-effort: acceptance is already persisted.
     }
   }
 
@@ -563,7 +589,11 @@ class ProResearchService {
     const engine = this.engineFor(entry.root)
     if (action === 'resume') return this.view(await engine.resume(id))
     if (action === 'cancel') return this.view(await engine.cancel(id))
-    if (action === 'accept') return this.view(await engine.accept(id))
+    if (action === 'accept') {
+      const accepted = await engine.accept(id)
+      await this.notifyAccepted(id, accepted)
+      return this.view(accepted)
+    }
     if (action === 'human_check') {
       if (conclusion === undefined) throw new Error('conclusion is required')
       const reason = note ?? ''

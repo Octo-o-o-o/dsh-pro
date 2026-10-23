@@ -9,10 +9,20 @@ function storageKey(panelId: string): string {
   return `dsh-pro:seen:${panelId}`
 }
 
-function read(panelId: string): Record<string, string> {
-  if (typeof localStorage === 'undefined') return {}
+function storage(): Storage | undefined {
   try {
-    const parsed = JSON.parse(localStorage.getItem(storageKey(panelId)) ?? '{}') as unknown
+    return typeof localStorage === 'undefined' ? undefined : localStorage
+  } catch {
+    // Opaque origins (about:blank, sandboxed frames) throw on access.
+    return undefined
+  }
+}
+
+function read(panelId: string): Record<string, string> {
+  const store = storage()
+  if (store === undefined) return {}
+  try {
+    const parsed = JSON.parse(store.getItem(storageKey(panelId)) ?? '{}') as unknown
     return parsed !== null && typeof parsed === 'object' ? parsed as Record<string, string> : {}
   } catch {
     return {}
@@ -20,12 +30,13 @@ function read(panelId: string): Record<string, string> {
 }
 
 export function markTopicSeen(panelId: string, topicId: string, updated: string | undefined): void {
-  if (typeof localStorage === 'undefined' || updated === undefined) return
+  const store = storage()
+  if (store === undefined || updated === undefined) return
   const seen = read(panelId)
   if (seen[topicId] === updated) return
   seen[topicId] = updated
   try {
-    localStorage.setItem(storageKey(panelId), JSON.stringify(seen))
+    store.setItem(storageKey(panelId), JSON.stringify(seen))
   } catch {
     return
   }
