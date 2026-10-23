@@ -542,8 +542,6 @@ function renderGenerations(detail: TopicDetail, rounds: RoundRow[]): ReturnType<
   const generations = detail.generations !== undefined && detail.generations.length > 0
     ? detail.generations
     : [{ n: 1, createdAt: detail.created ?? '', reason: '初始任务' }]
-  if (generations.length <= 1) return rounds.map(round => renderRound(detail, round))
-
   const groups = new Map<number, RoundRow[]>()
   for (const round of rounds) {
     const n = round.generation ?? 1
@@ -557,7 +555,7 @@ function renderGenerations(detail: TopicDetail, rounds: RoundRow[]): ReturnType<
 
   return [...generations]
     .sort((left, right) => left.n - right.n)
-    .map(generation => createElement('div', { key: generation.n, style: { marginBottom: 18 } },
+    .map(generation => createElement('div', { key: generation.n, style: { marginBottom: 20, maxWidth: 980 } },
       createElement('div', { style: { display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', paddingBottom: 6, marginBottom: 8, borderBottom: '1px solid rgba(127,127,127,.18)' } },
         createElement('strong', { style: { fontSize: 13 } }, `第 ${generation.n} 版`),
         generation.reason !== undefined && generation.reason !== ''
@@ -572,30 +570,62 @@ function renderGenerations(detail: TopicDetail, rounds: RoundRow[]): ReturnType<
           : undefined),
       (groups.get(generation.n) ?? []).length === 0
         ? createElement('div', { style: { opacity: 0.55, fontSize: 12 } }, '等待提交…')
-        : (groups.get(generation.n) ?? []).map(round => renderRound(detail, round))))
+        : renderRoundTable(detail, groups.get(generation.n) ?? [], generation.n)))
 }
 
-function renderRound(detail: TopicDetail, round: RoundRow): ReturnType<typeof createElement> {
+function renderRoundTable(detail: TopicDetail, rounds: RoundRow[], generation: number): ReturnType<typeof createElement> {
+  const header = ['轮次', '裁决', '文件', '提交', '完成', '重试', '操作']
+  return createElement('div', { style: { overflowX: 'auto' } },
+    createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12, tableLayout: 'auto' } },
+      createElement('thead', {}, createElement('tr', {}, header.map(label => createElement('th', {
+        key: label,
+        style: {
+          textAlign: 'left',
+          padding: '6px 8px',
+          borderBottom: '1px solid rgba(127,127,127,.25)',
+          fontSize: 11,
+          fontWeight: 500,
+          opacity: 0.55,
+          whiteSpace: 'nowrap',
+        },
+      }, label)))),
+      createElement('tbody', {}, rounds.flatMap((round, index) => renderRoundRows(detail, round, `${generation}-${index + 1}`)))))
+}
+
+function renderRoundRows(detail: TopicDetail, round: RoundRow, label: string): ReturnType<typeof createElement>[] {
   const prefix = `/round-${String(round.n).padStart(2, '0')}/`
   const artifacts = round.artifacts ?? (detail.artifacts ?? []).filter(path => path.includes(prefix))
   const attempts = round.attempts ?? 1
-  return createElement('div', {
-    key: round.n,
-    style: { padding: '10px 12px', marginBottom: 8, borderRadius: 8, background: 'rgba(127,127,127,.055)', border: '1px solid rgba(127,127,127,.14)' },
-  },
-  createElement('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline', fontSize: 12 } },
-    createElement('strong', {}, `第 ${round.n} 轮`),
-    createElement('span', { style: { opacity: 0.72 } }, round.verdict ?? (round.answeredAt !== undefined ? '已答复' : '进行中')),
-    createElement('span', { style: { opacity: 0.6 } }, `${round.files} 文件`),
-    createElement('span', { style: { opacity: 0.6 } }, `提交 ${formatTime(round.submittedAt)}`),
-    createElement('span', { style: { opacity: 0.6 } }, `完成 ${formatTime(round.answeredAt)}`),
-    attempts > 1 ? createElement('span', { style: { color: '#ed6c02' } }, `重试 ${attempts - 1}`) : undefined),
-  createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
-    createElement('button', {
-      onClick: () => void openAnswer(detail.topic_id, round.n),
-      style: chipStyle(),
-    }, '查看回答'),
-    artifacts.map(path => artifactChip(detail.topic_id, path))))
+  const verdict = round.verdict ?? (round.answeredAt !== undefined ? '已答复' : '进行中')
+  const verdictColor = round.verdict === 'accepted'
+    ? '#5f9c7a'
+    : round.verdict === 'rejected'
+      ? '#c26a6a'
+      : round.verdict === 'partial'
+        ? '#c39a4a'
+        : '#6f9fd0'
+  const cell = (child: unknown, extra: Record<string, string | number> = {}) => createElement('td', {
+    style: { padding: '8px', borderBottom: '1px solid rgba(127,127,127,.13)', verticalAlign: 'top', ...extra },
+  }, child as never)
+
+  const main = createElement('tr', { key: `round-${round.n}` },
+    cell(createElement('span', { style: { fontVariantNumeric: 'tabular-nums', fontWeight: 600 } }, label), { whiteSpace: 'nowrap' }),
+    cell(createElement('span', { style: { color: verdictColor } }, verdict), { whiteSpace: 'nowrap' }),
+    cell(String(round.files)),
+    cell(round.submittedAt !== undefined ? formatTime(round.submittedAt) : '—', { whiteSpace: 'nowrap', opacity: 0.7 }),
+    cell(round.answeredAt !== undefined ? formatTime(round.answeredAt) : ACTIVE.has(detail.status) ? '进行中' : '—', { whiteSpace: 'nowrap', opacity: 0.7 }),
+    cell(attempts > 1 ? String(attempts - 1) : '—', { whiteSpace: 'nowrap', opacity: attempts > 1 ? 0.9 : 0.45 }),
+    cell(createElement('button', { onClick: () => void openAnswer(detail.topic_id, round.n), style: chipStyle() }, '查看回答'), { whiteSpace: 'nowrap' }))
+
+  if (artifacts.length === 0) return [main]
+  const extra = createElement('tr', { key: `artifacts-${round.n}` },
+    createElement('td', {
+      colSpan: 7,
+      style: { padding: '0 8px 8px', borderBottom: '1px solid rgba(127,127,127,.13)' },
+    },
+    createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', padding: '6px 0 2px' } },
+      artifacts.map(path => artifactChip(detail.topic_id, path)))))
+  return [main, extra]
 }
 
 function artifactChip(topicId: string, path: string): ReturnType<typeof createElement> {

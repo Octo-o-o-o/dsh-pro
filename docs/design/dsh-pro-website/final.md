@@ -1,8 +1,9 @@
 # dsh-pro website
 
-- 状态：capped
+- 状态：completed
 - 停止依据：未配置裁决模型，跑满轮次后交付
-- 轮次：2/2
+- 通道：web-pro
+- 轮次：3/3
 
 ## 成功判据
 
@@ -19,11 +20,25 @@
 
 ## 轮次
 
-| 轮 | 裁决 | 文件 | 提交时间 |
-|---|---|---|---|
-| 1 | partial | 5 | 2026-10-22T14:50:55.641Z |
-| 2 | partial | 0 | 2026-10-22T14:57:31.273Z |
+| 轮 | 裁决 | 文件 | 提交时间 | 完成时间 |
+|---|---|---|---|---|
+| 1 | partial | 5 | 2026-10-22T14:50:55.641Z | 2026-10-22T14:57:20.738Z |
+| 2 | partial | 0 | 2026-10-22T14:57:31.273Z | 2026-10-22T15:31:15.862Z |
+| 3 | partial | 0 | 2026-10-23T01:22:14.778Z | 2026-10-23T03:01:55.355Z |
+
+## 产物
+
+- `artifacts/round-02/image-01.png`
+- `artifacts/round-02/image-02.png`
+- `artifacts/round-02/image-03.png`
+- `artifacts/round-02/image-04.png`
+- `artifacts/round-02/image-05.png`
+- `final.md`
+- `artifacts/round-03/image-01.png`
+- `artifacts/round-03/image-02.png`
+- `artifacts/round-03/code-01.txt`
 
 ## 原始答复
 
 原始答复保存在 `rawAnswersDir/topic-ca9a/`；是否随仓库保存由 `rawAnswers` 配置决定。
+- 人工接受：2026-10-23T03:14:19.006Z

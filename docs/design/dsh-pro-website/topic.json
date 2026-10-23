@@ -5,8 +5,8 @@
   "type": "design",
   "parent": null,
   "created": "2026-10-22T14:18:11.302Z",
-  "updated": "2026-10-23T01:30:02.063Z",
-  "status": "failed",
+  "updated": "2026-10-23T03:14:19.009Z",
+  "status": "completed",
   "roundsCap": 3,
   "designs": 3,
   "rounds": [
@@ -34,9 +34,17 @@
       "n": 3,
       "files": 0,
       "attempts": 1,
-      "submissionId": "d5edce1f-7344-44bd-8a4c-2ae62838ec08",
+      "submissionId": "30a8d2fe-b692-4602-9936-4f0b9858e071",
       "fingerprint": "d89c15477b233b418fa7218fdd6209c6b4e973143ea95ecc54c783ee5f3da260",
-      "submittedAt": "2026-10-23T01:22:14.778Z"
+      "submittedAt": "2026-10-23T01:22:14.778Z",
+      "artifacts": [
+        "artifacts/round-03/image-01.png",
+        "artifacts/round-03/image-02.png",
+        "artifacts/round-03/code-01.txt"
+      ],
+      "answeredAt": "2026-10-23T03:01:55.355Z",
+      "verdict": "partial",
+      "done": false
     }
   ],
   "channel": "web-pro",
@@ -55,7 +63,18 @@
     "artifacts/round-02/image-03.png",
     "artifacts/round-02/image-04.png",
     "artifacts/round-02/image-05.png",
-    "final.md"
+    "final.md",
+    "artifacts/round-03/image-01.png",
+    "artifacts/round-03/image-02.png",
+    "artifacts/round-03/code-01.txt"
   ],
-  "stopReason": "page.waitForTimeout: Target page, context or browser has been closed"
+  "stopReason": "人工接受结果",
+  "generations": [
+    {
+      "n": 1,
+      "createdAt": "2026-10-22T14:18:11.302Z",
+      "reason": "初始任务",
+      "final": "finals/attempt-01.md"
+    }
+  ]
 }
