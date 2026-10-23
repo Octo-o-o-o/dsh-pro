@@ -120,6 +120,31 @@ describe('plugin wiring', () => {
     await expect(tool.execute({ action: 'continue', topic_id: 'x' }, { agent: undefined })).rejects.toThrow(/confirmed=true/)
   })
 
+  it('refuses to send a secret in the final card text before creating a topic', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-pro-home-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-pro-project-'))
+    cleanups.push(home, cwd)
+    const previous = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      apply(fakeContext(captured) as never, { store: 'local' })
+      const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<unknown> }
+      const exec = { agent: { session: { header: { cwd }, id: 's1' } } }
+      await expect(tool.execute({
+        action: 'start',
+        confirmed: true,
+        title: 'secret check',
+        question: 'q',
+        brief: 'use key sk-abcdefghijklmnopqrstuvwxyz123456',
+        criteria: ['c'],
+      }, exec)).rejects.toThrow(/openai-key/)
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+    }
+  })
+
   it('serves the topics route from an isolated home', async () => {
     const home = await mkdtemp(join(tmpdir(), 'dsh-pro-home-'))
     cleanups.push(home)

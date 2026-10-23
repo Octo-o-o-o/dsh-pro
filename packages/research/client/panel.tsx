@@ -44,6 +44,7 @@ interface TopicRow {
   status: string
   channel?: string
   model?: string
+  judge_enabled?: boolean
   stall_reason: string | null
   rounds: number
   rounds_cap: number
@@ -406,8 +407,9 @@ function Panel(): ReturnType<typeof createElement> {
           detail.updated !== undefined ? createElement('span', {}, `更新 ${formatTime(detail.updated)}`) : undefined),
         detail.stall_reason !== null ? createElement('div', { style: { color: '#ed6c02', marginBottom: 8, fontSize: 12 } }, `卡住原因：${STALL_LABEL[detail.stall_reason] ?? detail.stall_reason}（${detail.stall_reason}）`) : undefined,
         detail.stop_reason !== null ? createElement('div', { style: { marginBottom: 8, fontSize: 12, opacity: 0.72 } }, `停止依据：${detail.stop_reason}`) : undefined,
-        detail.status === 'capped' && (detail.stop_reason ?? '').includes('未配置裁决模型')
-          ? createElement('div', { style: { marginBottom: 8, fontSize: 11, color: '#ed6c02' } }, '未配置自动裁决：跑满轮次后进入待接受。可以接受、重新生成，或点「请原会话判断」。')
+        (detail.judge_enabled === false || (detail.judge_enabled === undefined && (detail.stop_reason ?? '').includes('未配置裁决模型')))
+          && detail.status === 'capped'
+          ? createElement('div', { style: { marginBottom: 8, fontSize: 11, color: '#ed6c02' } }, '当前没有可用的自动裁决模型：跑满轮次后进入待接受。可以接受、重新生成，或点「请原会话判断」。')
           : undefined,
         detail.path !== undefined ? createElement('div', { style: { opacity: 0.5, marginBottom: 10, wordBreak: 'break-all', fontSize: 11 } }, detail.path) : undefined,
         createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 } },

@@ -878,6 +878,7 @@ class ProResearchService {
         throw new Error(`topic ${id} is ${topic.status}; regenerate needs completed/capped/reviewing or failed/stalled`)
       }
       const feedback = (note ?? '').trim()
+      this.assertTextSafe('regenerate note', feedback)
       const brief = [
         `继续主题「${topic.title}」：用户对上一轮结果不满意，请基于已有上下文重新生成并改进。`,
         '## 用户反馈',
@@ -918,6 +919,7 @@ class ProResearchService {
       case 'continue': {
         const id = this.requireId(args)
         const brief = this.requireString(args, 'brief')
+        this.assertTextSafe('brief', brief)
         const paths = Array.isArray(args.materials) && args.materials.length > 0
           ? this.stringArray(args.materials, 'materials')
           : []
@@ -1022,9 +1024,17 @@ class ProResearchService {
     }
     const criteria = this.stringArray(args.criteria, 'criteria')
     const materialPaths = args.materials === undefined || args.materials === null
+      || (Array.isArray(args.materials) && args.materials.length === 0)
       ? []
       : this.stringArray(args.materials, 'materials')
     const reasons = (args.materialReasons ?? {}) as Record<string, string>
+    this.assertTextSafe('title', title)
+    this.assertTextSafe('question', question)
+    this.assertTextSafe('brief', brief)
+    for (const criterion of criteria) this.assertTextSafe('criteria', criterion)
+    for (const [path, reason] of Object.entries(reasons)) {
+      if (typeof reason === 'string') this.assertTextSafe(`material reason for ${path}`, reason)
+    }
     const refs = this.withSources(cwd, await buildManifest(cwd, materialPaths, reasons, this.config.secretGlobs))
     assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
     // A billable API round is not repeated by default: without an automatic
@@ -1076,6 +1086,7 @@ class ProResearchService {
       status: topic.status,
       channel: topic.channel,
       model: topic.model,
+      judge_enabled: this.judgeEnabled(),
       created: topic.created,
       generations: topic.generations ?? [],
       stall_reason: topic.stallReason ?? null,
@@ -1498,6 +1509,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },
       criteria: { type: 'array', items: { type: 'string' }, description: '成功判据（start 必填）' },
       materials: { type: 'array', items: { type: 'string' }, description: '相对工作目录的材料路径（start 可选）' },
+      materialReasons: { type: 'object', additionalProperties: true, description: '可选：材料路径 → 选择理由' },
       rounds: { type: 'number', description: '本次轮次上限（1–10）' },
       designs: { type: 'number', description: '设计插件本轮生成的方向/图片数（1–6，默认取设置）' },
       topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check/accept/review/wake/regenerate 的主题 id' },

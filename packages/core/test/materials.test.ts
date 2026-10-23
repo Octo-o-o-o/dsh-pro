@@ -16,6 +16,8 @@ describe('secret path matching', () => {
     expect(isSecretPath('.env.local', ['.env'])).toBe(false)
     expect(isSecretPath('.env.local', ['.env.*'])).toBe(true)
     expect(isSecretPath('config/.env', ['**/.env'])).toBe(true)
+    expect(isSecretPath('config/.env', ['.env'])).toBe(true)
+    expect(isSecretPath('config/secrets.env', ['.env'])).toBe(false)
     expect(isSecretPath('secrets/db.txt', ['**/secrets/**'])).toBe(true)
     expect(isSecretPath('src/index.ts', ['*.pem', '.env'])).toBe(false)
   })

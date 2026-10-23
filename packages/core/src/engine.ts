@@ -236,7 +236,8 @@ export class ResearchEngine {
     return topic
   }
 
-  /** Move a capped/failed/stalled topic to "waiting for the originating agent to judge". */  async markReviewing(id: string): Promise<Topic> {
+  /** Move a capped/failed/stalled topic to "waiting for the originating agent to judge". */
+  async markReviewing(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
     if (topic.status === 'reviewing') return topic
     if (topic.status !== 'capped' && topic.status !== 'failed' && topic.status !== 'stalled') {

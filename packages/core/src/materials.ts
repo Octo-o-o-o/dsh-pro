@@ -50,7 +50,12 @@ export function globToRegExp(glob: string): RegExp {
 
 export function isSecretPath(relativePath: string, globs: readonly string[]): boolean {
   const normalized = relativePath.replace(/\\/g, '/')
-  return globs.some(glob => globToRegExp(glob).test(normalized))
+  return globs.some(glob => {
+    // A pattern without a slash is a basename rule: `.env` should also block
+    // `config/.env`, not only the repository root.
+    const pattern = glob.includes('/') ? glob : `**/${glob}`
+    return globToRegExp(pattern).test(normalized)
+  })
 }
 
 /** Return the matched secret family name, or undefined when clean. */
