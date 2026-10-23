@@ -35,6 +35,10 @@ export const SELECTORS = {
     '[data-markdown-text-style="assistant-message"]',
     '[data-message-author-role="assistant"]',
   ].join(', '),
+  userMessage: [
+    '[data-message-author-role="user"]',
+    '[data-markdown-text-style="user-message"]',
+  ].join(', '),
   // The composer has several file inputs (camera, photos, videos). The general
   // attachment input is the one without an `accept` filter; the camera input
   // rejects multiple files.

@@ -24,8 +24,23 @@ describe('status transitions', () => {
 
   it('allows recovery entrances', () => {
     expect(canTransition('queued', 'stalled')).toBe(true)
+    expect(canTransition('answered', 'stalled')).toBe(true)
+    expect(canTransition('adjudicating', 'stalled')).toBe(true)
+    expect(canTransition('failed', 'stalled')).toBe(true)
     expect(canTransition('stalled', 'waiting')).toBe(true)
     expect(canTransition('stalled', 'queued')).toBe(true)
     expect(canTransition('failed', 'queued')).toBe(true)
+  })
+
+  it('models the human-to-agent review handoff', () => {
+    expect(canTransition('capped', 'reviewing')).toBe(true)
+    expect(canTransition('failed', 'reviewing')).toBe(true)
+    expect(canTransition('stalled', 'reviewing')).toBe(true)
+    expect(canTransition('reviewing', 'capped')).toBe(true)
+    expect(canTransition('reviewing', 'failed')).toBe(true)
+    expect(canTransition('reviewing', 'stalled')).toBe(true)
+    expect(canTransition('reviewing', 'completed')).toBe(true)
+    expect(canTransition('reviewing', 'queued')).toBe(true)
+    expect(canTransition('reviewing', 'cancelled')).toBe(true)
   })
 })

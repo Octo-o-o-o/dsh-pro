@@ -1,4 +1,5 @@
-import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { unzipSync, zipSync } from 'fflate'
 import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
@@ -197,7 +198,10 @@ export class ResearchStore {
     return { topic, dir }
   }
 
-  /** Copy source files into `<topic>/materials/`; the manifest keeps absolute stored paths. */
+  /**
+   * Copy source files into `<topic>/materials/` and verify the copied bytes
+   * against the manifest digest. The manifest stores relative paths only.
+   */
   private async stageMaterials(dir: string, refs: readonly MaterialRef[]): Promise<MaterialRef[]> {
     const staged: MaterialRef[] = []
     for (const ref of refs) {
@@ -212,7 +216,13 @@ export class ResearchStore {
       const target = join(dir, 'materials', safePath)
       await mkdir(dirname(target), { recursive: true })
       await copyFile(ref.source, target)
-      staged.push({ ...ref, path: target, source: ref.path })
+      const copied = await readFile(target)
+      const digest = createHash('sha256').update(copied).digest('hex')
+      if (copied.byteLength !== ref.bytes || digest !== ref.sha256) {
+        await rm(target, { force: true })
+        throw new Error(`material changed while staging: ${ref.path}`)
+      }
+      staged.push({ ...ref, path: safePath, source: ref.path })
     }
     return staged
   }

@@ -6,13 +6,13 @@ const TRANSITIONS: Record<Status, readonly Status[]> = {
   uploading: ['submitted', 'stalled', 'failed', 'cancelled'],
   submitted: ['waiting', 'stalled', 'failed', 'cancelled'],
   waiting: ['answered', 'stalled', 'failed', 'cancelled'],
-  answered: ['adjudicating', 'cancelled'],
-  adjudicating: ['queued', 'completed', 'capped', 'failed', 'cancelled'],
+  answered: ['adjudicating', 'stalled', 'failed', 'cancelled'],
+  adjudicating: ['queued', 'completed', 'capped', 'stalled', 'failed', 'cancelled'],
   completed: ['queued'],
   capped: ['queued', 'reviewing', 'completed', 'cancelled'],
-  reviewing: ['queued', 'completed', 'capped', 'cancelled'],
-  stalled: ['queued', 'waiting', 'failed', 'completed', 'cancelled'],
-  failed: ['queued', 'waiting', 'completed', 'cancelled'],
+  reviewing: ['queued', 'completed', 'capped', 'stalled', 'failed', 'cancelled'],
+  stalled: ['queued', 'waiting', 'reviewing', 'failed', 'completed', 'cancelled'],
+  failed: ['queued', 'waiting', 'reviewing', 'stalled', 'completed', 'cancelled'],
   cancelled: [],
 }
 

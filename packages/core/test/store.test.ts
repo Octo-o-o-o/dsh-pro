@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { unzipSync, zipSync } from 'fflate'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ResearchStore } from '../src/store.ts'
+import { buildManifest, sha256File } from '../src/materials.ts'
 import type { ResearchCard } from '../src/types.ts'
 
 const cleanups: string[] = []
@@ -120,12 +121,13 @@ describe('project store', () => {
       rawDir: join(root, 'raw'),
       rawAnswers: 'local',
     })
+    const readme = join(sourceDir, 'readme.md')
     const { topic, dir } = await store.create(card({
       materials: [{
         path: 'src/readme.md',
         bytes: 5,
-        sha256: 'x',
-        source: join(sourceDir, 'readme.md'),
+        sha256: await sha256File(readme),
+        source: readme,
       }],
     }), 3, 'pro', 'web-pro')
 
@@ -136,6 +138,25 @@ describe('project store', () => {
       materials: Array<{ path: string; source: string }>
     }
     expect(manifest.materials[0]?.source).toBe('src/readme.md')
+    expect(manifest.materials[0]?.path).toBe('src/readme.md')
+  })
+
+  it('refuses a material whose bytes changed after hashing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const source = join(root, 'a.md')
+    await writeFile(source, 'hello', 'utf8')
+    const manifest = await buildManifest(root, ['a.md'])
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    await writeFile(source, 'tampered', 'utf8')
+    const materials = manifest.map(ref => ({ ...ref, source: join(root, ref.path) }))
+    await expect(store.create(card({ materials }), 3, 'pro', 'web')).rejects.toThrow(/changed while staging/)
   })
 
   it('writes answers into the repo only when rawAnswers=repo', async () => {

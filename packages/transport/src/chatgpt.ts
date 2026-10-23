@@ -29,6 +29,10 @@ interface Submission {
   startedAt: number
   lastText: string
   stable: number
+  /** Assistant turns already on the page before this submission was clicked. */
+  assistantBaseline: number
+  /** User turns already on the page before this submission was clicked. */
+  userBaseline: number
 }
 
 function sha256(value: string): string {
@@ -163,6 +167,66 @@ export class ChatGptWebTransport implements Transport {
     return { ok: true }
   }
 
+  /** Wait until the message list stops growing (old history may load after DOM ready). */
+  private async settleMessages(page: Page): Promise<void> {
+    let previous = -1
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const count = await page.locator(SELECTORS.assistantMessage).count().catch(() => 0)
+      if (count === previous) return
+      previous = count
+      await page.waitForTimeout(300)
+    }
+  }
+
+  /**
+   * A submit is only accepted when something new appeared after the click:
+   * preferably a new user turn matching the brief, otherwise a new assistant
+   * turn (some DOM versions hide the user role). This is what prevents the
+   * previous answer from being mistaken for the current round.
+   */
+  private async waitForNewTurn(
+    page: Page,
+    userBaseline: number,
+    assistantBaseline: number,
+    brief: string,
+    timeoutMs = 60_000,
+  ): Promise<boolean> {
+    const markers = briefMarkers(brief)
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const users = page.locator(SELECTORS.userMessage)
+      const userCount = await users.count().catch(() => 0)
+      if (userCount > userBaseline) {
+        const text = (await users.nth(userCount - 1).innerText().catch(() => '')).trim()
+        if (markers.length === 0 || markers.some(marker => text.includes(marker))) return true
+      }
+      const assistantCount = await page.locator(SELECTORS.assistantMessage).count().catch(() => 0)
+      if (assistantCount > assistantBaseline) return true
+      await page.waitForTimeout(500)
+    }
+    return false
+  }
+
+  /**
+   * For a cold reattach: locate the user turn that matches this round and count
+   * the assistant turns that precede it. The after-turn assistant (if already
+   * present) is then included by poll/fetch with `count > baseline`.
+   */
+  private async assistantBaselineForPrompt(page: Page, brief: string): Promise<number | undefined> {
+    const markers = briefMarkers(brief)
+    if (markers.length === 0) return undefined
+    const baseline = await page.evaluate(({ userSelector, assistantSelector, markers }) => {
+      const users = [...document.querySelectorAll(userSelector)] as HTMLElement[]
+      const target = [...users].reverse().find(node =>
+        markers.some(marker => (node.textContent ?? '').includes(marker)))
+      if (target === undefined) return -1
+      const assistants = [...document.querySelectorAll(assistantSelector)] as HTMLElement[]
+      // 4 = Node.DOCUMENT_POSITION_FOLLOWING: target follows the assistant.
+      return assistants.filter(node => (node.compareDocumentPosition(target) & 4) !== 0).length
+    }, { userSelector: SELECTORS.userMessage, assistantSelector: SELECTORS.assistantMessage, markers })
+    return baseline >= 0 ? baseline : undefined
+  }
+
   async submit(request: SubmitRequest): Promise<SubmitResult> {
     const context = await this.ensureContext()
     const existing = this.topicPages.get(request.topicId)
@@ -181,6 +245,10 @@ export class ChatGptWebTransport implements Transport {
         composer = await firstVisible(page, SELECTORS.composer, 30_000)
       }
       if (composer === undefined) throw new TransportError('composer not found; the session is probably logged out', 'login')
+
+      await this.settleMessages(page)
+      const assistantBaseline = await page.locator(SELECTORS.assistantMessage).count().catch(() => 0)
+      const userBaseline = await page.locator(SELECTORS.userMessage).count().catch(() => 0)
 
       await this.trySelectModel(page, request.model)
 
@@ -208,6 +276,10 @@ export class ChatGptWebTransport implements Transport {
       // /c/<uuid> URL. Persist the addressable one, otherwise follow-ups
       // cannot reopen the thread.
       const conversationUrl = await this.waitForConversationUrl(page, 20_000)
+      const newTurn = await this.waitForNewTurn(page, userBaseline, assistantBaseline, request.brief)
+      if (!newTurn) {
+        throw new TransportError('send did not produce a new user/assistant turn; the click may not have been accepted', 'ui')
+      }
       const attachments = attachmentsToSend.map(file => file.split(/[\\/]/).pop() ?? file)
       const submissionId = randomUUID()
       const fingerprint = sha256(`${conversationUrl}\n${request.brief}\n${attachments.join('\n')}`)
@@ -217,6 +289,8 @@ export class ChatGptWebTransport implements Transport {
         startedAt: Date.now(),
         lastText: '',
         stable: 0,
+        assistantBaseline,
+        userBaseline,
       })
       return { submissionId, fingerprint, attachments, conversationUrl }
     } catch (error) {
@@ -239,13 +313,9 @@ export class ChatGptWebTransport implements Transport {
       await page.goto(request.conversationUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       const composer = await firstVisible(page, SELECTORS.composer, 30_000)
       if (composer === undefined) return { attached: false }
-      const markerList = briefMarkers(request.brief)
-      if (markerList.length === 0) return { attached: false }
-      const found = await page.evaluate(
-        texts => texts.some(text => (document.body.innerText ?? '').includes(text)),
-        markerList,
-      )
-      if (!found) return { attached: false }
+      await this.settleMessages(page)
+      const assistantBaseline = await this.assistantBaselineForPrompt(page, request.brief)
+      if (assistantBaseline === undefined) return { attached: false }
       const submissionId = randomUUID()
       this.submissions.set(submissionId, {
         page,
@@ -260,6 +330,8 @@ export class ChatGptWebTransport implements Transport {
         startedAt: Date.now(),
         lastText: '',
         stable: 0,
+        assistantBaseline,
+        userBaseline: 0,
       })
       return { attached: true, submissionId }
     } catch (error) {
@@ -286,7 +358,7 @@ export class ChatGptWebTransport implements Transport {
         if (page.isClosed()) return { state: 'unknown' }
         const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
         if (streaming) progressed = true
-        const text = streaming ? '' : await this.richAnswerText(page)
+        const text = streaming ? '' : await this.richAnswerText(page, submission.assistantBaseline)
         const next = advanceCompletion(
           { lastText: submission.lastText, stable: submission.stable },
           text,
@@ -316,12 +388,12 @@ export class ChatGptWebTransport implements Transport {
     if (submission === undefined) throw new TransportError('unknown submission', 'ui')
     if (submission.page.isClosed()) throw new TransportError('conversation page is closed', 'ui')
     const page = submission.page
-    const answer = await this.lastAssistantText(page)
-    const images = await this.collectImages(page)
-    const codeBlocks = await this.collectCodeBlocks(page)
-    const archives = await this.collectArchives(page)
+    const answer = await this.lastAssistantText(page, submission.assistantBaseline)
+    const images = await this.collectImages(page, submission.assistantBaseline)
+    const codeBlocks = await this.collectCodeBlocks(page, submission.assistantBaseline)
+    const archives = await this.collectArchives(page, submission.assistantBaseline)
     if (answer === '' && images.length === 0 && codeBlocks.length === 0 && archives.length === 0) {
-      throw new TransportError('no assistant answer on the page', 'ui')
+      throw new TransportError('no new assistant answer for this round', 'ui')
     }
     return {
       answer,
@@ -332,11 +404,12 @@ export class ChatGptWebTransport implements Transport {
   }
 
   /** Large images in the answer; blob URLs are read in-page, https through cookies. */
-  private async collectImages(page: Page): Promise<ImageAsset[]> {
-    const sources: string[] = await page.evaluate(selector => {
+  private async collectImages(page: Page, baseline = 0): Promise<ImageAsset[]> {
+    const sources: string[] = await page.evaluate(({ selector, baseline }) => {
       const seen = new Set<string>()
       const out: string[] = []
       const messages = [...document.querySelectorAll(selector)]
+      if (messages.length <= baseline) return out
       const last = messages[messages.length - 1]
       const root = last?.closest('[data-testid^="conversation-turn"]')
         ?? last?.closest('article')
@@ -353,7 +426,7 @@ export class ChatGptWebTransport implements Transport {
         }
       }
       return out
-    }, SELECTORS.assistantMessage)
+    }, { selector: SELECTORS.assistantMessage, baseline })
     const images: ImageAsset[] = []
     for (const [index, source] of sources.slice(0, 8).entries()) {
       try {
@@ -405,9 +478,10 @@ export class ChatGptWebTransport implements Transport {
     return images
   }
 
-  private async collectCodeBlocks(page: Page): Promise<CodeBlock[]> {
-    return await page.evaluate(selector => {
+  private async collectCodeBlocks(page: Page, baseline = 0): Promise<CodeBlock[]> {
+    return await page.evaluate(({ selector, baseline }) => {
       const messages = [...document.querySelectorAll(selector)]
+      if (messages.length <= baseline) return []
       const last = messages[messages.length - 1]
       const root = last?.closest('[data-testid^="conversation-turn"]')
         ?? last?.closest('article')
@@ -444,13 +518,14 @@ export class ChatGptWebTransport implements Transport {
           text: code.textContent ?? '',
         }))
         .filter(block => block.text.trim() !== '')
-    }, SELECTORS.assistantMessage)
+    }, { selector: SELECTORS.assistantMessage, baseline })
   }
 
   /** Download zip links rendered in the assistant answer (code interpreter downloads). */
-  private async collectArchives(page: Page): Promise<ArchiveAsset[]> {
-    const links = await page.evaluate(selector => {
+  private async collectArchives(page: Page, baseline = 0): Promise<ArchiveAsset[]> {
+    const links = await page.evaluate(({ selector, baseline }) => {
       const messages = [...document.querySelectorAll(selector)]
+      if (messages.length <= baseline) return []
       const last = messages[messages.length - 1]
       const root = last?.closest('[data-testid^="conversation-turn"]')
         ?? last?.closest('article')
@@ -480,7 +555,7 @@ export class ChatGptWebTransport implements Transport {
         if (picked.length >= 3) break
       }
       return picked
-    }, SELECTORS.assistantMessage)
+    }, { selector: SELECTORS.assistantMessage, baseline })
     const archives: ArchiveAsset[] = []
     for (const link of links) {
       try {
@@ -548,14 +623,23 @@ export class ChatGptWebTransport implements Transport {
   }
 
   private async waitForConversationUrl(page: Page, timeoutMs: number): Promise<string> {
-    const pattern = /^https:\/\/chatgpt\.com\/c\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const isConversation = (value: string): boolean => {
+      try {
+        const url = new URL(value)
+        return /^\/c\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url.pathname)
+      } catch {
+        return false
+      }
+    }
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       const url = page.url()
-      if (pattern.test(url)) return url
+      if (isConversation(url)) return url
+      // The fixture/local appUrl has no /c/<uuid>; retain its URL for tests.
+      if (this.options.appUrl !== undefined) return url
       await page.waitForTimeout(500)
     }
-    return page.url()
+    throw new TransportError('new conversation URL was not observed; the message may not have been sent', 'ui')
   }
 
   private async readModel(page: Page): Promise<string> {
@@ -598,13 +682,14 @@ export class ChatGptWebTransport implements Transport {
     }
   }
 
-  private async richAnswerText(page: Page): Promise<string> {
-    const text = await this.lastAssistantText(page)
+  private async richAnswerText(page: Page, baseline: number): Promise<string> {
+    const text = await this.lastAssistantText(page, baseline)
     if (text !== '') return text
     // Image-only answers have no text; use a short count/dimension fingerprint
     // (never the base64 payload) so a gallery response still completes.
-    const fingerprint = await page.evaluate(selector => {
+    const fingerprint = await page.evaluate(({ selector, baseline }) => {
       const messages = [...document.querySelectorAll(selector)]
+      if (messages.length <= baseline) return { images: [] as string[], codeLength: 0 }
       const last = messages[messages.length - 1]
       const root = last?.closest('[data-testid^="conversation-turn"]')
         ?? last?.closest('article')
@@ -618,15 +703,15 @@ export class ChatGptWebTransport implements Transport {
         .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
         .reduce((sum, code) => sum + (code.textContent?.length ?? 0), 0)
       return { images, codeLength }
-    }, SELECTORS.assistantMessage)
+    }, { selector: SELECTORS.assistantMessage, baseline })
     if (fingerprint.images.length > 0) return `image:${fingerprint.images.length}:${fingerprint.images.join(',')}`
     return fingerprint.codeLength > 0 ? `code:${fingerprint.codeLength}` : ''
   }
 
-  private async lastAssistantText(page: Page): Promise<string> {
+  private async lastAssistantText(page: Page, baseline = 0): Promise<string> {
     const messages = page.locator(SELECTORS.assistantMessage)
     const count = await messages.count().catch(() => 0)
-    if (count === 0) return ''
+    if (count <= baseline) return ''
     return (await messages.nth(count - 1).innerText().catch(() => '')).trim()
   }
 }

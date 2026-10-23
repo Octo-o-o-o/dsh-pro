@@ -49,6 +49,7 @@ interface TopicRow {
   rounds_cap: number
   designs?: number | null
   stop_reason: string | null
+  review_from?: string | null
   artifacts: string[]
   updated: string
   root?: string
@@ -123,7 +124,7 @@ const STATUS_COLOR: Record<string, string> = {
   cancelled: '#757575',
 }
 
-const ACTIVE = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating', 'reviewing'])
+const ACTIVE = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating'])
 
 const STALL_LABEL: Record<string, string> = {
   login: '登录失效',
@@ -300,7 +301,7 @@ function Panel(): ReturnType<typeof createElement> {
           setNotice({ kind: 'error', text: `没能唤醒原会话：${reason}` })
         }
       } else if (action === 'review_cancel') {
-        setNotice({ kind: 'ok', text: '已返回待接受' })
+        setNotice({ kind: 'ok', text: '已撤回判断请求，返回原状态' })
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
       }
@@ -369,7 +370,11 @@ function Panel(): ReturnType<typeof createElement> {
         `${STATUS_LABEL[topic.status] ?? topic.status} · ${topic.rounds}/${topic.rounds_cap} 轮`))))
 
   const hasArtifacts = (detail?.artifacts.length ?? 0) > 0
-  const canAccept = detail !== undefined && (detail.status === 'capped' || detail.status === 'reviewing' || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts))
+  const canAccept = detail !== undefined && (
+    detail.status === 'capped'
+    || (detail.status === 'reviewing' && (detail.review_from === 'capped' || hasArtifacts))
+    || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts)
+  )
   const canRegenerate = detail !== undefined && (detail.status === 'completed' || detail.status === 'capped' || detail.status === 'reviewing' || detail.status === 'failed' || detail.status === 'stalled')
 
   const body = createElement('div', { style: { flex: 1, overflowY: 'auto', padding: 14, fontSize: 13, lineHeight: 1.6 } },
@@ -420,7 +425,7 @@ function Panel(): ReturnType<typeof createElement> {
             ? createElement('button', { onClick: () => void act('review'), style: buttonStyle() }, detail.status === 'reviewing' ? '再次提醒原会话' : '请原会话判断')
             : undefined,
           detail.status === 'reviewing'
-            ? createElement('button', { onClick: () => void act('review_cancel'), style: buttonStyle() }, '返回待接受')
+            ? createElement('button', { onClick: () => void act('review_cancel'), style: buttonStyle() }, '撤回判断请求')
             : undefined,
           detail.status === 'completed'
             ? createElement('button', { onClick: () => void act('wake'), style: buttonStyle() }, '唤醒原会话')

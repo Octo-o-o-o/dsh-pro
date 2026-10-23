@@ -44,6 +44,7 @@ describe.skipIf(!enabled)('transport against the local fixture', () => {
         if (polled.state === 'unknown') throw new Error('page state unknown')
       }
       expect(answer).toContain('FAKE ANSWER to hello fixture')
+      expect(answer).not.toContain('OLD ANSWER')
     } finally {
       await transport.close()
       await rm(profileDir, { recursive: true, force: true }).catch(() => undefined)

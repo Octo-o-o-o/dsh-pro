@@ -1,4 +1,6 @@
+import { createHash, randomUUID } from 'node:crypto'
 import type {
+  DispatchIntent,
   EngineEvent,
   FetchedAnswer,
   Judge,
@@ -34,6 +36,29 @@ interface ActiveRun {
 
 function isAbort(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted')
+}
+
+/** Stable identity for one submit attempt; never includes file contents. */
+function requestHash(input: {
+  brief: string
+  files: readonly string[]
+  model: string
+  designs?: number
+}): string {
+  return createHash('sha256').update(JSON.stringify({
+    brief: input.brief,
+    files: [...input.files],
+    model: input.model,
+    designs: input.designs ?? null,
+  })).digest('hex')
+}
+
+function latestDispatchedRound(topic: Topic): RoundRecord | undefined {
+  return [...topic.rounds].reverse().find(round => round.submissionId !== undefined || round.dispatch !== undefined)
+}
+
+function hasUnobservedDispatch(round: RoundRecord | undefined): boolean {
+  return round?.dispatch !== undefined && round.submissionId === undefined
 }
 
 export class ResearchEngine {
@@ -83,6 +108,10 @@ export class ResearchEngine {
       }
       return topic
     }
+    delete topic.reviewFrom
+    delete topic.reviewStopReason
+    delete topic.reviewStallReason
+    delete topic.stopReason
     await this.transition(topic, 'cancelled')
     return topic
   }
@@ -100,9 +129,24 @@ export class ResearchEngine {
     if (topic.status !== 'stalled' && topic.status !== 'failed') {
       throw new Error(`topic ${id} is ${topic.status}, not stalled or failed`)
     }
-    const round = [...topic.rounds].reverse().find(candidate => candidate.submissionId !== undefined)
-    if (topic.channel === 'api' && round !== undefined) {
+    const round = latestDispatchedRound(topic)
+    if (topic.channel === 'api' && round !== undefined && round.submissionId !== undefined) {
       throw new Error('API 生图请求在重启后已丢失，无法接管；请接受已有产物、重新生成或取消')
+    }
+    if (hasUnobservedDispatch(round)) {
+      // The click may already have happened. Reattach is the only safe way
+      // forward; without it a human must decide between "not submitted" and
+      // accepting the existing artifacts.
+      if (this.options.transport.reattach === undefined) {
+        throw new Error('上一轮可能已经提交，但当前通道无法重新附着；请人工核对后用“未提交”重开，避免重复发送')
+      }
+      const attached = await this.tryAttach(topic)
+      if (!attached) {
+        throw new Error('无法确认上一轮是否已经提交；请人工核对后用“未提交”重开，避免重复发送')
+      }
+      await this.transition(topic, 'waiting')
+      if (!this.runs.has(id)) this.enqueue(id)
+      return topic
     }
     if (round !== undefined && this.options.transport.reattach !== undefined) {
       const attached = await this.tryAttach(topic)
@@ -124,7 +168,7 @@ export class ResearchEngine {
    * instead of duplicating it.
    */
   private async tryAttach(topic: Topic): Promise<boolean> {
-    const round = [...topic.rounds].reverse().find(candidate => candidate.submissionId !== undefined)
+    const round = latestDispatchedRound(topic)
     if (round === undefined) return false
     const locator = await this.options.store.readLocator(topic.id)
     if (locator === undefined) return false
@@ -139,6 +183,7 @@ export class ResearchEngine {
     })
     if (!result.attached || result.submissionId === undefined) return false
     round.submissionId = result.submissionId
+    if (round.dispatch !== undefined) round.dispatch.observedAt = new Date().toISOString()
     await this.options.store.save(topic)
     return true
   }
@@ -172,9 +217,15 @@ export class ResearchEngine {
     const topic = await this.options.store.load(id)
     if (topic.status === 'completed') return topic
     const withArtifacts = (topic.status === 'failed' || topic.status === 'stalled') && topic.artifacts.length > 0
-    if (topic.status !== 'capped' && topic.status !== 'reviewing' && !withArtifacts) {
+    const reviewingFrom = topic.status === 'reviewing' ? topic.reviewFrom ?? 'capped' : undefined
+    const reviewingAcceptable = reviewingFrom !== undefined
+      && (reviewingFrom === 'capped' || topic.artifacts.length > 0)
+    if (topic.status !== 'capped' && !reviewingAcceptable && !withArtifacts) {
       throw new Error(`topic ${id} is ${topic.status}; only capped/reviewing or failed/stalled with artifacts can be accepted`)
     }
+    delete topic.reviewFrom
+    delete topic.reviewStopReason
+    delete topic.reviewStallReason
     const existing = await this.options.store.readFinal(topic)
     const text = existing === undefined
       ? this.finalDocument(topic, undefined, '人工接受结果', 'completed')
@@ -185,21 +236,34 @@ export class ResearchEngine {
     return topic
   }
 
-  /** Move a capped topic to "waiting for the originating agent to judge". */
-  async markReviewing(id: string): Promise<Topic> {
+  /** Move a capped/failed/stalled topic to "waiting for the originating agent to judge". */  async markReviewing(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
     if (topic.status === 'reviewing') return topic
-    if (topic.status !== 'capped') throw new Error(`topic ${id} is ${topic.status}; only capped can be handed to review`)
-    await this.transition(topic, 'reviewing')
+    if (topic.status !== 'capped' && topic.status !== 'failed' && topic.status !== 'stalled') {
+      throw new Error(`topic ${id} is ${topic.status}; only capped/failed/stalled can be handed to review`)
+    }
+    topic.reviewFrom = topic.status
+    topic.reviewStopReason = topic.stopReason
+    topic.reviewStallReason = topic.stallReason
+    await this.transition(topic, 'reviewing', { stopReason: '等待原会话判断；接受、继续或重新生成后结束' })
     return topic
   }
 
-  /** Return a reviewing topic to the human acceptance queue. */
+  /** Return a reviewing topic to the queue it came from. */
   async cancelReview(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
     if (topic.status === 'capped') return topic
-    if (topic.status !== 'reviewing') throw new Error(`topic ${id} is ${topic.status}; only reviewing can return to capped`)
-    await this.transition(topic, 'capped', { stopReason: '原会话判断请求已撤回；等待人工接受' })
+    if (topic.status !== 'reviewing') throw new Error(`topic ${id} is ${topic.status}; only reviewing can return to its previous state`)
+    const target = topic.reviewFrom ?? 'capped'
+    const previousReason = topic.reviewStopReason
+    const previousStall = topic.reviewStallReason
+    delete topic.reviewFrom
+    delete topic.reviewStopReason
+    delete topic.reviewStallReason
+    await this.transition(topic, target, {
+      ...(previousStall !== undefined ? { stallReason: previousStall } : {}),
+      stopReason: previousReason ?? '原会话判断请求已撤回；等待人工处理',
+    })
     return topic
   }
 
@@ -261,6 +325,9 @@ export class ResearchEngine {
     await this.options.store.writeQuestion(topic, next, brief)
     const staged = await this.options.store.addMaterials(topic, materials ?? [])
     await this.options.store.writeRoundMaterials(topic, next, staged)
+    delete topic.reviewFrom
+    delete topic.reviewStopReason
+    delete topic.reviewStallReason
     delete topic.stopReason
     await this.transition(topic, 'queued')
     this.enqueue(id)
@@ -283,6 +350,9 @@ export class ResearchEngine {
     }
     const last = topic.rounds[topic.rounds.length - 1]
     const retryCurrent = recoverable && last !== undefined && last.answeredAt === undefined
+    if (retryCurrent && hasUnobservedDispatch(last)) {
+      throw new Error('上一轮可能已经发送；请先人工核对，确认“未提交”后再继续，避免重复发送')
+    }
     const next = retryCurrent ? last.n : topic.rounds.length + 1
     if (retryCurrent) {
       // The previous attempt never produced an answer: replace it with the
@@ -295,6 +365,7 @@ export class ResearchEngine {
       delete last.submittedAt
       delete last.verdict
       delete last.done
+      delete last.dispatch
     } else if (next > topic.roundsCap) {
       topic.roundsCap = next
     }
@@ -302,6 +373,9 @@ export class ResearchEngine {
     await this.options.store.writeQuestion(topic, next, brief)
     const staged = await this.options.store.addMaterials(topic, materials ?? [])
     await this.options.store.writeRoundMaterials(topic, next, staged)
+    delete topic.reviewFrom
+    delete topic.reviewStopReason
+    delete topic.reviewStallReason
     delete topic.stopReason
     await this.transition(topic, 'queued')
     this.enqueue(id)
@@ -320,6 +394,9 @@ export class ResearchEngine {
     topic.humanCheck = check
     await this.options.store.writeHumanCheck(topic, check)
     if (conclusion === 'submitted') {
+      if (hasUnobservedDispatch(topic.rounds[topic.rounds.length - 1]) && this.options.transport.reattach === undefined) {
+        throw new Error('这个通道无法确认已发送的消息；请保留现场，使用“未提交”重开或接受已有产物')
+      }
       if (this.options.transport.reattach !== undefined) {
         const attached = await this.tryAttach(topic)
         if (!attached) {
@@ -334,11 +411,12 @@ export class ResearchEngine {
         delete last.submissionId
         delete last.fingerprint
         delete last.submittedAt
+        delete last.dispatch
       }
       await this.transition(topic, 'queued')
       this.enqueue(id)
     } else {
-      await this.transition(topic, 'failed')
+      await this.transition(topic, 'failed', { stopReason: '人工核对判定需要重开；请重新生成或继续' })
     }
     return topic
   }
@@ -389,7 +467,7 @@ export class ResearchEngine {
       let topic = await this.options.store.load(id)
       while (true) {
         if (signal.aborted) return
-        if (topic.status === 'cancelled' || topic.status === 'completed') return
+        if (topic.status === 'cancelled' || topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing') return
 
         // An answered round whose verdict is missing is adjudicated first.
         const last = topic.rounds[topic.rounds.length - 1]
@@ -449,6 +527,9 @@ export class ResearchEngine {
 
   private async submitRound(topic: Topic, round: RoundRecord, signal: AbortSignal): Promise<void> {
     if (signal.aborted) throw new DOMException('aborted', 'AbortError')
+    if (round.dispatch !== undefined && round.submissionId === undefined) {
+      throw new TransportError('previous dispatch was never observed; human check is required before any resend', 'ui')
+    }
     const brief = (await this.options.store.readQuestion(topic, round.n)) ?? ''
     const locator = await this.options.store.readLocator(topic.id)
     const allFiles = await this.options.store.readMaterialPaths(topic)
@@ -463,6 +544,20 @@ export class ResearchEngine {
     }
     round.files = files.length
     round.attempts = (round.attempts ?? 0) + 1
+    const intent: DispatchIntent = {
+      attemptId: randomUUID(),
+      at: new Date().toISOString(),
+      requestHash: requestHash({
+        brief,
+        files,
+        model: topic.model,
+        ...(topic.designs !== undefined ? { designs: topic.designs } : {}),
+      }),
+    }
+    round.dispatch = intent
+    // This is the line that makes a crash after the click conservative: the
+    // intent is on disk before the transport can press send.
+    await this.options.store.save(topic)
     const result: SubmitResult = await this.options.transport.submit({
       topicId: topic.id,
       round: round.n,
@@ -473,6 +568,7 @@ export class ResearchEngine {
       ...(topic.designs !== undefined ? { designs: topic.designs } : {}),
       session: locator ?? null,
     })
+    round.dispatch = { ...intent, observedAt: new Date().toISOString() }
     round.files = result.attachments.length
     await this.options.store.writeLocator(topic.id, {
       conversationUrl: result.conversationUrl,
@@ -660,6 +756,9 @@ export class ResearchEngine {
     topic.status = next
     if (extra?.stallReason !== undefined) topic.stallReason = extra.stallReason
     if (extra?.stopReason !== undefined) topic.stopReason = extra.stopReason
+    if (extra?.stopReason === undefined && (next === 'queued' || next === 'uploading' || next === 'submitted' || next === 'waiting' || next === 'answered' || next === 'adjudicating')) {
+      delete topic.stopReason
+    }
     if (next !== 'stalled') delete topic.stallReason
     await this.options.store.save(topic)
     this.emit({

@@ -16,6 +16,7 @@ import {
   assertMaterialLimits,
   buildManifest,
   defaultConfig,
+  findSecret,
   type Channel,
   type ImageApiConfig,
   type ImageFormat,
@@ -55,8 +56,8 @@ const baseFields = {
   rawAnswers: z.string().default('local').description('原始答复保存位置：local（本机目录）或 repo（随项目）。公开仓库请用 local。'),
   rawAnswersDir: z.string().default('').description('local 模式的原文目录；留空用 ~/.dsh/pro-research/raw。'),
   headless: z.boolean().default(false).description('无头模式仅建议用于自检；首次登录必须有头。'),
-  judgeProvider: z.string().default('').description('自动裁决使用的 LLM provider；留空则跑满轮次。'),
-  judgeModel: z.string().default('').description('自动裁决使用的 model；与 provider 同时填写才启用。'),
+  judgeProvider: z.string().default('').description('自动裁决的 LLM provider；留空自动使用当前 DSH 默认模型，填 off 可关闭。'),
+  judgeModel: z.string().default('').description('自动裁决的 model；留空自动使用当前 DSH 默认模型；与 provider 同时填写可覆盖。'),
 }
 
 /** Loader-validated settings. Defaults mirror `defaultConfig()`. */
@@ -142,6 +143,10 @@ interface AgentFactory {
 
 interface SessionController {
   resolveAgent(sessionId: string): Promise<LiveAgent | { agent: LiveAgent } | { error: unknown }>
+}
+
+interface AgentDefaultModel {
+  currentSelection(): { provider?: string; model?: string; reasoningEffort?: string }
 }
 
 function homeDir(): string {
@@ -279,6 +284,7 @@ class ProResearchService {
   private readonly stores = new Map<string, ResearchStore>()
   private readonly topicSessions = new Map<string, string>()
   private sessionController?: SessionController
+  private defaultModel?: AgentDefaultModel
   private agentFactory?: AgentFactory
   private registryChain: Promise<void> = Promise.resolve()
   private transport?: ChatGptWebTransport
@@ -344,17 +350,16 @@ class ProResearchService {
   }
 
   private judge(): Judge {
-    const provider = this.config.judgeProvider
-    const model = this.config.judgeModel
-    if (provider === '' || model === '') {
-      return async () => ({
-        verdict: 'partial',
-        reason: '未配置裁决模型，跑满轮次后交付',
-        done: false,
-        summary: '未启用自动裁决；结论见各轮裁决与原始答复。',
-      })
-    }
     return async (input) => {
+      const route = this.judgeRoute()
+      if (route === undefined) {
+        return {
+          verdict: 'partial',
+          reason: '未配置裁决模型，且当前没有可用的 DSH 默认模型',
+          done: false,
+          summary: '未启用自动裁决；结论见各轮裁决与原始答复。',
+        }
+      }
       const llm = this.ctx.get('llm') as
         | { stream(options: Record<string, unknown>): AsyncIterable<unknown> }
         | undefined
@@ -367,8 +372,8 @@ class ProResearchService {
         `本轮答复：\n${input.answer.slice(0, 30_000)}`,
       ].join('\n\n')
       for await (const chunk of llm.stream({
-        provider,
-        model,
+        provider: route.provider,
+        model: route.model,
         system: JUDGE_SYSTEM,
         messages: [createUserMessage({
           content: [{ type: 'text', text: user }],
@@ -382,6 +387,23 @@ class ProResearchService {
       const text = assembler.blocks().map(block => (block.type === 'text' ? block.text : '')).join('')
       return parseJudge(text)
     }
+  }
+
+  private judgeRoute(): { provider: string; model: string; source: 'configured' | 'default' } | undefined {
+    const provider = this.config.judgeProvider.trim()
+    const model = this.config.judgeModel.trim()
+    if (provider.toLowerCase() === 'off') return undefined
+    if (provider !== '' && model !== '') return { provider, model, source: 'configured' }
+    try {
+      const model = this.defaultModel ?? this.ctx.get('agentDefaultModel') as AgentDefaultModel | undefined
+      const selection = model?.currentSelection()
+      if (selection?.provider !== undefined && selection.provider !== '' && selection.model !== undefined && selection.model !== '') {
+        return { provider: selection.provider, model: selection.model, source: 'default' }
+      }
+    } catch {
+      // No default selection is available in this composition.
+    }
+    return undefined
   }
 
   private engineFor(cwd: string, mode: 'project' | 'local' = this.config.store): ResearchEngine {
@@ -496,6 +518,10 @@ class ProResearchService {
 
   useSessionController(controller: SessionController): void {
     this.sessionController = controller
+  }
+
+  useDefaultModel(model: AgentDefaultModel): void {
+    this.defaultModel = model
   }
 
   private liveAgent(sessionId: string): LiveAgent | undefined {
@@ -817,8 +843,8 @@ class ProResearchService {
     }
     if (action === 'wake') {
       const topic = await this.storeAt(entry.root, entry.mode).load(id)
-      if (topic.status !== 'completed' && topic.status !== 'capped') {
-        throw new Error(`topic ${id} is ${topic.status}; only completed/capped topics can wake their session`)
+      if (topic.status !== 'completed') {
+        throw new Error(`topic ${id} is ${topic.status}; only completed topics can be woken without a decision`)
       }
       const wake = await this.notifyAccepted(id, topic)
       return { ...this.view(topic), wake }
@@ -829,7 +855,7 @@ class ProResearchService {
         throw new Error(`topic ${id} is ${topic.status}; only capped/reviewing/failed/stalled topics need review`)
       }
       const wake = await this.notifyCappedReview(id, true)
-      if (wake.ok && (topic.status === 'capped' || topic.status === 'reviewing')) {
+      if (wake.ok && (topic.status === 'capped' || topic.status === 'reviewing' || topic.status === 'failed' || topic.status === 'stalled')) {
         const reviewing = await engine.markReviewing(id)
         return { ...this.view(reviewing), wake }
       }
@@ -965,8 +991,15 @@ class ProResearchService {
     return this.config.autoStart
   }
 
+  private assertTextSafe(label: string, value: string): void {
+    const secret = findSecret(value)
+    if (secret !== undefined) {
+      throw new Error(`${label} contains a ${secret}; remove it before sending`)
+    }
+  }
+
   private judgeEnabled(): boolean {
-    return this.config.judgeProvider !== '' && this.config.judgeModel !== ''
+    return this.judgeRoute() !== undefined
   }
 
   private withDesignCount(brief: string, designs: number): string {
@@ -996,7 +1029,7 @@ class ProResearchService {
     assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
     // A billable API round is not repeated by default: without an automatic
     // judge, round 2 would just buy another three images.
-    const defaultRounds = this.config.channel === 'api' && !this.judgeEnabled() ? 1 : this.config.rounds
+    const defaultRounds = this.config.channel === 'api' ? 1 : this.config.rounds
     const card: ResearchCard = {
       title,
       type: this.spec.topicType,
@@ -1050,6 +1083,7 @@ class ProResearchService {
       rounds_cap: topic.roundsCap,
       designs: topic.designs ?? null,
       stop_reason: topic.stopReason ?? null,
+      review_from: topic.reviewFrom ?? null,
       artifacts: topic.artifacts,
       updated: topic.updated,
     }
@@ -1448,6 +1482,10 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
     ;(ctx as ServiceContext).inject(['sessionController'], scoped => {
       const controller = scoped.get('sessionController') as SessionController | undefined
       if (controller !== undefined) service.useSessionController(controller)
+    })
+    ;(ctx as ServiceContext).inject(['agentDefaultModel'], scoped => {
+      const model = scoped.get('agentDefaultModel') as AgentDefaultModel | undefined
+      if (model !== undefined) service.useDefaultModel(model)
     })
     ;(ctx as ServiceContext).inject(['webServer'], scoped => registerRoutes(scoped, service, spec))
   ;(ctx as ServiceContext).tools.register(defineTool({

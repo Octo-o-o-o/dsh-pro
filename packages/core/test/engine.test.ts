@@ -17,6 +17,7 @@ afterEach(async () => {
 class FakeTransport implements Transport {
   submits: SubmitRequest[] = []
   fail?: Error
+  submitFail?: Error
   hang = false
   polling = false
   private seq = 0
@@ -30,6 +31,7 @@ class FakeTransport implements Transport {
   async submit(request: SubmitRequest) {
     this.submits.push(request)
     this.seq += 1
+    if (this.submitFail !== undefined) throw this.submitFail
     return {
       submissionId: `sub-${this.seq}`,
       fingerprint: `fp-${this.seq}`,
@@ -334,6 +336,37 @@ describe('engine', () => {
     expect(document).toContain('人工接受')
   })
 
+  it('returns a failed review handoff to failed, not capped', async () => {
+    const { engine, store } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const failed = await store.load(topic.id)
+    failed.status = 'failed'
+    failed.artifacts = ['artifacts/round-01/image-01.png']
+    await store.save(failed)
+
+    expect((await engine.markReviewing(topic.id)).status).toBe('reviewing')
+    expect((await engine.cancelReview(topic.id)).status).toBe('failed')
+    expect((await engine.accept(topic.id)).status).toBe('completed')
+  })
+
+  it('restores a stalled review handoff with its stall reason', async () => {
+    const { engine, store } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const stalled = await store.load(topic.id)
+    stalled.status = 'stalled'
+    stalled.stallReason = 'ui'
+    stalled.stopReason = 'page changed'
+    await store.save(stalled)
+
+    expect((await engine.markReviewing(topic.id)).status).toBe('reviewing')
+    const restored = await engine.cancelReview(topic.id)
+    expect(restored.status).toBe('stalled')
+    expect(restored.stallReason).toBe('ui')
+    expect(restored.stopReason).toBe('page changed')
+  })
+
   it('records regeneration as a new generation and archives the previous final', async () => {
     const { engine, store } = await harness({ doneAt: 1 })
     const topic = await engine.start(card())
@@ -384,6 +417,33 @@ describe('engine', () => {
     expect(materials).toHaveLength(1)
     expect(isAbsolute(materials?.[0]?.path ?? '')).toBe(true)
     expect(await readFile(materials?.[0]?.path ?? '', 'utf8')).toBe('new material')
+  })
+
+  it('persists dispatch intent before submit and refuses auto-resend after an unknown result', async () => {
+    const transport = new FakeTransport(['first answer'])
+    transport.submitFail = new TransportError('network dropped during submit', 'network')
+    const { engine, store } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+
+    const stalled = await store.load(topic.id)
+    expect(stalled.status).toBe('stalled')
+    expect(stalled.rounds[0]?.dispatch?.attemptId).toBeTruthy()
+    expect(stalled.rounds[0]?.dispatch?.observedAt).toBeUndefined()
+    expect(stalled.rounds[0]?.submissionId).toBeUndefined()
+    const firstAttempt = stalled.rounds[0]?.dispatch?.attemptId
+
+    await expect(engine.resume(topic.id)).rejects.toThrow(/人工核对|无法确认|可能已经提交/)
+    await expect(engine.continue(topic.id, 'feedback without checking')).rejects.toThrow(/人工核对/)
+
+    transport.submitFail = undefined
+    await engine.humanCheck(topic.id, 'not_submitted', 'checked the page: no user turn was added')
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.status).toBe('completed')
+    expect(final.rounds[0]?.dispatch?.attemptId).not.toBe(firstAttempt)
+    expect(final.rounds[0]?.dispatch?.observedAt).toBeTruthy()
+    expect(transport.submits).toHaveLength(2)
   })
 
   it('retries the unanswered round with the follow-up brief after a stall', async () => {

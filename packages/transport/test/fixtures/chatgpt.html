@@ -2,7 +2,10 @@
 <html>
 <head><meta charset="utf-8"><title>fixture</title></head>
 <body>
-  <div id="messages"></div>
+  <div id="messages">
+    <div data-message-author-role="user">OLD QUESTION</div>
+    <div data-message-author-role="assistant">OLD ANSWER</div>
+  </div>
   <div id="prompt-textarea" contenteditable="true" style="min-height:40px;border:1px solid #ccc"></div>
   <input type="file" id="file">
   <button id="send-button" data-testid="send-button">Send</button>
@@ -13,15 +16,27 @@
     const messages = document.getElementById('messages')
     send.addEventListener('click', () => {
       const question = composer.innerText
+      const user = document.createElement('div')
+      user.setAttribute('data-message-author-role', 'user')
+      user.textContent = question
+      messages.append(user)
       const message = document.createElement('div')
       message.setAttribute('data-message-author-role', 'assistant')
       messages.append(message)
+      const copy = document.createElement('button')
+      copy.setAttribute('aria-label', 'Copy')
+      copy.style.display = 'none'
+      message.append(copy)
       const text = 'FAKE ANSWER to ' + question
       let index = 0
       const timer = setInterval(() => {
         index += 1
         message.textContent = text.slice(0, index)
-        if (index >= text.length) clearInterval(timer)
+        message.append(copy)
+        if (index >= text.length) {
+          clearInterval(timer)
+          copy.style.display = 'inline-block'
+        }
       }, 40)
     })
   </script>

@@ -25,6 +25,15 @@ export type StoreMode = 'project' | 'local'
 
 export type AnswerHome = 'local' | 'repo'
 
+/** Persisted before the browser/API submit can have any external side effect. */
+export interface DispatchIntent {
+  attemptId: string
+  at: string
+  requestHash: string
+  /** Set only after the transport has observed a submission for this attempt. */
+  observedAt?: string
+}
+
 export interface RoundRecord {
   n: number
   /** Which regeneration/version this round belongs to; 1 is the first run. */
@@ -36,6 +45,11 @@ export interface RoundRecord {
   files: number
   fingerprint?: string
   submissionId?: string
+  /**
+   * Presence means "this attempt may already have been sent". Never auto-resend
+   * a round that has a dispatch without an observed submission.
+   */
+  dispatch?: DispatchIntent
   /** How many submits this round has made; 1 means no retry yet. */
   attempts?: number
   /** Topic-relative artifacts produced by this round. */
@@ -62,6 +76,12 @@ export interface Topic {
   successCriteria: string[]
   artifacts: string[]
   stopReason?: string
+  /** Status to restore if a review handoff is withdrawn. */
+  reviewFrom?: 'capped' | 'failed' | 'stalled'
+  /** Previous stop reason, restored when a review handoff is withdrawn. */
+  reviewStopReason?: string
+  /** Previous stall reason, restored when a stalled review handoff is withdrawn. */
+  reviewStallReason?: StallReason
   /** Judge-authored brief for the next round, persisted across restarts. */
   nextBrief?: string
   humanCheck?: HumanCheck
