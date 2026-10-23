@@ -6,10 +6,20 @@ Status snapshot: 2026-10-23 (Asia/Shanghai).
 
 | Plugin | Public repo | Commit | Version |
 |---|---|---|---|
-| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `9e3853f1a64135b8c82eb098007a619057e5102e` | `0.3.0` |
-| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `e29502c3350eb3ab0b69a7c3c66928ddbcf1faea` | `0.3.0` |
+| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `9e3853f1a64135b8c82eb098007a619057e5102e`（dsh.so 提交）/ `6eb3608cb8f45291f4f8741247dc364d246ad29b`（当前 HEAD） | `0.3.0` |
+| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `e29502c3350eb3ab0b69a7c3c66928ddbcf1faea`（dsh.so 提交）/ `a280273962ec95318da0eccdbbbea9061de80e5f`（当前 HEAD） | `0.3.0` |
 
 Both public repos are generated from this monorepo by `node scripts/sync-dist.mjs`; `lib/` is committed there for dsh.pub and `github:` installs. The monorepo remains the source of truth.
+
+## Local web verification (2026-10-23)
+
+- Clean `DSH_HOME` (`%TEMP%\dsh-l5-verify`), profile `l5` created from the shipped `web` template.
+- Installed both plugins from the public commits with `dsh plugin --profile l5 add github:...#<sha>`.
+- `--dump-config` shows both layers: `# == chatgpt-pro-research` and `# == gpt-image-design`.
+- `dsh --profile l5 --port 6123 --no-open` starts; `GET /chatgpt-pro-research/topics` and `GET /gpt-image-design/topics` both return `200 {"topics":[]}`.
+- The sidebar entries **Pro Research** and **Image Design** render and open their empty panels.
+- Screenshots: [research panel](../packages/research/resources/screenshots/panel.png), [design panel](../packages/design/resources/screenshots/panel.png).
+- Not covered: real ChatGPT login, a full research round, and a real image API call.
 
 ## dsh.pub
 
