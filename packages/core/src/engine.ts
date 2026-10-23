@@ -88,9 +88,44 @@ export class ResearchEngine {
     if (topic.status !== 'stalled' && topic.status !== 'failed') {
       throw new Error(`topic ${id} is ${topic.status}, not stalled or failed`)
     }
+    const round = [...topic.rounds].reverse().find(candidate => candidate.submissionId !== undefined)
+    if (round !== undefined && this.options.transport.reattach !== undefined) {
+      const attached = await this.tryAttach(topic)
+      if (!attached) {
+        throw new Error('无法确认上一轮是否已经提交；请人工核对后用“未提交”重开，避免重复发送')
+      }
+      await this.transition(topic, 'waiting')
+      if (!this.runs.has(id)) this.enqueue(id)
+      return topic
+    }
     await this.transition(topic, 'queued')
     this.enqueue(id)
     return topic
+  }
+
+  /**
+   * Re-open the stored conversation and verify the prompt is present. Returns
+   * false when the round was never sent, so callers can ask for human review
+   * instead of duplicating it.
+   */
+  private async tryAttach(topic: Topic): Promise<boolean> {
+    const round = [...topic.rounds].reverse().find(candidate => candidate.submissionId !== undefined)
+    if (round === undefined) return false
+    const locator = await this.options.store.readLocator(topic.id)
+    if (locator === undefined) return false
+    const transport = this.options.transport
+    if (transport.reattach === undefined) return false
+    const brief = (await this.options.store.readQuestion(topic, round.n)) ?? ''
+    const result = await transport.reattach({
+      topicId: topic.id,
+      round: round.n,
+      conversationUrl: locator.conversationUrl,
+      brief,
+    })
+    if (!result.attached || result.submissionId === undefined) return false
+    round.submissionId = result.submissionId
+    await this.options.store.save(topic)
+    return true
   }
 
   /**
@@ -103,28 +138,14 @@ export class ResearchEngine {
     if (topic.status !== 'waiting' && topic.status !== 'submitted') {
       throw new Error(`topic ${id} is ${topic.status}, not waiting`)
     }
-    const round = [...topic.rounds].reverse().find(candidate => candidate.submissionId !== undefined)
-    if (round === undefined) throw new Error(`topic ${id} has no submission to reattach`)
-    const locator = await this.options.store.readLocator(id)
-    if (locator === undefined) throw new Error(`topic ${id} has no conversation locator`)
-    const transport = this.options.transport
-    if (transport.reattach === undefined) throw new Error('transport does not support reattach')
-    const brief = (await this.options.store.readQuestion(topic, round.n)) ?? ''
-    const result = await transport.reattach({
-      topicId: id,
-      round: round.n,
-      conversationUrl: locator.conversationUrl,
-      brief,
-    })
-    if (!result.attached || result.submissionId === undefined) {
+    const attached = await this.tryAttach(topic)
+    if (!attached) {
       await this.transition(topic, 'stalled', {
         stallReason: 'unknown_submission',
         stopReason: 'DSH 重启后无法确认这一轮是否已提交；请核对会话后再恢复',
       })
       return topic
     }
-    round.submissionId = result.submissionId
-    await this.options.store.save(topic)
     if (topic.status !== 'waiting') await this.transition(topic, 'waiting')
     if (!this.runs.has(id)) this.enqueue(id)
     return topic

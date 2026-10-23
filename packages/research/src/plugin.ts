@@ -827,6 +827,19 @@ class ProResearchService {
         } else if (active.has(topic.status)) {
           await engine.interrupt(entry.id, 'DSH 重启时任务尚未完成；已停止自动重发，请核对后恢复')
           await this.notifyStalled(entry.id, 'unknown_submission')
+        } else if (topic.status === 'failed' || topic.status === 'stalled') {
+          const reason = topic.stopReason ?? ''
+          const pageClosed = /target page|browser has been closed|page.*closed/i.test(reason)
+          const recoverable = pageClosed || topic.stallReason === 'ui' || topic.stallReason === 'unknown_submission'
+          const fresh = Date.now() - Date.parse(topic.updated) < 24 * 60 * 60 * 1000
+          const hasSubmission = topic.rounds.some(round => round.submissionId !== undefined)
+          if (recoverable && fresh && hasSubmission) {
+            try {
+              await engine.resume(entry.id)
+            } catch (error) {
+              await engine.interrupt(entry.id, `自动恢复失败：${error instanceof Error ? error.message : String(error)}`)
+            }
+          }
         }
       } catch {
         // A stale registry entry or a recovered page must not take the host down.

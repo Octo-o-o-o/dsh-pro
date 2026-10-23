@@ -11,7 +11,7 @@ const TRANSITIONS: Record<Status, readonly Status[]> = {
   completed: ['queued'],
   capped: ['queued', 'completed', 'cancelled'],
   stalled: ['queued', 'waiting', 'failed', 'cancelled'],
-  failed: ['queued', 'cancelled'],
+  failed: ['queued', 'waiting', 'cancelled'],
   cancelled: [],
 }
 

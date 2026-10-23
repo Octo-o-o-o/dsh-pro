@@ -260,22 +260,33 @@ export class ChatGptWebTransport implements Transport {
     if (page.isClosed()) return { state: 'unknown' }
 
     const deadline = Date.now() + Math.max(1_000, request.timeoutMs)
-    while (Date.now() < deadline) {
-      if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
+    try {
+      while (Date.now() < deadline) {
+        if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
+        if (page.isClosed()) return { state: 'unknown' }
+        const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
+        const text = streaming ? '' : await this.richAnswerText(page)
+        const next = advanceCompletion(
+          { lastText: submission.lastText, stable: submission.stable },
+          text,
+          streaming,
+        )
+        submission.lastText = next.lastText
+        submission.stable = next.stable
+        if (next.answered) return { state: 'answered', answer: next.lastText }
+        await page.waitForTimeout(3_000)
+      }
+      return { state: 'waiting' }
+    } catch (error) {
+      if (isAborted(request.signal)) throw error
       if (page.isClosed()) return { state: 'unknown' }
-      const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
-      const text = streaming ? '' : await this.richAnswerText(page)
-      const next = advanceCompletion(
-        { lastText: submission.lastText, stable: submission.stable },
-        text,
-        streaming,
+      if (error instanceof TransportError) throw error
+      throw new TransportError(
+        `poll failed: ${error instanceof Error ? error.message : String(error)}`,
+        'network',
+        { cause: error },
       )
-      submission.lastText = next.lastText
-      submission.stable = next.stable
-      if (next.answered) return { state: 'answered', answer: next.lastText }
-      await page.waitForTimeout(3_000)
     }
-    return { state: 'waiting' }
   }
 
   async fetch(request: { submissionId: string }): Promise<{ answer: string; snapshotPath?: string }> {
