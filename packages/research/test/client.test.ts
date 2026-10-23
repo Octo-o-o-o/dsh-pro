@@ -80,6 +80,7 @@ describe('client panel', () => {
     expect(main).toBeTruthy()
     const html = renderToString(main as Parameters<typeof renderToString>[0])
     expect(html).toContain('ChatGPT Pro Research')
-    expect(html).toContain('还没有研究任务')
+    expect(html).toContain('正在加载任务')
+    expect(html).not.toContain('还没有研究任务')
   })
 })

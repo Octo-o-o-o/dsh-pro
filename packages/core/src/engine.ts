@@ -25,6 +25,8 @@ export interface EngineOptions {
   judge: Judge
   config: ProConfig
   onEvent?: (event: EngineEvent) => void
+  /** Last-resort trap for failures inside failure handling itself. */
+  onError?: (error: unknown) => void
   now?: () => number
   pollIntervalMs?: number
 }
@@ -112,6 +114,12 @@ export class ResearchEngine {
     delete topic.reviewStopReason
     delete topic.reviewStallReason
     delete topic.stopReason
+    // No local runner, but the transport may still hold an in-flight
+    // submission (e.g. a billed API job); tell it to stop.
+    const last = [...topic.rounds].reverse().find(round => round.submissionId !== undefined)
+    if (last?.submissionId !== undefined && last.answeredAt === undefined) {
+      void this.options.transport.cancelSubmission?.(last.submissionId)
+    }
     await this.transition(topic, 'cancelled')
     return topic
   }
@@ -126,12 +134,36 @@ export class ResearchEngine {
   async resume(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
     this.assertChannel(topic)
-    if (topic.status !== 'stalled' && topic.status !== 'failed') {
-      throw new Error(`topic ${id} is ${topic.status}, not stalled or failed`)
+    const resumable = topic.status === 'stalled' || topic.status === 'failed'
+      || topic.status === 'answered' || topic.status === 'adjudicating'
+    if (!resumable) {
+      throw new Error(`topic ${id} is ${topic.status}, not resumable`)
+    }
+    const last = topic.rounds[topic.rounds.length - 1]
+    // A round whose answer is already on disk needs only the local judge: no
+    // browser reattach, no API submission to lose. This branch must precede
+    // the api in-flight guard and the reattach path below, and it must end in
+    // 'queued'/'answered' so runTopic's adjudicate transition stays legal
+    // (waiting -> adjudicating is not a legal transition).
+    if (last !== undefined && last.answeredAt !== undefined && last.verdict === undefined) {
+      if (topic.status === 'stalled' || topic.status === 'failed' || topic.status === 'adjudicating') {
+        await this.transition(topic, 'queued')
+      }
+      this.enqueue(id)
+      return topic
     }
     const round = latestDispatchedRound(topic)
-    if (topic.channel === 'api' && round !== undefined && round.submissionId !== undefined) {
-      throw new Error('API 生图请求在重启后已丢失，无法接管；请接受已有产物、重新生成或取消')
+    if (topic.channel === 'api' && round !== undefined && round.answeredAt === undefined && round.submissionId !== undefined) {
+      // API jobs are in-memory only: after a host restart there is nothing to
+      // reattach. Probe once — a live job (same process, transient stall) is
+      // resumed honestly; a lost one is refused with an actionable message.
+      const probe = await this.options.transport.poll({ submissionId: round.submissionId, timeoutMs: 1_000 })
+      if (probe.state === 'unknown') {
+        throw new Error('API 生图请求在重启后已丢失，无法接管；请接受已有产物、重新生成或取消')
+      }
+      await this.transition(topic, 'waiting')
+      this.enqueue(id)
+      return topic
     }
     if (hasUnobservedDispatch(round)) {
       // The click may already have happened. Reattach is the only safe way
@@ -198,6 +230,16 @@ export class ResearchEngine {
     this.assertChannel(topic)
     if (topic.status !== 'waiting' && topic.status !== 'submitted') {
       throw new Error(`topic ${id} is ${topic.status}, not waiting`)
+    }
+    const last = topic.rounds[topic.rounds.length - 1]
+    // Crash window: the answer was written but the verdict never landed. Skip
+    // the browser entirely; 'answered' keeps the adjudicate transition legal
+    // (waiting -> adjudicating is not a legal transition).
+    if (last !== undefined && last.answeredAt !== undefined && last.verdict === undefined) {
+      if (topic.status === 'submitted') await this.transition(topic, 'waiting')
+      if (topic.status === 'waiting') await this.transition(topic, 'answered')
+      this.enqueue(id)
+      return topic
     }
     const attached = await this.tryAttach(topic)
     if (!attached) {
@@ -412,13 +454,34 @@ export class ResearchEngine {
     topic.humanCheck = check
     await this.options.store.writeHumanCheck(topic, check)
     if (conclusion === 'submitted') {
-      if (hasUnobservedDispatch(topic.rounds[topic.rounds.length - 1]) && this.options.transport.reattach === undefined) {
+      const last = topic.rounds[topic.rounds.length - 1]
+      if (last === undefined || (last.dispatch === undefined && last.submissionId === undefined)) {
+        throw new Error('这一轮没有任何提交记录可核对；请改用“未提交”重开')
+      }
+      // The answer is already on disk: only the local judge is missing. End in
+      // 'queued' so runTopic's adjudicate transition stays legal.
+      if (last.answeredAt !== undefined && last.verdict === undefined) {
+        await this.transition(topic, 'queued')
+        this.enqueue(id)
+        return topic
+      }
+      if (hasUnobservedDispatch(last) && this.options.transport.reattach === undefined) {
         throw new Error('这个通道无法确认已发送的消息；请保留现场，使用“未提交”重开或接受已有产物')
       }
       if (this.options.transport.reattach !== undefined) {
         const attached = await this.tryAttach(topic)
         if (!attached) {
           throw new Error('无法在原会话里确认这一轮的 prompt；请核对后用“未提交”重开，避免重复发送')
+        }
+      } else if (last.submissionId !== undefined) {
+        // No reattach capability (e.g. the api channel): a definitively lost
+        // in-flight job reports 'unknown' and must not be "confirmed" into a
+        // stall loop. A transient poll failure does not override the human.
+        const probe = await this.options.transport
+          .poll({ submissionId: last.submissionId, timeoutMs: 1_000 })
+          .catch(() => undefined)
+        if (probe?.state === 'unknown') {
+          throw new Error('该通道的请求已不在运行（宿主可能重启过），无法接管核对；请用“未提交”重开或接受已有产物')
         }
       }
       await this.transition(topic, 'waiting')
@@ -471,11 +534,19 @@ export class ResearchEngine {
     const id = this.queue.shift()
     if (id === undefined) return
     const controller = new AbortController()
-    const promise = this.runTopic(id, controller.signal).finally(() => {
-      this.runs.delete(id)
-      if (this.active?.controller === controller) this.active = undefined
-      void this.pump()
-    })
+    // The catch MUST sit on the promise stored in `this.active`: runTopic's own
+    // catch delegates to handleFailure, which still touches the store and can
+    // itself reject. Nobody awaits this promise in production, so without the
+    // trap a disk error would surface as an unhandled rejection in the host.
+    const promise = this.runTopic(id, controller.signal)
+      .catch(error => {
+        this.options.onError?.(error)
+      })
+      .finally(() => {
+        this.runs.delete(id)
+        if (this.active?.controller === controller) this.active = undefined
+        void this.pump()
+      })
     this.active = { controller, promise }
     this.runs.set(id, this.active)
   }
@@ -484,14 +555,17 @@ export class ResearchEngine {
     try {
       let topic = await this.options.store.load(id)
       while (true) {
-        if (signal.aborted) return
+        // A clean return here would leave the topic queued with no runner;
+        // aborting must flow through handleFailure so the topic lands in
+        // 'cancelled'.
+        if (signal.aborted) throw new DOMException('aborted', 'AbortError')
         if (topic.status === 'cancelled' || topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing') return
 
         // An answered round whose verdict is missing is adjudicated first.
         const last = topic.rounds[topic.rounds.length - 1]
         if (last !== undefined && last.answeredAt !== undefined && last.verdict === undefined) {
           await this.adjudicate(topic, last)
-          if (signal.aborted) return
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError')
           topic = await this.options.store.load(id)
           if (topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing') return
           continue
@@ -770,7 +844,9 @@ export class ResearchEngine {
   private async handleFailure(id: string, error: unknown, signal: AbortSignal): Promise<void> {
     if (isAbort(error) || signal.aborted) {
       const cancelled = await this.options.store.load(id).catch(() => undefined)
-      if (cancelled !== undefined && cancelled.status !== 'cancelled' && cancelled.status !== 'completed') {
+      if (cancelled !== undefined
+        && cancelled.status !== 'cancelled' && cancelled.status !== 'completed'
+        && cancelled.status !== 'capped' && cancelled.status !== 'reviewing') {
         await this.transition(cancelled, 'cancelled')
       }
       return

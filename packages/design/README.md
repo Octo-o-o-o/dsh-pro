@@ -61,7 +61,7 @@ dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#<40-char-c
 dsh plugin --profile <profile> add gpt-image-design
 ```
 
-npm 上现有 `0.2.x`；本仓库的 `0.3.1` 以 Git/dsh.pub 分发为准。
+npm 上现有 `0.2.x`；当前源码版本为 `0.3.2`，尚未同步到分发仓库或发布到市场。安装时请核对分发仓库的已发布版本。
 
 ### 启用
 
@@ -225,7 +225,7 @@ gpt_image_design(
 - **key 处理**：key 只来自插件设置或 `GPT_IMAGE_API_KEY`；不会写进 `topic.json`、回执、日志或错误信息（错误体做了脱敏）。
 - **权限边界**：插件以 DSH 进程权限运行，可以读写上述目录、启动本机 Chrome、请求你配置的生图服务；不会把 key 发给 `imageBaseUrl` 之外的地址，也不会把参考图发给其他服务商。
 - **文件管理器**：插件只用固定的 `explorer.exe` / `open` / `xdg-open` 参数打开它自己生成的产物文件/目录，不拼接用户输入，也不执行 shell 命令。
-- **清理**：删除主题目录即可删除该主题；卸载时见下文。不要把 key、登录态或 `~/.dsh` 提交到仓库。
+- **清理**：面板「更多 → 删除主题」或 `action=delete`（终态主题、需 `confirmed=true`）会删除主题目录、原始答复与面板记录；卸载时见下文。不要把 key、登录态或 `~/.dsh` 提交到仓库。
 
 ## 已知限制
 

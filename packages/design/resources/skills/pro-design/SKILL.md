@@ -58,6 +58,8 @@ brief 里写清尺寸/比例、风格、必须出现的文案、必须区分的�
 `gpt_image_design(action="continue", topic_id=..., brief="只改配色，保留版式", materials=[...], confirmed=true)`。
 web 通道在同一会话里只上传新增材料，会话失效会自动回退整份清单；api 通道每轮重新发提示词，参考图按当轮材料重新附加。
 
+整版不满意用 `regenerate`（保留历史、开新版本），`note` 写不满意点，可附 `materials=[...]`（相对主题项目根目录）。终态主题确认后可 `delete`，目录与面板记录一并删除，不可恢复。
+
 ## 边界
 
 - 不自动 push、不改仓库代码；demo 只是产物，实施另行授权。

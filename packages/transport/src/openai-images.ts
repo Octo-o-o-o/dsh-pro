@@ -11,6 +11,7 @@ import type {
   Transport,
 } from 'dsh-pro-core'
 import { TransportError } from 'dsh-pro-core'
+import { detectImageMime } from './assets.ts'
 
 export interface OpenAIImageOptions {
   /** Base URL including its version prefix, e.g. https://api.openai.com/v1. */
@@ -59,6 +60,10 @@ interface Job {
   settled: Promise<void>
   result?: FetchedAnswer
   error?: unknown
+  /** Directions finished so far; the engine's stall clock keys off changes. */
+  completed: number
+  /** `completed` value already reported as progress to the engine. */
+  reported: number
 }
 
 interface ImagePayload {
@@ -91,16 +96,25 @@ function mimeForFormat(format: ImageFormat): string {
   return format === 'jpeg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png'
 }
 
-/** Magic bytes win over provider headers; some gateways always answer image/png. */
-function detectMime(bytes: Buffer): string | undefined {
-  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png'
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
-  if (
-    bytes.length >= 12
-    && bytes.toString('ascii', 0, 4) === 'RIFF'
-    && bytes.toString('ascii', 8, 12) === 'WEBP'
-  ) return 'image/webp'
-  return undefined
+/** True for the rate-limit family that deserves one backoff retry. */
+function isRateLimited(error: unknown): boolean {
+  return error instanceof TransportError && error.failure === 'timeout' && /429|限流/.test(error.message)
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new DOMException('aborted', 'AbortError'))
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    timer.unref?.()
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function isAbortLike(error: unknown): boolean {
@@ -342,7 +356,7 @@ export class OpenAIImageTransport implements Transport {
     const prompt = this.basePrompt(request)
     const controller = new AbortController()
     const id = randomUUID()
-    const job = { request, count, controller } as Job
+    const job = { request, count, controller, completed: 0, reported: 0 } as Job
     const generated = this.generate(job, prompt, references)
     job.settled = generated.then(() => undefined, () => undefined)
     void generated.then(
@@ -381,8 +395,18 @@ export class OpenAIImageTransport implements Transport {
         }),
       ])
       if (outcome === 'aborted') throw new DOMException('aborted', 'AbortError')
-      if (outcome === 'timeout') return { state: 'waiting', progress: true }
-      if (job.error !== undefined) throw job.error
+      if (outcome === 'timeout') {
+        // Honest progress: only a newly finished direction resets the engine's
+        // stall clock. A stuck request no longer looks alive forever.
+        const progressed = job.completed > job.reported
+        job.reported = job.completed
+        return progressed ? { state: 'waiting', progress: true } : { state: 'waiting' }
+      }
+      if (job.error !== undefined) {
+        // Surface a failure once, then release the job (and its payload refs).
+        this.jobs.delete(request.submissionId)
+        throw job.error
+      }
       return { state: 'answered', answer: job.result?.answer ?? '' }
     } finally {
       if (timer !== undefined) clearTimeout(timer)
@@ -395,7 +419,10 @@ export class OpenAIImageTransport implements Transport {
     if (job === undefined) {
       throw new TransportError('API 生图任务已丢失（DSH 可能重启过）；这一轮不会自动重发', 'config')
     }
-    if (job.error !== undefined) throw job.error
+    if (job.error !== undefined) {
+      this.jobs.delete(request.submissionId)
+      throw job.error
+    }
     if (job.result === undefined) throw new TransportError('API 图片还没生成完', 'ui')
     // Fetched once per answered round; drop the base64 payload afterwards.
     const result = job.result
@@ -412,6 +439,8 @@ export class OpenAIImageTransport implements Transport {
   }
 
   async cancel(): Promise<void> {
+    // Abort only: the next poll/fetch surfaces each job's AbortError (and
+    // releases the job there), which keeps the engine's cancel path intact.
     for (const job of this.jobs.values()) job.controller.abort()
   }
 
@@ -445,30 +474,57 @@ export class OpenAIImageTransport implements Transport {
     return body
   }
 
+  private async generateOne(job: Job, direction: string, references: Reference[]): Promise<ImageAsset[]> {
+    try {
+      return references.length > 0
+        ? await this.edit(direction, references, job.controller.signal)
+        : await this.generation(direction, job.controller.signal)
+    } catch (error) {
+      // A rate-limited direction gets one backoff retry before being recorded
+      // as failed; concurrency 2 doubles the instantaneous request rate, so a
+      // bare retry keeps tight-RPM providers usable.
+      if (!isRateLimited(error) || job.controller.signal.aborted) throw error
+      await delay(2_000, job.controller.signal)
+      return references.length > 0
+        ? await this.edit(direction, references, job.controller.signal)
+        : await this.generation(direction, job.controller.signal)
+    }
+  }
+
   private async generate(job: Job, prompt: string, references: Reference[]): Promise<FetchedAnswer> {
     const request = job.request
-    const images: ImageAsset[] = []
+    // Bounded fan-out (2 at a time), order-preserving: results stay indexed by
+    // direction even though directions run concurrently.
+    const results: Array<ImageAsset[] | undefined> = Array.from({ length: job.count })
     const prompts: string[] = []
     const failures: string[] = []
     let firstError: unknown
-    for (let index = 0; index < job.count; index += 1) {
-      if (job.controller.signal.aborted) throw new DOMException('aborted', 'AbortError')
-      const direction = this.directionPrompt(prompt, index, job.count, references.length)
-      prompts.push(direction)
-      try {
-        const produced = references.length > 0
-          ? await this.edit(direction, references, job.controller.signal)
-          : await this.generation(direction, job.controller.signal)
-        images.push(...produced)
-      } catch (error) {
-        if (job.controller.signal.aborted || isAbortLike(error)) throw error
-        if (error instanceof TransportError && (error.failure === 'login' || error.failure === 'config' || error.failure === 'worker')) {
-          throw error
+    let next = 0
+    const worker = async (): Promise<void> => {
+      while (true) {
+        if (job.controller.signal.aborted) throw new DOMException('aborted', 'AbortError')
+        const index = next
+        next += 1
+        if (index >= job.count) return
+        const direction = this.directionPrompt(prompt, index, job.count, references.length)
+        prompts[index] = direction
+        try {
+          const produced = await this.generateOne(job, direction, references)
+          results[index] = produced
+          job.completed += 1
+        } catch (error) {
+          if (job.controller.signal.aborted || isAbortLike(error)) throw error
+          if (error instanceof TransportError && (error.failure === 'login' || error.failure === 'config' || error.failure === 'worker')) {
+            throw error
+          }
+          if (firstError === undefined) firstError = error
+          failures.push(`第 ${index + 1} 个方向失败：${messageOf(error)}`)
         }
-        if (firstError === undefined) firstError = error
-        failures.push(`第 ${index + 1} 个方向失败：${messageOf(error)}`)
       }
     }
+    const lanes = Array.from({ length: Math.min(2, job.count) }, () => worker())
+    await Promise.all(lanes)
+    const images = results.flatMap(result => result ?? [])
     if (images.length === 0) {
       if (firstError instanceof TransportError) throw firstError
       throw new TransportError(
@@ -581,7 +637,7 @@ export class OpenAIImageTransport implements Transport {
     if (bytes.byteLength > MAX_IMAGE_BYTES) {
       throw new TransportError(`生图 API 返回的图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
     }
-    return { mime: detectMime(bytes) ?? mime, base64 }
+    return { mime: detectImageMime(bytes) ?? mime, base64 }
   }
 
   private async readImageBody(response: Response): Promise<Buffer> {
@@ -615,7 +671,8 @@ export class OpenAIImageTransport implements Transport {
     try {
       target = new URL(url, this.options.baseUrl)
     } catch {
-      throw new TransportError(`生图 API 返回了非法图片地址：${redact(url)}`, 'config')
+      // Never echo the query string: signed URLs carry credentials in it.
+      throw new TransportError(`生图 API 返回了非法图片地址：${redact(url.split('?')[0] ?? '')}`, 'config')
     }
     if (target.protocol !== 'https:' && !(target.protocol === 'http:' && (isLoopbackHost(target.hostname) || target.origin === this.origin()))) {
       throw new TransportError('生图 API 返回了非 https 的图片地址；只允许 https 或本机/同源地址', 'config')
@@ -637,7 +694,12 @@ export class OpenAIImageTransport implements Transport {
     if (bytes.byteLength < MIN_IMAGE_BYTES) {
       throw new TransportError(`下载到的图片过小（${bytes.byteLength} 字节），按失败处理`, 'network')
     }
-    return { mime: detectMime(bytes) ?? mimeForFormat(this.options.format), base64: bytes.toString('base64') }
+    const headerMime = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? ''
+    const mime = detectImageMime(bytes) ?? (headerMime.startsWith('image/') ? headerMime : undefined)
+    if (mime === undefined) {
+      throw new TransportError('生图 API 返回的图片地址内容不是图片（无 magic bytes 且 content-type 非 image/*）', 'config')
+    }
+    return { mime, base64: bytes.toString('base64') }
   }
 
   private async referenceImages(files: readonly string[]): Promise<Reference[]> {
@@ -653,7 +715,7 @@ export class OpenAIImageTransport implements Transport {
         throw new TransportError(`读取参考图失败：${basename(file)}（${messageOf(error)}）`, 'upload')
       }
       if (bytes.byteLength > MAX_REFERENCE_BYTES) continue
-      const mime = detectMime(bytes)
+      const mime = detectImageMime(bytes)
       // A .png that is not actually an image would only confuse the provider.
       if (mime === undefined) continue
       references.push({ name: basename(file), mime, bytes })

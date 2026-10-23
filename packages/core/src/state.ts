@@ -20,6 +20,9 @@ export function canTransition(from: Status, to: Status): boolean {
   return TRANSITIONS[from].includes(to)
 }
 
+/** Every legal persisted status; used to validate topic.json on load. */
+export const STATUSES: readonly Status[] = Object.keys(TRANSITIONS) as Status[]
+
 export function assertTransition(from: Status, to: Status): void {
   if (!canTransition(from, to)) {
     throw new Error(`illegal status transition: ${from} -> ${to}`)

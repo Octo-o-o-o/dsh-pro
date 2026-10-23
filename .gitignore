@@ -22,3 +22,6 @@ research-tmp/
 .badge-preview.*
 .sidebar-status.iife.js
 .tmp/
+# Local Pro session recovery records (account identity and browser state).
+/docs/design/dsh-pro-panel-ui-v2/native.json
+/docs/design/dsh-pro-panel-ui-v2/native-materials/

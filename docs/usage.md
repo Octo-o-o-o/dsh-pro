@@ -89,11 +89,25 @@ pro_research(action="continue", topic_id="topic-xxxx",
 
 新建主题时可以用 `parent` 指向父主题，把 follow-up 串成同一棵树。
 
+不满意整版结果时用 `regenerate`（保留历史轮次，开新版本），可附 `note` 说明不满意点，也可附 `materials=[...]`（相对主题项目根目录）补充新材料：
+
+```text
+pro_research(action="regenerate", topic_id="topic-xxxx", note="配色太暗", materials=["docs/brand.md"], confirmed=true)
+```
+
+终态主题（完成/取消/到顶/失败/卡住）可以删除，目录、原始答复与面板记录一并清除：
+
+```text
+pro_research(action="delete", topic_id="topic-xxxx", confirmed=true)
+```
+
 ## 3. 侧边栏
 
 - 「Pro」面板按项目列出主题：状态点、标题、第几轮、记录路径。
-- 详情：轮次表（裁决、文件数、提交时间）、卡住原因、停止依据。
-- 操作：取消、恢复、人工核对（已提交 / 未提交 / 需重开）。
+- 概览：Research 以总结正文为主，Design 以本版最新轮图片与 demo 为主；旧成果标注来源版本。
+- 轮次 / 产物标签：查看完整轮次、裁决、文件和原始回答；主题路径收在可折叠的主题信息中。
+- 窄屏时在列表与详情间切换，可用“返回任务列表”回到原搜索和筛选。
+- 操作：取消、恢复、删除、人工核对（已提交 / 未提交 / 需重开）；每轮可看裁决全文与原始回答，产物可打包下载 ZIP。
 - 每 3 秒刷新；没有任务时提示用 `/pro-research` 开始。
 
 ## 4. 卡住与恢复

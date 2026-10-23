@@ -1,9 +1,10 @@
 import { appendFile, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { unzipSync, zipSync } from 'fflate'
+import { Unzip, UnzipInflate, UnzipPassThrough, zipSync } from 'fflate'
 import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
+import { STATUSES } from './state.ts'
 
 export interface StoreOptions {
   mode: StoreMode
@@ -52,8 +53,30 @@ function artifactRelativePath(value: string): string {
   return parts.length > 0 ? parts.join('/') : 'artifact'
 }
 
-function isHtmlSource(text: string): boolean {
+export function isHtmlSource(text: string): boolean {
   return /^\s*(?:<!doctype\s+html|<html[\s>])/i.test(text.slice(0, 512))
+}
+
+/**
+ * Fail closed on a structurally invalid topic.json. Optional/newer fields are
+ * deliberately not checked so older records keep loading.
+ */
+function assertTopicShape(value: unknown, id: string): asserts value is Topic {
+  const topic = value as Topic
+  const fail = (field: string): never => {
+    throw new Error(`corrupt topic ${id}: invalid ${field}`)
+  }
+  if (topic === null || typeof topic !== 'object') fail('topic')
+  if (topic.schema !== 1) fail('schema')
+  if (typeof topic.id !== 'string' || topic.id === '') fail('id')
+  if (typeof topic.title !== 'string') fail('title')
+  if (topic.type !== 'research' && topic.type !== 'design') fail('type')
+  if (!STATUSES.includes(topic.status)) fail('status')
+  if (!Number.isInteger(topic.roundsCap) || topic.roundsCap < 1) fail('roundsCap')
+  if (!Array.isArray(topic.rounds)) fail('rounds')
+  if (typeof topic.channel !== 'string') fail('channel')
+  if (!Array.isArray(topic.successCriteria)) fail('successCriteria')
+  if (!Array.isArray(topic.artifacts)) fail('artifacts')
 }
 
 function extensionForLanguage(language: string): string {
@@ -112,6 +135,79 @@ async function replaceFile(temp: string, target: string): Promise<void> {
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT'
+}
+
+const ZIP_MAX_FILES = 100
+const ZIP_MAX_BYTES = 50 * 1024 * 1024
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0))
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.length
+  }
+  return out
+}
+
+/**
+ * Streaming, capped unzip. `unzipSync` would inflate every entry into memory
+ * before any count/size check could run, so a high-ratio zip bomb could take
+ * the host down. Here the declared size is a first gate (forgeable), the
+ * per-chunk accumulation is the hard cap: an over-budget file is dropped and
+ * no later file is started. Returns undefined for non-zip input.
+ */
+export function inflateArchive(bytes: Uint8Array): Array<[string, Uint8Array]> | undefined {
+  const files: Array<[string, Uint8Array]> = []
+  let total = 0
+  let capped = false
+  try {
+    const unzip = new Unzip()
+    // The decoders are NOT registered by default; without them every file
+    // errors with "unknown compression type".
+    unzip.register(UnzipInflate)
+    unzip.register(UnzipPassThrough)
+    unzip.onfile = file => {
+      if (capped) return
+      if (files.length >= ZIP_MAX_FILES) {
+        capped = true
+        return
+      }
+      if ((file.originalSize ?? 0) > ZIP_MAX_BYTES - total) {
+        capped = true
+        return
+      }
+      const chunks: Uint8Array[] = []
+      let size = 0
+      let drop = false
+      file.ondata = (error, chunk, final) => {
+        if (error !== null || drop) {
+          drop = true
+          chunks.length = 0
+          return
+        }
+        if (chunk !== null && chunk.length > 0) {
+          size += chunk.length
+          if (size > ZIP_MAX_BYTES || total + size > ZIP_MAX_BYTES) {
+            drop = true
+            capped = true
+            chunks.length = 0
+            return
+          }
+          chunks.push(chunk.slice())
+        }
+        if (final) {
+          files.push([file.name, concatBytes(chunks)])
+          total += size
+        }
+      }
+      file.start()
+    }
+    unzip.push(bytes, true)
+  } catch {
+    return undefined
+  }
+  return files
 }
 
 export class ResearchStore {
@@ -261,12 +357,12 @@ export class ResearchStore {
       if (!entry.isDirectory()) continue
       const dir = join(root, entry.name)
       try {
-        const topic = JSON.parse(await readFile(join(dir, 'topic.json'), 'utf8')) as Topic
-        if (topic.schema !== 1) continue
-        this.dirs.set(topic.id, dir)
-        topics.push(topic)
+        const parsed = JSON.parse(await readFile(join(dir, 'topic.json'), 'utf8')) as unknown
+        assertTopicShape(parsed, entry.name)
+        this.dirs.set(parsed.id, dir)
+        topics.push(parsed)
       } catch {
-        // A directory without a readable topic.json is not ours.
+        // A directory without a readable, structurally valid topic.json is not ours.
       }
     }
     return topics.sort((a, b) => b.updated.localeCompare(a.updated))
@@ -274,7 +370,9 @@ export class ResearchStore {
 
   async load(id: string): Promise<Topic> {
     const dir = await this.dirOf(id)
-    return JSON.parse(await readFile(join(dir, 'topic.json'), 'utf8')) as Topic
+    const parsed = JSON.parse(await readFile(join(dir, 'topic.json'), 'utf8')) as unknown
+    assertTopicShape(parsed, id)
+    return parsed
   }
 
   async dirOf(id: string): Promise<string> {
@@ -442,9 +540,10 @@ export class ResearchStore {
       await writeFile(target, bytes)
       added.push(relative(dir, target).replace(/\\/g, '/'))
       try {
-        const entries = unzipSync(new Uint8Array(bytes))
+        const entries = inflateArchive(new Uint8Array(bytes))
+        if (entries === undefined) throw new Error('not a readable zip')
         const rootName = zipName.replace(/\.zip$/i, '')
-        const valid = Object.entries(entries).filter(([entry, data]) => {
+        const valid = entries.filter(([entry, data]) => {
           const normalized = entry.replace(/\\/g, '/')
           return !normalized.endsWith('/')
             && !normalized.startsWith('/')
@@ -455,13 +554,8 @@ export class ResearchStore {
         })
         const topLevel = new Set(valid.map(([entry]) => entry.replace(/\\/g, '/').split('/')[0]))
         const useRoot = topLevel.size > 1 || valid.some(([entry]) => !entry.replace(/\\/g, '/').includes('/'))
-        let count = 0
-        let total = 0
         for (const [entry, data] of valid) {
           const normalized = entry.replace(/\\/g, '/')
-          count += 1
-          total += data.length
-          if (count > 100 || total > 50 * 1024 * 1024) break
           const nested = join(base, useRoot ? rootName : '', normalized)
           await mkdir(dirname(nested), { recursive: true })
           await writeFile(nested, data)
@@ -488,18 +582,35 @@ export class ResearchStore {
       if (!path.startsWith(prefix)) continue
       const target = resolve(dir, path)
       if (target !== base && !target.startsWith(`${base}${sep}`)) continue
+      let bytes: Buffer
       try {
-        const bytes = await readFile(target)
-        total += bytes.length
-        if (total > 100 * 1024 * 1024) throw new Error('round artifacts exceed 100 MB')
-        files[path.slice(prefix.length)] = bytes
+        bytes = await readFile(target)
       } catch {
         // Skip one unreadable file; the rest of the bundle is still useful.
+        continue
       }
+      total += bytes.length
+      // Deliberately outside the per-file catch: an over-limit bundle must
+      // fail loudly instead of silently shipping a truncated zip.
+      if (total > 100 * 1024 * 1024) throw new Error('round artifacts exceed 100 MB')
+      files[path.slice(prefix.length)] = bytes
     }
     if (Object.keys(files).length === 0) throw new Error(`round ${round} has no artifacts to bundle`)
     const zipped = zipSync(files, { level: 6 })
     return { name: `round-${pad(round)}.zip`, bytes: Buffer.from(zipped) }
+  }
+
+  /**
+   * Delete every persisted byte of a topic: the topic directory, its raw
+   * answers and its session locator. Callers must refuse active statuses
+   * before invoking this.
+   */
+  async remove(topic: Topic): Promise<void> {
+    const dir = await this.dirOf(topic.id)
+    await rm(dir, { recursive: true, force: true })
+    await rm(this.rawTopicDir(topic.id), { recursive: true, force: true })
+    await rm(join(this.options.localRoot, 'sessions', `${topic.id}.json`), { force: true })
+    this.dirs.delete(topic.id)
   }
 
   async readAnswer(topic: Topic, round: number): Promise<string | undefined> {

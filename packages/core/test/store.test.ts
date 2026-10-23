@@ -225,4 +225,86 @@ describe('project store', () => {
     expect(lines).toHaveLength(2)
     expect(lines[1]).toContain('"not_submitted"')
   })
+
+  it('rejects a structurally corrupt topic.json on load and skips it on list', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic, dir } = await store.create(card(), 3, 'pro', 'web')
+    expect(await store.list()).toHaveLength(1)
+
+    const broken = JSON.parse(await readFile(join(dir, 'topic.json'), 'utf8')) as Record<string, unknown>
+    broken.status = 'exploded'
+    await writeFile(join(dir, 'topic.json'), JSON.stringify(broken), 'utf8')
+    await expect(store.load(topic.id)).rejects.toThrow(/corrupt topic/)
+    expect(await store.list()).toHaveLength(0)
+
+    broken.status = 'stalled'
+    broken.rounds = 'not-an-array'
+    await writeFile(join(dir, 'topic.json'), JSON.stringify(broken), 'utf8')
+    await expect(store.load(topic.id)).rejects.toThrow(/corrupt topic/)
+  })
+
+  it('caps zip extraction by entry count and total bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic, dir } = await store.create(card(), 3, 'pro', 'web')
+
+    const many: Record<string, Uint8Array> = {}
+    for (let index = 0; index < 150; index += 1) {
+      many[`pkg/f${String(index).padStart(3, '0')}.txt`] = new TextEncoder().encode(`file ${index}`)
+    }
+    const manyZip = Buffer.from(zipSync(many))
+    const added = await store.writeArtifacts(topic, 1, {
+      answer: '',
+      archives: [{ name: 'many.zip', base64: manyZip.toString('base64') }],
+    })
+    const extracted = added.filter(path => path.includes('pkg/'))
+    expect(extracted.length).toBeLessThanOrEqual(100)
+    expect(added).toContain('artifacts/round-01/many.zip')
+
+    // A highly compressible bomb: tiny archive, 60 MB of zeroes inside.
+    const bomb = Buffer.from(zipSync({ 'bomb.bin': new Uint8Array(60 * 1024 * 1024) }))
+    const before = (await readFile(join(dir, 'artifacts', 'round-01', 'many.zip'))).byteLength
+    expect(before).toBeGreaterThan(0)
+    const addedBomb = await store.writeArtifacts(topic, 2, {
+      answer: '',
+      archives: [{ name: 'bomb.zip', base64: bomb.toString('base64') }],
+    })
+    expect(addedBomb).toContain('artifacts/round-02/bomb.zip')
+    expect(addedBomb.some(path => path.endsWith('bomb.bin'))).toBe(false)
+  })
+
+  it('removes a topic directory, raw answers and locator on remove', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic, dir } = await store.create(card(), 3, 'pro', 'web')
+    await store.writeAnswer(topic, 1, 'raw answer')
+    await store.writeLocator(topic.id, { conversationUrl: 'https://chatgpt.com/c/example', profileDir: root })
+    await store.remove(topic)
+    await expect(readFile(join(dir, 'topic.json'), 'utf8')).rejects.toThrow()
+    await expect(readFile(join(root, 'raw', topic.id, '01-answer.md'), 'utf8')).rejects.toThrow()
+    await expect(readFile(join(root, 'sessions', `${topic.id}.json`), 'utf8')).rejects.toThrow()
+    expect(await store.list()).toHaveLength(0)
+  })
 })

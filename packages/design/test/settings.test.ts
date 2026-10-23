@@ -145,4 +145,14 @@ describe('design settings', () => {
       else process.env.GPT_IMAGE_API_KEY = previousKey
     }
   })
+  it('clamps out-of-range numeric settings instead of breaking the plugin', () => {
+    const settings = resolveDesignConfig({ stallMinutes: 0, maxRoundMinutes: 0, maxFiles: -3, maxTotalMB: -1 })
+    expect(settings.stallMinutes).toBe(45)
+    expect(settings.maxRoundMinutes).toBeGreaterThanOrEqual(settings.stallMinutes)
+    expect(settings.maxFiles).toBe(12)
+    expect(settings.maxTotalMB).toBe(24)
+    const research = resolveResearchConfig({ stallMinutes: 0, maxRoundMinutes: 1 })
+    expect(research.stallMinutes).toBe(45)
+    expect(research.maxRoundMinutes).toBe(45)
+  })
 })

@@ -5,7 +5,8 @@ import type { ArchiveAsset, CodeBlock, FetchedAnswer, ImageAsset, PollResult, Re
 import { TransportError } from 'dsh-pro-core'
 import { SELECTORS } from './selectors.ts'
 import { advanceCompletion } from './completion.ts'
-import { parseDataUrlImage } from './assets.ts'
+import { detectImageMime, MAX_IMAGE_ASSET_BYTES, parseDataUrlImage } from './assets.ts'
+import { SerialGate } from './serialize.ts'
 
 /**
  * The web channel drives the installed Google Chrome only. There is no Edge or
@@ -93,6 +94,12 @@ export class ChatGptWebTransport implements Transport {
   /** One visible tab per topic so later rounds update the same conversation. */
   private readonly topicPages = new Map<string, Page>()
   private readonly options: ChatGptTransportOptions
+  /**
+   * Serializes submit/reattach across every engine that shares this transport
+   * (both plugins, every project root). Poll/fetch/cancel stay concurrent.
+   * The worst-case wait behind one submit is bounded by its own timeouts.
+   */
+  private readonly gate = new SerialGate()
 
   constructor(options: ChatGptTransportOptions) {
     this.options = options
@@ -211,25 +218,39 @@ export class ChatGptWebTransport implements Transport {
 
   /**
    * For a cold reattach: locate the user turn that matches this round and count
-   * the assistant turns that precede it. The after-turn assistant (if already
-   * present) is then included by poll/fetch with `count > baseline`.
+   * the assistant/copy controls that precede it. The after-turn assistant (if
+   * already present) is then included by poll/fetch with `count > baseline`,
+   * and only a copy control rendered AFTER the prompt counts as a terminal
+   * signal. An ambiguous prompt match (shared boilerplate across rounds) is
+   * refused rather than guessed.
    */
-  private async assistantBaselineForPrompt(page: Page, brief: string): Promise<number | undefined> {
+  private async baselinesForPrompt(page: Page, brief: string): Promise<{ assistantBaseline: number; copyBaseline: number } | undefined> {
     const markers = briefMarkers(brief)
     if (markers.length === 0) return undefined
-    const baseline = await page.evaluate(({ userSelector, assistantSelector, markers }) => {
+    const result = await page.evaluate(({ userSelector, assistantSelector, copySelector, markers }) => {
       const users = [...document.querySelectorAll(userSelector)] as HTMLElement[]
-      const target = [...users].reverse().find(node =>
+      const matches = users.filter(node =>
         markers.some(marker => (node.textContent ?? '').includes(marker)))
-      if (target === undefined) return -1
+      if (matches.length !== 1) return undefined
+      const target = matches[0] as HTMLElement
+      // 4 = Node.DOCUMENT_POSITION_FOLLOWING: target follows the node.
       const assistants = [...document.querySelectorAll(assistantSelector)] as HTMLElement[]
-      // 4 = Node.DOCUMENT_POSITION_FOLLOWING: target follows the assistant.
-      return assistants.filter(node => (node.compareDocumentPosition(target) & 4) !== 0).length
-    }, { userSelector: SELECTORS.userMessage, assistantSelector: SELECTORS.assistantMessage, markers })
-    return baseline >= 0 ? baseline : undefined
+      const copies = [...document.querySelectorAll(copySelector)] as HTMLElement[]
+      return {
+        assistant: assistants.filter(node => (node.compareDocumentPosition(target) & 4) !== 0).length,
+        copy: copies.filter(node => (node.compareDocumentPosition(target) & 4) !== 0).length,
+      }
+    }, { userSelector: SELECTORS.userMessage, assistantSelector: SELECTORS.assistantMessage, copySelector: SELECTORS.copyButton, markers })
+    return result === undefined
+      ? undefined
+      : { assistantBaseline: result.assistant, copyBaseline: result.copy }
   }
 
   async submit(request: SubmitRequest): Promise<SubmitResult> {
+    return await this.gate.exec(() => this.submitNow(request))
+  }
+
+  private async submitNow(request: SubmitRequest): Promise<SubmitResult> {
     const context = await this.ensureContext()
     const existing = this.topicPages.get(request.topicId)
     const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
@@ -270,7 +291,10 @@ export class ChatGptWebTransport implements Transport {
       const send = await firstVisible(page, SELECTORS.sendButton, 15_000)
       if (send === undefined) {
         const composerText = await composer.innerText().catch(() => '')
-        console.error('SEND_DEBUG', JSON.stringify({ url: page.url(), composerText }))
+        // Debug output is opt-in and carries sizes only — never the brief text.
+        if (process.env.DSH_PRO_DEBUG === '1') {
+          console.error('dsh-pro: send button not found', JSON.stringify({ url: page.url(), composerChars: composerText.length }))
+        }
         throw new TransportError(`send button not found (composer ${composerText.length} chars)`, 'ui')
       }
       await send.click()
@@ -309,6 +333,10 @@ export class ChatGptWebTransport implements Transport {
    * if it is not in the stored conversation, this round was never submitted.
    */
   async reattach(request: ReattachRequest): Promise<ReattachResult> {
+    return await this.gate.exec(() => this.reattachNow(request))
+  }
+
+  private async reattachNow(request: ReattachRequest): Promise<ReattachResult> {
     const context = await this.ensureContext()
     const existing = this.topicPages.get(request.topicId)
     const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
@@ -318,8 +346,8 @@ export class ChatGptWebTransport implements Transport {
       const composer = await firstVisible(page, SELECTORS.composer, 30_000)
       if (composer === undefined) return { attached: false }
       await this.settleMessages(page)
-      const assistantBaseline = await this.assistantBaselineForPrompt(page, request.brief)
-      if (assistantBaseline === undefined) return { attached: false }
+      const baselines = await this.baselinesForPrompt(page, request.brief)
+      if (baselines === undefined) return { attached: false }
       const submissionId = randomUUID()
       this.submissions.set(submissionId, {
         page,
@@ -334,9 +362,9 @@ export class ChatGptWebTransport implements Transport {
         startedAt: Date.now(),
         lastText: '',
         stable: 0,
-        assistantBaseline,
+        assistantBaseline: baselines.assistantBaseline,
         userBaseline: 0,
-        copyBaseline: 0,
+        copyBaseline: baselines.copyBaseline,
       })
       return { attached: true, submissionId }
     } catch (error) {
@@ -467,8 +495,10 @@ export class ChatGptWebTransport implements Transport {
         if (source.startsWith('data:')) {
           const parsed = parseDataUrlImage(source)
           if (parsed === undefined) continue
-          // Tiny data URLs are page chrome/file thumbnails, not generated art.
-          if (Buffer.from(parsed.base64, 'base64').byteLength < 20_000) continue
+          // Tiny data URLs are page chrome/file thumbnails, not generated art;
+          // an upper bound keeps a hostile payload out of host memory.
+          const bytes = Buffer.from(parsed.base64, 'base64')
+          if (bytes.byteLength < 20_000 || bytes.byteLength > MAX_IMAGE_ASSET_BYTES) continue
           images.push({
             name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(parsed.mime)}`,
             mime: parsed.mime,
@@ -480,6 +510,7 @@ export class ChatGptWebTransport implements Transport {
           const dataUrl = await page.evaluate(async (src) => {
             const response = await fetch(src)
             const blob = await response.blob()
+            if (blob.size > 50 * 1024 * 1024) return ''
             return await new Promise<string>((resolve, reject) => {
               const reader = new FileReader()
               reader.onload = () => resolve(String(reader.result))
@@ -490,19 +521,29 @@ export class ChatGptWebTransport implements Transport {
           const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl)
           if (match === null) continue
           const mime = match[1] as string
+          const base64 = (match[2] as string).replace(/\s/g, '')
+          if (Buffer.from(base64, 'base64').byteLength > MAX_IMAGE_ASSET_BYTES) continue
           images.push({
             name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(mime)}`,
             mime,
-            base64: (match[2] as string).replace(/\s/g, ''),
+            base64,
           })
         } else {
+          // Playwright cannot stream a response body, so the size contract is:
+          // pre-check content-length, verify after body() lands.
           const response = await page.request.get(source)
           if (!response.ok()) continue
-          const mime = (response.headers()['content-type'] ?? 'image/png').split(';')[0]?.trim() ?? 'image/png'
+          const declared = Number(response.headers()['content-length'] ?? '')
+          if (Number.isFinite(declared) && declared > MAX_IMAGE_ASSET_BYTES) continue
+          const bytes = await response.body()
+          if (bytes.byteLength > MAX_IMAGE_ASSET_BYTES || bytes.byteLength < 1_024) continue
+          const headerMime = (response.headers()['content-type'] ?? '').split(';')[0]?.trim() ?? ''
+          const mime = detectImageMime(bytes) ?? (headerMime.startsWith('image/') ? headerMime : undefined)
+          if (mime === undefined) continue
           images.push({
             name: `image-${String(index + 1).padStart(2, '0')}.${extensionFor(mime)}`,
             mime,
-            base64: (await response.body()).toString('base64'),
+            base64: bytes.toString('base64'),
           })
         }
       } catch {

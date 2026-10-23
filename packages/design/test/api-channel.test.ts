@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -127,4 +127,104 @@ describe('design plugin on the api channel', () => {
       else process.env.DSH_HOME = previousHome
     }
   })
+})
+
+describe('design regenerate with materials', () => {
+  it('stages regenerate materials against the topic project root', async () => {
+    const requests: Array<{ url: string; body: string }> = []
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(chunk as Buffer)
+      requests.push({ url: request.url ?? '', body: Buffer.concat(chunks).toString('utf8') })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ data: [{ b64_json: PNG.toString('base64') }] }))
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    cleanups.push(async () => {
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    })
+    const address = server.address() as AddressInfo
+
+    const home = await mkdtemp(join(tmpdir(), 'dsh-pro-design-home-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-pro-design-project-'))
+    cleanups.push(
+      () => rm(home, { recursive: true, force: true }),
+      () => rm(cwd, { recursive: true, force: true }),
+    )
+    await writeFile(join(cwd, 'palette.md'), '# 品牌色板\n主色 #b26a12', 'utf8')
+    const previousHome = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      const tools: Tool[] = []
+      apply(fakeContext(tools) as never, {
+        channel: 'api',
+        imageBaseUrl: `http://127.0.0.1:${address.port}/v1`,
+        imageApiKey: 'test-key',
+        imageModel: 'gpt-image-1',
+        designs: 1,
+        store: 'local',
+      })
+      const tool = tools[0] as Tool
+      const exec = { agent: { session: { header: { cwd }, id: 'session-1' } } }
+      const started = await tool.execute({
+        action: 'start',
+        confirmed: true,
+        title: 'API 卡片',
+        question: '出一个方向',
+        brief: '深色卡片',
+        criteria: ['至少一张图'],
+      }, exec)
+
+      const untilCapped = Date.now() + 8_000
+      let topic = started
+      while (Date.now() < untilCapped) {
+        topic = await tool.execute({ action: 'status', topic_id: started.topic_id }, exec)
+        if (['capped', 'completed', 'stalled', 'failed'].includes(String(topic.status))) break
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+      expect(topic.status, String(topic.stop_reason)).toBe('capped')
+
+      const regenerated = await tool.execute({
+        action: 'regenerate',
+        topic_id: started.topic_id,
+        note: '换成浅色并带品牌色',
+        materials: ['palette.md'],
+        confirmed: true,
+      }, exec)
+      expect(regenerated.status).toBe('queued')
+
+      const deadline = Date.now() + 8_000
+      while (Date.now() < deadline) {
+        topic = await tool.execute({ action: 'status', topic_id: started.topic_id }, exec)
+        if (['capped', 'completed', 'stalled', 'failed'].includes(String(topic.status))) break
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+      expect(['capped', 'completed'], String(topic.stop_reason)).toContain(topic.status)
+
+      const store = new ResearchStore({
+        mode: 'local',
+        projectRoot: cwd,
+        localRoot: join(home, 'gpt-image-design'),
+        rawDir: join(home, 'raw'),
+        rawAnswers: 'local',
+        docsSubdir: 'design',
+      })
+      const stored = await store.load(String(started.topic_id))
+      const dir = await store.dirOf(stored.id)
+      const manifest = JSON.parse(await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')) as {
+        materials: Array<{ path: string }>
+      }
+      expect(manifest.materials.map(item => item.path)).toContain('palette.md')
+      const roundMaterials = JSON.parse(await readFile(join(dir, 'rounds', '02-materials.json'), 'utf8')) as {
+        materials: Array<{ path: string }>
+      }
+      expect(roundMaterials.materials.map(item => item.path)).toContain('palette.md')
+      expect(await readFile(join(dir, 'materials', 'palette.md'), 'utf8')).toContain('品牌色板')
+    } finally {
+      if (previousHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previousHome
+    }
+  }, 20_000)
 })

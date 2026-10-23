@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { DocumentContent } from './document.tsx'
+import { PANEL_CSS } from './panel-styles.ts'
 import type { ReactNode } from 'react'
 import { DESIGN_ICON, RESEARCH_ICON } from './icons.ts'
 import { mountSidebarStatus } from './sidebar-status.ts'
@@ -160,6 +162,7 @@ const STALL_LABEL: Record<string, string> = {
   unknown_submission: '提交状态未知',
 }
 
+let viewerRequest = 0
 let showViewer: (view: Viewer | undefined) => void = () => {}
 
 function toneOf(status: string): Tone {
@@ -168,10 +171,6 @@ function toneOf(status: string): Tone {
 
 function statusLabel(status: string): string {
   return STATUS_LABEL[status] ?? status
-}
-
-function needsAttention(status: string): boolean {
-  return ATTENTION.has(status)
 }
 
 function attentionLabel(topic: Pick<TopicRow, 'status' | 'stall_reason'>): string | undefined {
@@ -187,13 +186,19 @@ function channelLabel(channel: string | undefined): string | undefined {
 }
 
 function formatTime(value: string | undefined): string {
-  return value === undefined || value === '' ? '—' : value.slice(0, 16).replace('T', ' ')
+  if (value === undefined || value === '') return '—'
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return '时间未知'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(date)
 }
 
 function formatRelative(value: string | undefined): string {
   if (value === undefined || value === '') return '—'
   const time = Date.now() - new Date(value).getTime()
   if (!Number.isFinite(time)) return formatTime(value)
+  if (time < -60_000) return formatTime(value)
   const abs = Math.abs(time)
   if (abs < 60_000) return '刚刚'
   if (abs < 3_600_000) return `${Math.floor(abs / 60_000)} 分钟前`
@@ -254,23 +259,17 @@ function generationList(detail: TopicDetail): GenerationRow[] {
 }
 
 function latestFinal(detail: TopicDetail): string | undefined {
-  const finalDoc = detail.artifacts.find(path => /(^|\/)final\.md$/i.test(path))
-  if (finalDoc !== undefined) return finalDoc
   const generations = [...generationList(detail)].reverse()
   for (const generation of generations) {
     if (generation.final !== undefined && generation.final !== '') return generation.final
   }
-  return undefined
+  return detail.artifacts.find(path => /(^|\/)final\.md$/i.test(path))
 }
 
 function generationRounds(detail: TopicDetail, generation: number): RoundRow[] {
   return (detail.rounds_detail ?? [])
     .filter(round => (round.generation ?? 1) === generation)
     .sort((left, right) => left.n - right.n)
-}
-
-function latestRound(detail: TopicDetail): RoundRow | undefined {
-  return [...(detail.rounds_detail ?? [])].sort((left, right) => right.n - left.n)[0]
 }
 
 function roundArtifacts(detail: TopicDetail, round: RoundRow): string[] {
@@ -285,9 +284,9 @@ function generationLabel(generation: GenerationRow, rounds: RoundRow[]): string 
 }
 
 function outcomeOf(round: RoundRow): { label: string; tone: string } {
-  if (round.verdict === 'accepted') return { label: 'accepted', tone: 'accepted' }
-  if (round.verdict === 'partial') return { label: 'partial', tone: 'partial' }
-  if (round.verdict === 'rejected') return { label: 'rejected', tone: 'rejected' }
+  if (round.verdict === 'accepted') return { label: '通过', tone: 'accepted' }
+  if (round.verdict === 'partial') return { label: '部分通过', tone: 'partial' }
+  if (round.verdict === 'rejected') return { label: '未通过', tone: 'rejected' }
   if (round.answeredAt !== undefined) return { label: '已答复', tone: 'answered' }
   return { label: '进行中', tone: 'pending' }
 }
@@ -385,30 +384,36 @@ function bundleUrl(topicId: string, round: number): string {
 }
 
 function openViewerImage(topicId: string, path: string): void {
+  viewerRequest++
   showViewer({ kind: 'image', title: artifactDisplayName(path), topicId, src: assetUrl(topicId, path), path })
 }
 
-async function openTopicFile(topicId: string, path: string): Promise<void> {
-  const name = artifactName(path)
+function openFrame(view: Viewer): void {
+  viewerRequest++
+  showViewer(view)
+}
+
+async function openTextViewer(topicId: string, title: string, url: string, path?: string): Promise<void> {
+  const request = ++viewerRequest
+  showViewer({ kind: 'text', title, topicId, text: '正在读取…', path })
   try {
-    const text = await fetchText(`${config.routes}/file?id=${encodeURIComponent(topicId)}&path=${encodeURIComponent(path)}`)
-    showViewer({ kind: 'text', title: name, topicId, text, path })
+    const text = await fetchText(url)
+    if (request === viewerRequest) showViewer({ kind: 'text', title, topicId, text, path })
   } catch (cause) {
-    showViewer({ kind: 'text', title: name, topicId, text: cause instanceof Error ? cause.message : String(cause), path })
+    if (request === viewerRequest) showViewer({ kind: 'text', title: `读取失败 · ${title}`, topicId, text: cause instanceof Error ? cause.message : String(cause), path })
   }
+}
+
+async function openTopicFile(topicId: string, path: string): Promise<void> {
+  await openTextViewer(topicId, artifactName(path), `${config.routes}/file?id=${encodeURIComponent(topicId)}&path=${encodeURIComponent(path)}`, path)
 }
 
 async function openAnswer(topicId: string, round: number): Promise<void> {
-  try {
-    const text = await fetchText(`${config.routes}/answer?id=${encodeURIComponent(topicId)}&round=${round}`)
-    showViewer({ kind: 'text', title: `第 ${round} 轮回答`, topicId, text })
-  } catch (cause) {
-    showViewer({ kind: 'text', title: '读取回答失败', topicId, text: cause instanceof Error ? cause.message : String(cause) })
-  }
+  await openTextViewer(topicId, `第 ${round} 轮回答`, `${config.routes}/answer?id=${encodeURIComponent(topicId)}&round=${round}`)
 }
 
-async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url, { headers: { accept: 'text/plain, text/markdown' } })
+async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
+  const response = await fetch(url, { signal, headers: { accept: 'text/plain, text/markdown' } })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
   return await response.text()
 }
@@ -491,337 +496,11 @@ function StatusPill({ status }: { status: string }): ReactNode {
   return <span className="dshpro-status" data-tone={toneOf(status)}>{statusLabel(status)}</span>
 }
 
-const PANEL_CSS = `
-.dshpro-root {
-  --dshpro-accent: #4f6fd8;
-  --dshpro-accent-fg: #fff;
-  --dshpro-bg: var(--dsw-alias-bg-base, Canvas);
-  --dshpro-panel: var(--dsw-alias-bg-layer-1, Canvas);
-  --dshpro-panel-2: var(--dsw-alias-bg-module-platform, rgba(127,127,127,.06));
-  --dshpro-text: var(--dsw-alias-label-primary, CanvasText);
-  --dshpro-muted: var(--dsw-alias-label-secondary, rgba(127,127,127,.82));
-  --dshpro-faint: var(--dsw-alias-label-tertiary, rgba(127,127,127,.62));
-  --dshpro-line: var(--dsw-alias-border-l2, rgba(127,127,127,.22));
-  --dshpro-line-strong: var(--dsw-alias-border-l3, rgba(127,127,127,.32));
-  --dshpro-hover: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.09));
-  --dshpro-success: #2e7d32;
-  --dshpro-error: #c62828;
-  --dshpro-warn: #b45309;
-  --dshpro-info: #356faf;
-  --dshpro-capped: #6f3fa8;
-  --dshpro-radius: 8px;
-  display: flex;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--dshpro-bg);
-  color: var(--dshpro-text);
-  font-family: var(--dsw-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
-  font-size: 13px;
-  line-height: 1.5;
-}
-.dshpro-root[data-plugin="design"] { --dshpro-accent: #b26a12; }
-body[data-ds-dark-theme] .dshpro-root {
-  --dshpro-accent-fg: #101114;
-  --dshpro-success: #4ade80;
-  --dshpro-error: #f87171;
-  --dshpro-warn: #fbbf24;
-  --dshpro-info: #93c5fd;
-  --dshpro-capped: #c4a5ff;
-}
-body[data-ds-dark-theme] .dshpro-root[data-plugin="research"] { --dshpro-accent: #7f9cff; }
-body[data-ds-dark-theme] .dshpro-root[data-plugin="design"] { --dshpro-accent: #d79a4f; }
-.dshpro-root, .dshpro-root *, .dshpro-root *::before, .dshpro-root *::after { box-sizing: border-box; }
-.dshpro-root button, .dshpro-root input, .dshpro-root textarea { font: inherit; color: inherit; }
-.dshpro-root button { cursor: pointer; }
-.dshpro-root [data-tone="success"] { --tone-color: var(--dshpro-success); }
-.dshpro-root [data-tone="capped"] { --tone-color: var(--dshpro-capped); }
-.dshpro-root [data-tone="review"] { --tone-color: var(--dshpro-info); }
-.dshpro-root [data-tone="warn"] { --tone-color: var(--dshpro-warn); }
-.dshpro-root [data-tone="error"] { --tone-color: var(--dshpro-error); }
-.dshpro-root [data-tone="active"] { --tone-color: #6f8fbf; }
-.dshpro-root [data-tone="muted"] { --tone-color: var(--dshpro-faint); }
 
-.dshpro-list {
-  width: 280px;
-  flex: 0 0 280px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--dshpro-line);
-  background: var(--dshpro-panel-2);
-}
-.dshpro-list-head { padding: 12px 12px 10px; border-bottom: 1px solid var(--dshpro-line); }
-.dshpro-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.dshpro-brand-mark {
-  width: 27px; height: 27px; flex: none; display: grid; place-items: center;
-  border: 1px solid color-mix(in srgb, var(--dshpro-accent) 30%, var(--dshpro-line));
-  border-radius: 7px; background: color-mix(in srgb, var(--dshpro-accent) 11%, var(--dshpro-panel));
-  color: var(--dshpro-accent); font-size: 12px; font-weight: 800;
-}
-.dshpro-brand-info { min-width: 0; flex: 1; }
-.dshpro-brand-title { font-size: 13px; font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dshpro-brand-sub { margin-top: 1px; color: var(--dshpro-muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dshpro-count {
-  flex: none; min-width: 22px; text-align: center; padding: 1px 6px;
-  border: 1px solid var(--dshpro-line); border-radius: 999px;
-  color: var(--dshpro-muted); font-size: 10px; font-variant-numeric: tabular-nums;
-}
-.dshpro-search {
-  display: flex; align-items: center; gap: 6px; height: 30px; margin-top: 10px;
-  padding: 0 8px; border: 1px solid var(--dshpro-line); border-radius: 6px;
-  background: var(--dshpro-panel); color: var(--dshpro-muted);
-}
-.dshpro-search:focus-within { border-color: var(--dshpro-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dshpro-accent) 14%, transparent); }
-.dshpro-search input { flex: 1; min-width: 0; height: 28px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--dshpro-text); font-size: 12px; }
-.dshpro-search input::placeholder { color: var(--dshpro-faint); }
-.dshpro-filters { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 7px; }
-.dshpro-filter {
-  display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px;
-  border: 1px solid transparent; border-radius: 5px; background: transparent;
-  color: var(--dshpro-muted); font-size: 10.5px;
-}
-.dshpro-filter:hover { background: var(--dshpro-hover); }
-.dshpro-filter.is-on { border-color: color-mix(in srgb, var(--dshpro-accent) 28%, var(--dshpro-line)); background: var(--dshpro-panel); color: var(--dshpro-text); }
-.dshpro-filter span { color: var(--dshpro-faint); font-size: 9.5px; font-variant-numeric: tabular-nums; }
-.dshpro-list-scroll { flex: 1; min-height: 0; overflow: auto; padding: 5px; scrollbar-width: thin; scrollbar-color: var(--dsw-alias-scrollbar-bg-l2, rgba(127,127,127,.35)) transparent; }
-.dshpro-topic {
-  display: block; position: relative; width: 100%; margin: 0 0 3px; padding: 8px 8px 8px 14px;
-  border: 1px solid transparent; border-radius: 7px; background: transparent;
-  color: var(--dshpro-text); text-align: left;
-}
-.dshpro-topic:hover { background: var(--dshpro-hover); }
-.dshpro-topic.is-selected { background: color-mix(in srgb, var(--dshpro-accent) 10%, var(--dshpro-panel)); border-color: color-mix(in srgb, var(--dshpro-accent) 32%, var(--dshpro-line)); }
-.dshpro-topic-bar {
-  position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0;
-  background: var(--tone-color, var(--dshpro-faint)); opacity: .6;
-}
-.dshpro-topic.is-selected .dshpro-topic-bar { background: var(--dshpro-accent); opacity: 1; }
-.dshpro-topic-title {
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
-  font-size: 12.5px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere;
-}
-.dshpro-topic-meta {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
-  margin-top: 4px; color: var(--dshpro-muted); font-size: 10.5px;
-}
-.dshpro-topic-meta .dshpro-sep { color: var(--dshpro-faint); opacity: .7; }
-.dshpro-topic-tail { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; }
-.dshpro-topic-artifacts { display: inline-flex; align-items: center; gap: 2px; color: var(--dshpro-faint); font-size: 9.5px; }
-.dshpro-dot { width: 7px; height: 7px; flex: none; border-radius: 999px; background: var(--tone-color, var(--dshpro-faint)); }
-.dshpro-status-text { color: var(--tone-color, var(--dshpro-muted)); font-weight: 650; }
-.dshpro-badge {
-  display: inline-flex; align-items: center; padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--tone-color) 38%, transparent);
-  border-radius: 4px; background: color-mix(in srgb, var(--tone-color) 10%, transparent);
-  color: var(--tone-color); font-size: 9.5px; font-weight: 650; white-space: nowrap;
-}
-.dshpro-list-empty { padding: 28px 16px; text-align: center; color: var(--dshpro-muted); }
-.dshpro-list-empty .dshpro-empty-icon { margin: 0 auto 8px; color: var(--dshpro-faint); }
-.dshpro-list-empty p { margin: 0; font-size: 12.5px; font-weight: 650; color: var(--dshpro-text); }
-.dshpro-list-empty span { display: block; margin-top: 4px; font-size: 10.5px; line-height: 1.5; }
-.dshpro-list-empty button { margin-top: 8px; }
-.dshpro-list-error { margin: 8px; padding: 8px; border: 1px solid color-mix(in srgb, var(--dshpro-error) 30%, var(--dshpro-line)); border-radius: 6px; background: color-mix(in srgb, var(--dshpro-error) 7%, var(--dshpro-panel)); color: var(--dshpro-error); font-size: 10.5px; }
-.dshpro-skeleton { border-radius: 4px; background: linear-gradient(90deg, var(--dshpro-hover), color-mix(in srgb, var(--dshpro-hover) 45%, transparent), var(--dshpro-hover)); background-size: 200% 100%; animation: dshpro-shimmer 1.4s ease-in-out infinite; }
-@keyframes dshpro-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-.dshpro-list-skeleton { padding: 8px 8px 8px 17px; }
-
-.dshpro-detail { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px 36px; scrollbar-width: thin; scrollbar-color: var(--dsw-alias-scrollbar-bg-l2, rgba(127,127,127,.35)) transparent; }
-.dshpro-error-banner {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--dshpro-error) 35%, var(--dshpro-line)); border-radius: 7px;
-  background: color-mix(in srgb, var(--dshpro-error) 8%, var(--dshpro-panel)); color: var(--dshpro-error); font-size: 11px;
-}
-.dshpro-head {
-  position: sticky; top: 0; z-index: 2; margin-bottom: 10px; padding: 13px 14px;
-  border: 1px solid var(--dshpro-line); border-radius: 9px;
-  background: var(--dshpro-panel); box-shadow: 0 1px 0 color-mix(in srgb, var(--dshpro-text) 3%, transparent);
-}
-.dshpro-title-row { display: flex; align-items: flex-start; gap: 9px; flex-wrap: wrap; }
-.dshpro-title { margin: 0; max-width: 900px; color: var(--dshpro-text); font-size: 18px; font-weight: 750; line-height: 1.35; overflow-wrap: anywhere; }
-.dshpro-status { flex: none; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--tone-color) 50%, transparent); border-radius: 5px; color: var(--tone-color); font-size: 10px; font-weight: 700; line-height: 1.35; white-space: nowrap; }
-.dshpro-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 7px; color: var(--dshpro-muted); font-size: 11px; }
-.dshpro-meta > span:not(:first-child)::before { content: "·"; margin-right: 6px; color: var(--dshpro-faint); opacity: .7; }
-.dshpro-path { display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: 7px; color: var(--dshpro-faint); font-size: 10px; }
-.dshpro-path span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.dshpro-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--dshpro-muted); }
-.dshpro-icon-btn:hover { border-color: var(--dshpro-line); background: var(--dshpro-hover); color: var(--dshpro-text); }
-.dshpro-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 11px; }
-.dshpro-btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-  min-height: 27px; padding: 4px 9px; border: 1px solid var(--dshpro-line);
-  border-radius: 6px; background: var(--dshpro-panel); color: var(--dshpro-text);
-  font-size: 11.5px; line-height: 1.2; text-decoration: none; white-space: nowrap;
-}
-.dshpro-btn:hover { background: var(--dshpro-hover); }
-.dshpro-btn:disabled { opacity: .55; cursor: default; }
-.dshpro-btn.primary { border-color: var(--dshpro-accent); background: var(--dshpro-accent); color: var(--dshpro-accent-fg); font-weight: 650; }
-.dshpro-btn.primary:hover { filter: brightness(.96); }
-.dshpro-btn.danger { border-color: color-mix(in srgb, var(--dshpro-error) 42%, var(--dshpro-line)); color: var(--dshpro-error); }
-.dshpro-btn.ghost { border-color: transparent; background: transparent; color: var(--dshpro-muted); }
-.dshpro-btn.ghost:hover { color: var(--dshpro-text); background: var(--dshpro-hover); }
-.dshpro-btn.small { min-height: 23px; padding: 3px 7px; font-size: 10.5px; }
-.dshpro-more { position: relative; margin-left: auto; }
-.dshpro-more summary { list-style: none; }
-.dshpro-more summary::-webkit-details-marker { display: none; }
-.dshpro-menu {
-  position: absolute; right: 0; top: calc(100% + 4px); z-index: 12; min-width: 160px;
-  display: flex; flex-direction: column; gap: 1px; padding: 4px;
-  border: 1px solid var(--dshpro-line); border-radius: 7px; background: var(--dshpro-panel);
-  box-shadow: 0 10px 30px rgba(0,0,0,.18);
-}
-.dshpro-menu button { padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--dshpro-text); text-align: left; font-size: 11.5px; }
-.dshpro-menu button:hover { background: var(--dshpro-hover); }
-
-.dshpro-banner {
-  display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; padding: 9px 11px;
-  border: 1px solid color-mix(in srgb, var(--tone-color) 32%, var(--dshpro-line)); border-radius: 7px;
-  background: color-mix(in srgb, var(--tone-color) 7%, var(--dshpro-panel)); color: var(--dshpro-muted); font-size: 11.5px;
-}
-.dshpro-banner strong { color: var(--tone-color); font-weight: 700; }
-.dshpro-banner .dshpro-check-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-left: auto; }
-.dshpro-banner .dshpro-check-actions span { color: var(--dshpro-faint); font-size: 10.5px; }
-.dshpro-tabs { display: flex; align-items: center; gap: 2px; margin: 0 0 10px; border-bottom: 1px solid var(--dshpro-line); overflow: auto; }
-.dshpro-tab { padding: 8px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--dshpro-muted); font-size: 12px; white-space: nowrap; }
-.dshpro-tab:hover { color: var(--dshpro-text); }
-.dshpro-tab.is-on { border-bottom-color: var(--dshpro-accent); color: var(--dshpro-text); font-weight: 700; }
-.dshpro-tab em { margin-left: 4px; color: var(--dshpro-faint); font-style: normal; font-size: 9.5px; font-variant-numeric: tabular-nums; }
-.dshpro-body { display: grid; grid-template-columns: minmax(0, 1fr) 276px; gap: 12px; align-items: start; }
-.dshpro-main, .dshpro-rail { min-width: 0; }
-.dshpro-card { margin-bottom: 12px; padding: 12px; border: 1px solid var(--dshpro-line); border-radius: var(--dshpro-radius); background: var(--dshpro-panel); min-width: 0; }
-.dshpro-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.dshpro-card-title { font-size: 12.5px; font-weight: 700; line-height: 1.35; }
-.dshpro-card-sub { margin-top: 1px; color: var(--dshpro-muted); font-size: 10.5px; }
-.dshpro-muted { color: var(--dshpro-muted); }
-.dshpro-faint { color: var(--dshpro-faint); }
-.dshpro-card-link { border: 0; background: transparent; color: var(--dshpro-muted); font-size: 10.5px; }
-.dshpro-card-link:hover { color: var(--dshpro-accent); }
-.dshpro-empty-inline { padding: 14px 0; color: var(--dshpro-faint); font-size: 11.5px; text-align: center; }
-.dshpro-empty-detail { display: flex; height: 100%; min-height: 260px; flex-direction: column; align-items: center; justify-content: center; gap: 7px; color: var(--dshpro-muted); text-align: center; }
-.dshpro-empty-detail .dshpro-empty-mark { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--dshpro-line); border-radius: 10px; background: var(--dshpro-panel-2); color: var(--dshpro-accent); }
-.dshpro-empty-detail strong { color: var(--dshpro-text); font-size: 13px; }
-.dshpro-empty-detail span { font-size: 11px; max-width: 320px; line-height: 1.5; }
-
-.dshpro-final { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid color-mix(in srgb, var(--dshpro-accent) 28%, var(--dshpro-line)); border-radius: 8px; background: linear-gradient(120deg, color-mix(in srgb, var(--dshpro-accent) 9%, var(--dshpro-panel)), var(--dshpro-panel) 70%); }
-.dshpro-final-icon { width: 34px; height: 38px; flex: none; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--dshpro-accent) 25%, var(--dshpro-line)); border-radius: 6px; background: var(--dshpro-panel); color: var(--dshpro-accent); }
-.dshpro-final-info { flex: 1; min-width: 0; }
-.dshpro-final-title { font-size: 12px; font-weight: 700; }
-.dshpro-final-path { margin-top: 1px; color: var(--dshpro-muted); font-size: 10px; font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dshpro-final-desc { margin-top: 2px; color: var(--dshpro-faint); font-size: 10px; }
-
-.dshpro-table-wrap { width: 100%; overflow-x: auto; }
-.dshpro-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-.dshpro-table th { padding: 6px 7px; border-bottom: 1px solid var(--dshpro-line); background: var(--dshpro-panel-2); color: var(--dshpro-muted); font-size: 10px; font-weight: 600; text-align: left; white-space: nowrap; }
-.dshpro-table td { padding: 7px; border-bottom: 1px solid color-mix(in srgb, var(--dshpro-line) 65%, transparent); vertical-align: top; }
-.dshpro-table tr:last-child td { border-bottom: 0; }
-.dshpro-table .dshpro-num { font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
-.dshpro-table .dshpro-nowrap { white-space: nowrap; }
-.dshpro-table .dshpro-dim { color: var(--dshpro-muted); }
-.dshpro-verdict { font-weight: 650; }
-.dshpro-verdict[data-verdict="accepted"] { color: var(--dshpro-success); }
-.dshpro-verdict[data-verdict="partial"] { color: #b58a2b; }
-.dshpro-verdict[data-verdict="rejected"] { color: var(--dshpro-error); }
-.dshpro-verdict[data-verdict="answered"] { color: var(--dshpro-info); }
-.dshpro-verdict[data-verdict="pending"] { color: var(--dshpro-faint); }
-.dshpro-artifacts-cell { padding: 0 7px 9px; }
-.dshpro-thumbs { display: flex; gap: 6px; flex-wrap: wrap; padding-top: 6px; }
-.dshpro-thumb { width: 132px; height: 84px; padding: 0; overflow: hidden; border: 1px solid var(--dshpro-line); border-radius: 6px; background: var(--dshpro-panel-2); cursor: zoom-in; }
-.dshpro-thumb img { width: 100%; height: 100%; display: block; object-fit: cover; }
-.dshpro-thumb:hover { border-color: var(--dshpro-accent); }
-.dshpro-chips { display: flex; gap: 5px; flex-wrap: wrap; padding-top: 6px; }
-.dshpro-chip { display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; border: 1px solid var(--dshpro-line); border-radius: 4px; background: transparent; color: var(--dshpro-muted); font-size: 10px; text-decoration: none; }
-.dshpro-chip:hover { border-color: var(--dshpro-accent); color: var(--dshpro-accent); }
-.dshpro-round-card { margin-bottom: 12px; padding: 12px; border: 1px solid var(--dshpro-line); border-radius: var(--dshpro-radius); background: var(--dshpro-panel); }
-.dshpro-round-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-.dshpro-round-title { font-size: 12.5px; font-weight: 700; }
-.dshpro-round-sub { margin-top: 2px; color: var(--dshpro-muted); font-size: 10.5px; }
-
-.dshpro-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-.dshpro-art { position: relative; display: block; width: 100%; padding: 0; overflow: hidden; border: 1px solid var(--dshpro-line); border-radius: 7px; background: var(--dshpro-panel-2); aspect-ratio: 4 / 3; cursor: zoom-in; }
-.dshpro-art img { width: 100%; height: 100%; display: block; object-fit: cover; }
-.dshpro-art:hover { border-color: var(--dshpro-accent); }
-.dshpro-art-label { position: absolute; left: 0; right: 0; bottom: 0; padding: 5px 7px; background: linear-gradient(0deg, rgba(0,0,0,.5), transparent); color: #fff; font-size: 9px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dshpro-art-round { position: absolute; top: 4px; right: 4px; padding: 1px 3px; border-radius: 3px; background: rgba(15,17,21,.62); color: #fff; font-size: 8px; font-weight: 700; line-height: 1.3; }
-.dshpro-mini-gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.dshpro-mini-gallery .dshpro-art { aspect-ratio: 4 / 3; }
-
-.dshpro-file-list { display: flex; flex-direction: column; }
-.dshpro-file { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--dshpro-line) 65%, transparent); }
-.dshpro-file:first-child { border-top: 0; }
-.dshpro-file-icon { width: 29px; height: 31px; flex: none; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--dshpro-accent) 20%, var(--dshpro-line)); border-radius: 5px; background: color-mix(in srgb, var(--dshpro-accent) 8%, var(--dshpro-panel)); color: var(--dshpro-accent); }
-.dshpro-file-info { flex: 1; min-width: 0; }
-.dshpro-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 650; }
-.dshpro-file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dshpro-faint); font-size: 9.5px; font-family: ui-monospace, Consolas, monospace; }
-.dshpro-file-actions { display: flex; align-items: center; gap: 4px; flex: none; }
-.dshpro-file-actions .dshpro-btn { min-height: 22px; padding: 2px 6px; font-size: 10px; }
-
-.dshpro-demo { overflow: hidden; border: 1px solid var(--dshpro-line); border-radius: 8px; background: var(--dshpro-panel); }
-.dshpro-demo-preview { border-bottom: 1px solid var(--dshpro-line); background: var(--dshpro-panel-2); }
-.dshpro-demo-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--dshpro-line); background: var(--dshpro-panel); color: var(--dshpro-faint); font-size: 9px; }
-.dshpro-demo-bar i { width: 5px; height: 5px; border-radius: 999px; background: currentColor; opacity: .5; }
-.dshpro-demo-bar em { margin-left: auto; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; }
-.dshpro-demo-canvas { display: grid; place-items: center; min-height: 100px; background: linear-gradient(135deg, color-mix(in srgb, var(--dshpro-accent) 12%, var(--dshpro-panel)), var(--dshpro-panel-2) 62%, color-mix(in srgb, var(--dshpro-warn) 9%, var(--dshpro-panel))); color: var(--dshpro-muted); font-size: 10px; }
-.dshpro-demo-meta { display: flex; align-items: center; gap: 8px; padding: 8px; }
-.dshpro-demo-meta .dshpro-file-info { flex: 1; }
-.dshpro-demo-actions { display: flex; gap: 4px; flex: none; }
-.dshpro-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px; font-size: 10.5px; }
-.dshpro-meta-grid span { display: block; color: var(--dshpro-faint); }
-.dshpro-meta-grid b { display: block; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; color: var(--dshpro-muted); }
-
-.dshpro-toast { position: fixed; right: 18px; bottom: 18px; z-index: 2147483100; max-width: min(420px, calc(100vw - 36px)); padding: 9px 12px; border-radius: 7px; background: var(--dshpro-text); color: var(--dshpro-panel); box-shadow: 0 10px 28px rgba(0,0,0,.25); font-size: 11.5px; line-height: 1.45; }
-.dshpro-toast[data-kind="error"] { background: var(--dshpro-error); color: #fff; }
-.dshpro-overlay { position: fixed; inset: 0; z-index: 2147482900; display: flex; align-items: center; justify-content: center; padding: 22px; background: rgba(0,0,0,.46); }
-.dshpro-overlay.is-viewer { z-index: 2147483000; padding: 18px; }
-.dshpro-modal-card { display: flex; flex-direction: column; width: min(920px, 94vw); max-height: 90vh; overflow: hidden; border: 1px solid var(--dshpro-line); border-radius: 10px; background: var(--dshpro-panel); color: var(--dshpro-text); box-shadow: 0 24px 80px rgba(0,0,0,.42); }
-.dshpro-modal-card.is-dialog { width: min(520px, 94vw); }
-.dshpro-modal-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--dshpro-line); }
-.dshpro-modal-head .dshpro-modal-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 700; }
-.dshpro-modal-body { flex: 1; min-height: 0; overflow: auto; }
-.dshpro-modal-body img { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
-.dshpro-modal-body iframe { display: block; width: 100%; height: 70vh; border: 0; background: #fff; }
-.dshpro-modal-body pre { margin: 0; padding: 14px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; line-height: 1.55; }
-.dshpro-modal-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px; border-top: 1px solid var(--dshpro-line); background: var(--dshpro-panel-2); }
-.dshpro-modal-note { margin-left: auto; color: var(--dshpro-muted); font-size: 10px; }
-.dshpro-dialog-body { padding: 13px 14px; }
-.dshpro-dialog-body label { display: block; margin-bottom: 6px; font-size: 11.5px; font-weight: 650; }
-.dshpro-dialog-body p { margin: 0 0 8px; color: var(--dshpro-muted); font-size: 11px; line-height: 1.5; }
-.dshpro-dialog-body textarea { width: 100%; min-height: 82px; resize: vertical; padding: 7px 9px; border: 1px solid var(--dshpro-line); border-radius: 6px; outline: 0; background: var(--dshpro-bg); color: var(--dshpro-text); font-size: 12px; line-height: 1.5; }
-.dshpro-dialog-body textarea:focus { border-color: var(--dshpro-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dshpro-accent) 13%, transparent); }
-.dshpro-dialog-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; color: var(--dshpro-muted); font-size: 11px; }
-.dshpro-dialog-row input { width: 62px; padding: 5px 7px; border: 1px solid var(--dshpro-line); border-radius: 5px; background: var(--dshpro-bg); color: var(--dshpro-text); }
-.dshpro-dialog-foot { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--dshpro-line); background: var(--dshpro-panel-2); }
-.dshpro-dialog-foot .dshpro-btn { min-height: 28px; padding: 4px 11px; }
-
-@media (max-width: 1280px) {
-  .dshpro-body { grid-template-columns: minmax(0, 1fr); }
-  .dshpro-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .dshpro-rail .dshpro-card { margin-bottom: 0; }
-}
-@media (max-width: 1040px) {
-  .dshpro-list { width: 240px; flex-basis: 240px; }
-  .dshpro-detail { padding: 12px 12px 30px; }
-  .dshpro-title { font-size: 16.5px; }
-}
-@media (max-width: 1000px) {
-  .dshpro-root { flex-direction: column; }
-  .dshpro-list { width: 100%; flex-basis: auto; max-height: 250px; border-right: 0; border-bottom: 1px solid var(--dshpro-line); }
-  .dshpro-list-scroll { max-height: 140px; }
-  .dshpro-rail { grid-template-columns: 1fr; }
-}
-@media (max-width: 640px) {
-  .dshpro-optional { display: none; }
-  .dshpro-title { font-size: 15.5px; }
-  .dshpro-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dshpro-thumb { width: 108px; height: 70px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dshpro-skeleton { animation: none; }
-}
-`
 
 function ListSkeleton(): ReactNode {
   return (
-    <div>
+    <div role="status" aria-label="正在加载任务">
       {[0, 1, 2, 3].map(index => (
         <div className="dshpro-list-skeleton" key={index}>
           <div className="dshpro-skeleton" style={{ height: 12, width: `${72 - index * 6}%` }} />
@@ -864,9 +543,9 @@ function FinalCard({ detail, path }: { detail: TopicDetail; path: string }): Rea
     <div className="dshpro-final">
       <div className="dshpro-final-icon"><Glyph name="file" size={17} /></div>
       <div className="dshpro-final-info">
-        <div className="dshpro-final-title">本版总结</div>
+        <div className="dshpro-final-title">{summaryLabel(detail, path)}</div>
         <div className="dshpro-final-path" title={path}>{artifactName(path)}</div>
-        <div className="dshpro-final-desc">最终交付文档 · 点击查看全文</div>
+        <div className="dshpro-final-desc">已有总结 · 点击阅读全文</div>
       </div>
       <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, path) }}>查看</button>
     </div>
@@ -885,7 +564,7 @@ function ArtifactRow({ detail, path }: { detail: TopicDetail; path: string }): R
       </div>
       <div className="dshpro-file-actions">
         {kind === 'image' && <button type="button" className="dshpro-btn small" onClick={() => openViewerImage(detail.topic_id, path)}>查看</button>}
-        {kind === 'demo' && <button type="button" className="dshpro-btn small" onClick={() => showViewer({ kind: 'frame', title: name, topicId: detail.topic_id, src: rawUrl(detail.topic_id, path), path })}>预览</button>}
+        {kind === 'demo' && <button type="button" className="dshpro-btn small" onClick={() => openFrame({ kind: 'frame', title: name, topicId: detail.topic_id, src: rawUrl(detail.topic_id, path), path })}>预览</button>}
         {kind === 'archive' && <a className="dshpro-btn small" href={assetUrl(detail.topic_id, path)} download={name}>下载</a>}
         {(kind === 'code' || kind === 'file') && <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, path) }}>查看</button>}
       </div>
@@ -900,7 +579,7 @@ function ArtifactLink({ detail, path }: { detail: TopicDetail; path: string }): 
     return <button type="button" className="dshpro-chip" onClick={() => openViewerImage(detail.topic_id, path)}>{name}</button>
   }
   if (kind === 'demo') {
-    return <button type="button" className="dshpro-chip" onClick={() => showViewer({ kind: 'frame', title: name, topicId: detail.topic_id, src: rawUrl(detail.topic_id, path), path })}>{name} ↗</button>
+    return <button type="button" className="dshpro-chip" onClick={() => openFrame({ kind: 'frame', title: name, topicId: detail.topic_id, src: rawUrl(detail.topic_id, path), path })}>{name} ↗</button>
   }
   if (kind === 'archive') {
     return <a className="dshpro-chip" href={assetUrl(detail.topic_id, path)} download={name}>{name}</a>
@@ -942,6 +621,9 @@ function RoundTable({ detail, rounds, generation }: { detail: TopicDetail; round
                 <td>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     <button type="button" className="dshpro-btn small" onClick={() => { void openAnswer(detail.topic_id, round.n) }}>查看回答</button>
+                    {round.verdict !== undefined && (
+                      <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, `rounds/${String(round.n).padStart(2, '0')}-verdict.md`) }}>裁决</button>
+                    )}
                     {artifacts.length > 0 && <a className="dshpro-btn small" href={bundleUrl(detail.topic_id, round.n)} download={`round-${String(round.n).padStart(2, '0')}.zip`}>下载 ZIP</a>}
                   </div>
                 </td>
@@ -1003,41 +685,72 @@ function RoundsView({ detail }: { detail: TopicDetail }): ReactNode {
   )
 }
 
+function summaryLabel(detail: TopicDetail, path: string): string {
+  const source = generationList(detail).find(item => item.final === path)
+  return source !== undefined ? `第 ${source.n} 版总结` : '已有总结 · 版本未确认'
+}
+
 function ResearchOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab: Tab) => void }): ReactNode {
+  const path = latestFinal(detail)
+  const source = `${detail.topic_id}:${path ?? ''}`
+  const [document, setDocument] = useState<{ source: string; text?: string; error?: string }>()
+  const [retry, setRetry] = useState(0)
+  useEffect(() => {
+    if (path === undefined) return
+    const abort = new AbortController()
+    setDocument({ source })
+    void fetchText(`${config.routes}/file?id=${encodeURIComponent(detail.topic_id)}&path=${encodeURIComponent(path)}`, abort.signal)
+      .then(text => { if (!abort.signal.aborted) setDocument({ source, text }) })
+      .catch((error: unknown) => {
+        if (!abort.signal.aborted) setDocument({ source, error: error instanceof Error ? error.message : String(error) })
+      })
+    return () => abort.abort()
+  }, [source, detail.updated, retry])
+  const current = document?.source === source ? document : undefined
   const generations = generationList(detail)
-  const latest = generations[generations.length - 1]
-  const rounds = latest !== undefined ? generationRounds(detail, latest.n) : []
+  const latest = generations.at(-1)
+  const previous = path !== undefined && latest !== undefined && latest.final !== path
   return (
-    <div>
-      <section className="dshpro-card">
-        <div className="dshpro-card-head">
-          <div>
-            <div className="dshpro-card-title">{latest !== undefined ? `第 ${latest.n} 版` : '最近轮次'}</div>
-            <div className="dshpro-card-sub">{latest !== undefined ? generationLabel(latest, rounds) : '尚无轮次'}</div>
-          </div>
-          <button type="button" className="dshpro-card-link" onClick={() => onTab('rounds')}>全部轮次</button>
-        </div>
-        {rounds.length > 0 ? <RoundTable detail={detail} rounds={rounds} generation={latest?.n ?? 1} /> : <div className="dshpro-empty-inline">还没有提交记录。</div>}
-      </section>
-    </div>
+    <section className="dshpro-document-card">
+      <div className="dshpro-section-heading">
+        <div><span className="dshpro-eyebrow">研究文档</span><h3>{path === undefined ? '总结尚未生成' : summaryLabel(detail, path)}</h3></div>
+        {path !== undefined && <button type="button" className="dshpro-btn" onClick={() => { void openTopicFile(detail.topic_id, path) }}>阅读全文 <Glyph name="arrow" /></button>}
+      </div>
+      {path === undefined ? <div className="dshpro-content-empty"><Glyph name="file" size={28} /><strong>这里将呈现研究总结</strong><span>已有轮次的回答可在运行记录中查看。</span><button className="dshpro-btn" type="button" onClick={() => onTab('rounds')}>查看运行记录</button></div> : <>
+        <div className="dshpro-document-context">{previous ? '当前版本尚无已关联总结，以下为已有文档。' : '预览已保存的总结。'}{detail.status === 'cancelled' || detail.status === 'failed' || detail.status === 'stalled' ? '任务未正常完成，请核对内容与完整性。' : '任务状态不代表人工验收。'}</div>
+        {current?.error !== undefined ? <div className="dshpro-content-empty" role="alert"><strong>暂时无法读取总结</strong><span>{current.error}</span><button type="button" className="dshpro-btn" onClick={() => setRetry(value => value + 1)}>重新加载</button></div>
+          : current?.text === undefined ? <div className="dshpro-document-loading" role="status" aria-label="正在读取总结"><div className="dshpro-skeleton" /><div className="dshpro-skeleton" /><div className="dshpro-skeleton" /></div>
+            : current.text.trim() === '' ? <div className="dshpro-content-empty">此总结文件暂无内容。</div>
+              : <DocumentContent text={current.text.slice(0, 18000)} />}
+        {current?.text !== undefined && current.text.length > 18000 && <button type="button" className="dshpro-btn" onClick={() => { void openTopicFile(detail.topic_id, path) }}>继续阅读全文</button>}
+      </>}
+    </section>
   )
+}
+
+function ArtifactImage({ detail, path }: { detail: TopicDetail; path: string }): ReactNode {
+  const [failed, setFailed] = useState(false)
+  const [retry, setRetry] = useState(0)
+  const source = assetUrl(detail.topic_id, path)
+  useEffect(() => { setFailed(false); setRetry(0) }, [source])
+  return <div className="dshpro-art-frame">
+    {failed ? <div className="dshpro-image-error"><Glyph name="image" size={24} /><span>图片加载失败</span><button type="button" className="dshpro-btn small" onClick={() => { setFailed(false); setRetry(value => value + 1) }}>重新加载</button></div>
+      : <button type="button" className="dshpro-art" title={`查看 ${artifactDisplayName(path)}`} onClick={() => openViewerImage(detail.topic_id, path)}><img src={`${source}&v=${retry}`} alt={artifactDisplayName(path)} loading="lazy" onError={() => setFailed(true)} /></button>}
+    <div className="dshpro-art-caption"><Glyph name="image" /><span title={path}>{artifactDisplayName(path)}</span></div>
+  </div>
 }
 
 function DemoCard({ detail, path }: { detail: TopicDetail; path: string }): ReactNode {
   const name = artifactName(path)
   return (
     <div className="dshpro-demo">
-      <div className="dshpro-demo-preview">
-        <div className="dshpro-demo-bar"><i /><i /><i /><em>{name}</em></div>
-        <div className="dshpro-demo-canvas"><span>单文件 HTML demo</span></div>
-      </div>
       <div className="dshpro-demo-meta">
         <div className="dshpro-file-info">
           <div className="dshpro-file-name" title={path}>{name}</div>
-          <div className="dshpro-file-path">可预览、可新窗口打开</div>
+          <div className="dshpro-file-path">{roundOf(path) !== undefined ? `第 ${roundOf(path)} 轮 · ` : '来源轮次未确认 · '}HTML 交互演示</div>
         </div>
         <div className="dshpro-demo-actions">
-          <button type="button" className="dshpro-btn small" onClick={() => showViewer({ kind: 'frame', title: name, topicId: detail.topic_id, src: rawUrl(detail.topic_id, path), path })}>预览</button>
+          <button type="button" className="dshpro-btn small" onClick={() => openFrame({ kind: 'frame', title: name, topicId: detail.topic_id, src: rawUrl(detail.topic_id, path), path })}>预览</button>
           <button type="button" className="dshpro-btn small" onClick={() => { window.open(rawUrl(detail.topic_id, path), '_blank', 'noopener,noreferrer') }}>新窗口</button>
         </div>
       </div>
@@ -1046,37 +759,22 @@ function DemoCard({ detail, path }: { detail: TopicDetail; path: string }): Reac
 }
 
 function DesignOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab: Tab) => void }): ReactNode {
-  const images = imageArtifacts(detail)
-  const round = latestRound(detail)
-  const roundPrefix = round !== undefined ? `/round-${String(round.n).padStart(2, '0')}/` : undefined
-  const latestImages = roundPrefix !== undefined ? images.filter(path => path.includes(roundPrefix)) : []
-  const ordered = [...latestImages, ...images.filter(path => !latestImages.includes(path))]
-  const showImages = ordered.slice(0, 9)
-  return (
-    <div>
-      <section className="dshpro-card">
-        <div className="dshpro-card-head">
-          <div>
-            <div className="dshpro-card-title">图片 <span className="dshpro-faint">({images.length})</span></div>
-            <div className="dshpro-card-sub">
-              {round !== undefined ? `第 ${round.n} 轮 ${latestImages.length} 张优先` : '按轮次排列'}；点击缩略图查看大图。
-            </div>
-          </div>
-          <button type="button" className="dshpro-card-link" onClick={() => onTab('artifacts')}>全部图片</button>
-        </div>
-        {showImages.length > 0 ? (
-          <div className="dshpro-gallery">
-            {showImages.map(path => (
-              <button key={path} type="button" className="dshpro-art" title={artifactDisplayName(path)} onClick={() => openViewerImage(detail.topic_id, path)}>
-                <img src={assetUrl(detail.topic_id, path)} alt={artifactDisplayName(path)} loading="lazy" />
-                <span className="dshpro-art-label">{artifactDisplayName(path)}</span>
-              </button>
-            ))}
-          </div>
-        ) : <div className="dshpro-empty-inline">还没有图片产物。</div>}
-      </section>
-    </div>
-  )
+  const generation = generationList(detail).at(-1)
+  const round = generation === undefined ? undefined : generationRounds(detail, generation.n).at(-1)
+  const artifacts = round === undefined ? [] : roundArtifacts(detail, round)
+  const images = artifacts.filter(path => artifactKind(detail, path) === 'image')
+  const demos = artifacts.filter(path => artifactKind(detail, path) === 'demo')
+  return <div>
+    <section className="dshpro-design-sheet">
+      <div className="dshpro-section-heading">
+        <div><span className="dshpro-eyebrow">设计成果{generation !== undefined ? ` / 第 ${generation.n} 版` : ''}</span><h3>{round !== undefined ? `第 ${round.n} 轮图片` : '等待本版设计'} <span className="dshpro-muted">{images.length > 0 ? `· ${images.length} 张` : ''}</span></h3></div>
+        <button type="button" className="dshpro-btn ghost" onClick={() => onTab('artifacts')}>全部产物 <Glyph name="arrow" /></button>
+      </div>
+      {images.length > 0 ? <div className="dshpro-gallery">{images.map(path => <ArtifactImage key={path} detail={detail} path={path} />)}</div>
+        : <div className="dshpro-content-empty"><Glyph name="image" size={32} /><strong>本轮还没有图片</strong><span>生成的设计图将在这里完整呈现。</span>{imageArtifacts(detail).length > 0 && <button type="button" className="dshpro-btn" onClick={() => onTab('artifacts')}>查看历史图片（{imageArtifacts(detail).length}）</button>}</div>}
+    </section>
+    {demos.length > 0 && <section className="dshpro-card"><div className="dshpro-card-head"><h3 className="dshpro-card-title">本轮交互演示</h3></div>{demos.map(path => <DemoCard key={path} detail={detail} path={path} />)}</section>}
+  </div>
 }
 
 function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
@@ -1084,7 +782,7 @@ function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
   if (!config.designMode) {
     const groups = new Map<string, string[]>()
     for (const path of detail.artifacts) {
-      if (path === final) continue
+      if (path === final || (final !== undefined && path === 'final.md')) continue
       const match = path.match(/round-(\d+)/i)
       const key = match !== null ? `第 ${Number(match[1])} 轮` : '主题文件'
       const list = groups.get(key) ?? []
@@ -1100,7 +798,7 @@ function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
       <div>
         {final !== undefined && (
           <section className="dshpro-card">
-            <div className="dshpro-card-head"><div className="dshpro-card-title">最终文档</div></div>
+            <div className="dshpro-card-head"><div className="dshpro-card-title">总结文档</div></div>
             <FinalCard detail={detail} path={final} />
           </section>
         )}
@@ -1131,10 +829,7 @@ function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
           </div>
           <div className="dshpro-gallery">
             {images.map(path => (
-              <button key={path} type="button" className="dshpro-art" title={artifactDisplayName(path)} onClick={() => openViewerImage(detail.topic_id, path)}>
-                <img src={assetUrl(detail.topic_id, path)} alt={artifactDisplayName(path)} loading="lazy" />
-                <span className="dshpro-art-label">{artifactDisplayName(path)}</span>
-              </button>
+              <ArtifactImage key={path} detail={detail} path={path} />
             ))}
           </div>
         </section>
@@ -1161,87 +856,53 @@ function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
 }
 
 function MetaCard({ detail }: { detail: TopicDetail }): ReactNode {
-  return (
-    <section className="dshpro-card">
-      <div className="dshpro-card-head"><div className="dshpro-card-title">主题信息</div></div>
-      <div className="dshpro-meta-grid">
-        <div><span>类型</span><b>{detail.type === 'design' ? '设计' : '研究'}</b></div>
-        <div><span>通道</span><b>{channelLabel(detail.channel) ?? '—'}</b></div>
-        <div><span>模型</span><b>{detail.model !== undefined && detail.model !== '' ? detail.model : '—'}</b></div>
-        <div><span>存储</span><b>{detail.store === 'local' ? '本机' : '项目'}</b></div>
-        <div><span>创建</span><b>{formatTime(detail.created)}</b></div>
-        <div><span>更新</span><b>{formatTime(detail.updated)}</b></div>
-      </div>
-    </section>
-  )
+  const [copied, setCopied] = useState('')
+  return <details className="dshpro-context" key={detail.topic_id}>
+    <summary><Glyph name="folder" />主题信息<Glyph name="chevron" /></summary>
+    <div className="dshpro-context-body"><dl className="dshpro-meta-grid">
+      <div><dt>类型</dt><dd>{detail.type === 'design' ? '设计' : '研究'}</dd></div>
+      <div><dt>通道</dt><dd>{channelLabel(detail.channel) ?? '—'}</dd></div>
+      <div><dt>模型</dt><dd>{detail.model || '—'}</dd></div>
+      <div><dt>存储</dt><dd>{detail.store === 'local' ? '本机' : '项目'}</dd></div>
+      <div><dt>创建</dt><dd>{formatTime(detail.created)}</dd></div>
+      <div><dt>更新</dt><dd>{formatTime(detail.updated)}</dd></div>
+    </dl>
+    {detail.stop_reason && <p className="dshpro-context-note">停止依据：{detail.stop_reason}</p>}
+    {detail.path && <div className="dshpro-context-path"><span>{detail.path}</span><button type="button" className="dshpro-btn small" onClick={() => { void copyText(detail.path as string).then(() => setCopied('已复制')).catch(() => setCopied('复制失败')) }}><Glyph name="copy" />复制路径</button><span role="status">{copied}</span></div>}
+    </div>
+  </details>
 }
 
 function Rail({ detail, onTab }: { detail: TopicDetail; onTab: (tab: Tab) => void }): ReactNode {
-  const final = latestFinal(detail)
-  const images = imageArtifacts(detail)
-  const demos = demoArtifacts(detail)
-  const files = fileArtifacts(detail)
-  if (config.designMode) {
-    return (
-      <aside className="dshpro-rail">
-        {demos.length > 0 && (
-          <section className="dshpro-card">
-            <div className="dshpro-card-head"><div className="dshpro-card-title">当前 demo</div></div>
-            <DemoCard detail={detail} path={demos[0] as string} />
-          </section>
-        )}
-        <section className="dshpro-card">
-          <div className="dshpro-card-head">
-            <div className="dshpro-card-title">全部图片 <span className="dshpro-faint">({images.length})</span></div>
-            <button type="button" className="dshpro-card-link" onClick={() => onTab('artifacts')}>查看</button>
-          </div>
-          {images.length > 0 ? (
-            <div className="dshpro-mini-gallery">
-              {images.slice(0, 6).map(path => (
-                <button key={path} type="button" className="dshpro-art" title={artifactDisplayName(path)} onClick={() => openViewerImage(detail.topic_id, path)}>
-                  <img src={assetUrl(detail.topic_id, path)} alt={artifactDisplayName(path)} loading="lazy" />
-                  {roundOf(path) !== undefined && <span className="dshpro-art-round">R{roundOf(path)}</span>}
-                </button>
-              ))}
-            </div>
-          ) : <div className="dshpro-empty-inline">还没有图片。</div>}
-        </section>
-        <section className="dshpro-card">
-          <div className="dshpro-card-head">
-            <div className="dshpro-card-title">代码与文件 <span className="dshpro-faint">({files.length})</span></div>
-            <button type="button" className="dshpro-card-link" onClick={() => onTab('artifacts')}>查看</button>
-          </div>
-          <div className="dshpro-file-list">
-            {files.slice(0, 4).map(path => <ArtifactRow key={path} detail={detail} path={path} />)}
-            {files.length === 0 && <div className="dshpro-empty-inline">还没有文件。</div>}
-          </div>
-        </section>
-        <MetaCard detail={detail} />
-      </aside>
-    )
-  }
-  return (
-    <aside className="dshpro-rail">
-      <section className="dshpro-card">
-        <div className="dshpro-card-head"><div className="dshpro-card-title">最终文档</div></div>
-        {final !== undefined ? <FinalCard detail={detail} path={final} /> : <div className="dshpro-empty-inline">还没有 final.md。</div>}
-      </section>
-      <section className="dshpro-card">
-        <div className="dshpro-card-head">
-          <div className="dshpro-card-title">全部产物 <span className="dshpro-faint">({detail.artifacts.length})</span></div>
-          <button type="button" className="dshpro-card-link" onClick={() => onTab('artifacts')}>查看</button>
-        </div>
-        <div className="dshpro-file-list">
-          {detail.artifacts.slice(0, 5).map(path => <ArtifactRow key={path} detail={detail} path={path} />)}
-          {detail.artifacts.length === 0 && <div className="dshpro-empty-inline">还没有产物。</div>}
-        </div>
-      </section>
-      <MetaCard detail={detail} />
-    </aside>
-  )
+  const rounds = [...(detail.rounds_detail ?? [])].sort((a, b) => b.n - a.n).slice(0, 3)
+  return <aside className="dshpro-rail" aria-label="运行摘要">
+    <section className="dshpro-activity">
+      <div className="dshpro-card-head"><h3 className="dshpro-card-title">最近活动</h3><button type="button" className="dshpro-card-link" onClick={() => onTab('rounds')}>全部记录</button></div>
+      {rounds.length === 0 ? <p className="dshpro-muted">尚无提交记录</p> : <ol>{rounds.map(round => {
+        const outcome = outcomeOf(round)
+        return <li key={round.n}><span className="dshpro-activity-dot" /><div className="dshpro-activity-heading"><strong>第 {round.generation ?? 1} 版 · 第 {round.n} 轮</strong><span className="dshpro-verdict" data-verdict={outcome.tone}>{outcome.label}</span></div><time>{formatTime(round.answeredAt ?? round.submittedAt)}</time><div className="dshpro-activity-actions"><span>{round.files} 个附件</span><button type="button" className="dshpro-card-link" onClick={() => { void openAnswer(detail.topic_id, round.n) }}>查看回答 <Glyph name="arrow" size={12} /></button></div></li>
+      })}</ol>}
+    </section>
+    <button type="button" className="dshpro-artifact-index" onClick={() => onTab('artifacts')}><Glyph name="folder" size={17} /><span>产物索引<small>{detail.artifacts.length} 个已保存文件</small></span><Glyph name="chevron" /></button>
+    <MetaCard key={detail.topic_id} detail={detail} />
+  </aside>
+}
+
+function useModal(): React.RefObject<HTMLDialogElement> {
+  const ref = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    const dialog = ref.current
+    dialog?.showModal()
+    const first = dialog?.querySelector<HTMLElement>('textarea') ?? dialog?.querySelector<HTMLElement>('button')
+    first?.focus()
+    return () => { dialog?.close(); if (previous?.isConnected && !previous.matches(':disabled')) previous.focus() }
+  }, [])
+  return ref
 }
 
 function ViewerModal({ view, basePath, onClose }: { view: Viewer; basePath?: string; onClose: () => void }): ReactNode {
+  const modal = useModal()
   const [notice, setNotice] = useState<string | undefined>(undefined)
   useEffect(() => { setNotice(undefined) }, [view])
   const run = (task: () => Promise<void>, success: string): void => {
@@ -1253,8 +914,8 @@ function ViewerModal({ view, basePath, onClose }: { view: Viewer; basePath?: str
   const path = view.path
   const native = path !== undefined ? fullPath(basePath, path) : undefined
   return (
-    <div className="dshpro-overlay is-viewer" onClick={onClose}>
-      <div className="dshpro-modal-card" role="dialog" aria-modal="true" aria-label={view.title} onClick={event => event.stopPropagation()}>
+    <dialog ref={modal} className="dshpro-overlay is-viewer" aria-label={view.title} onCancel={event => { event.preventDefault(); onClose() }} onClick={onClose}>
+      <div className="dshpro-modal-card" onClick={event => event.stopPropagation()}>
         <div className="dshpro-modal-head">
           <div className="dshpro-modal-title" title={view.title}>{view.title}</div>
           <button type="button" className="dshpro-icon-btn" onClick={onClose} aria-label="关闭"><Glyph name="close" size={15} /></button>
@@ -1284,7 +945,7 @@ function ViewerModal({ view, basePath, onClose }: { view: Viewer; basePath?: str
           <span className="dshpro-modal-note">{notice ?? ''}</span>
         </div>
       </div>
-    </div>
+    </dialog>
   )
 }
 
@@ -1302,7 +963,9 @@ function ActionDialog({
   onCheckNote,
   onClose,
   onSubmit,
+  feedback,
 }: {
+  feedback?: { kind: 'ok' | 'error'; text: string }
   dialog: DialogState
   designMode: boolean
   busy: boolean
@@ -1317,15 +980,16 @@ function ActionDialog({
   onClose: () => void
   onSubmit: () => void
 }): ReactNode {
+  const modal = useModal()
   const title = dialog.kind === 'regenerate' ? '重新生成' : dialog.kind === 'continue' ? '继续一轮' : '人工核对'
   return (
-    <div className="dshpro-overlay" onClick={onClose}>
-      <div className="dshpro-modal-card is-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={event => event.stopPropagation()}>
+    <dialog ref={modal} className="dshpro-overlay" aria-label={title} onCancel={event => { event.preventDefault(); if (!busy) onClose() }} onClick={() => { if (!busy) onClose() }}>
+      <div className="dshpro-modal-card is-dialog" onClick={event => event.stopPropagation()}>
         <div className="dshpro-modal-head">
           <div className="dshpro-modal-title">{title}</div>
-          <button type="button" className="dshpro-icon-btn" onClick={onClose} aria-label="关闭"><Glyph name="close" size={15} /></button>
+          <button type="button" className="dshpro-icon-btn" onClick={onClose} disabled={busy} aria-label="关闭"><Glyph name="close" size={15} /></button>
         </div>
-        <div className="dshpro-dialog-body">
+        <fieldset className="dshpro-dialog-body" disabled={busy}>
           {dialog.kind === 'regenerate' && (
             <>
               <label htmlFor="dshpro-regen">不满意的地方 / 新要求</label>
@@ -1340,8 +1004,8 @@ function ActionDialog({
               <textarea id="dshpro-continue" value={continueNote} onChange={event => onContinueNote(event.target.value)} placeholder="例如：只查部署风险；只改配色，保留版式" />
               {designMode && (
                 <div className="dshpro-dialog-row">
-                  <span>本轮方向数</span>
-                  <input type="number" min={1} max={6} value={continueDesigns} onChange={event => onContinueDesigns(event.target.value)} placeholder="3" />
+                  <label htmlFor="dshpro-directions">本轮方向数</label>
+                  <input id="dshpro-directions" type="number" min={1} max={6} value={continueDesigns} onChange={event => onContinueDesigns(event.target.value)} placeholder="3" />
                   <span>1–6</span>
                 </div>
               )}
@@ -1354,13 +1018,14 @@ function ActionDialog({
               <textarea id="dshpro-check" value={checkNote} onChange={event => onCheckNote(event.target.value)} placeholder="例如：输入框里能看到消息、附件卡片齐全；或页面停在 about:blank" />
             </>
           )}
-        </div>
+        </fieldset>
+        {feedback !== undefined && <div className="dshpro-dialog-feedback" data-kind={feedback.kind} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.text}</div>}
         <div className="dshpro-dialog-foot">
-          <button type="button" className="dshpro-btn" onClick={onClose}>取消</button>
+          <button type="button" className="dshpro-btn" onClick={onClose} disabled={busy}>取消</button>
           <button type="button" className="dshpro-btn primary" onClick={onSubmit} disabled={busy}>{busy ? '处理中…' : dialog.kind === 'regenerate' ? '提交重新生成' : dialog.kind === 'continue' ? '提交继续' : '提交核对'}</button>
         </div>
       </div>
-    </div>
+    </dialog>
   )
 }
 
@@ -1369,7 +1034,9 @@ function TopicItem({
   selected,
   design,
   onSelect,
+  disabled,
 }: {
+  disabled?: boolean
   topic: TopicRow
   selected: boolean
   design: boolean
@@ -1384,6 +1051,7 @@ function TopicItem({
       className={`dshpro-topic${selected ? ' is-selected' : ''}`}
       data-tone={tone}
       data-topic-id={topic.topic_id}
+      disabled={disabled}
       onClick={onSelect}
       title={topic.title}
       aria-current={selected ? 'true' : undefined}
@@ -1394,15 +1062,16 @@ function TopicItem({
         <span className="dshpro-dot" data-tone={tone} />
         <span className="dshpro-status-text" data-tone={tone}>{statusLabel(topic.status)}</span>
         <span className="dshpro-sep">·</span>
-        <span>{design ? '设计' : '研究'}</span>
+        <span>{topic.type === 'design' ? '设计' : '研究'}</span>
         <span className="dshpro-sep">·</span>
         <span>{topic.rounds}/{topic.rounds_cap} 轮</span>
-        <span className="dshpro-sep">·</span>
+      </span>
+      <span className="dshpro-topic-foot">
         <span>{formatRelative(topic.updated)}</span>
         <span className="dshpro-topic-tail">
           {topic.artifacts.length > 0 && (
             <span className="dshpro-topic-artifacts">
-              <Glyph name="image" size={11} />{topic.artifacts.length}
+              <Glyph name={design ? 'image' : 'file'} size={12} />{topic.artifacts.length}
             </span>
           )}
           {badge !== undefined && <span className="dshpro-badge" data-tone={tone}>{badge}</span>}
@@ -1422,7 +1091,18 @@ function Panel(): ReactNode {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [tab, setTab] = useState<Tab>('overview')
-  const [listLoading, setListLoading] = useState(false)
+  const [listLoading, setListLoading] = useState(true)
+  const [listError, setListError] = useState<string>()
+  const [mobileDetail, setMobileDetail] = useState(false)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const detailRequest = useRef(0)
+  const listRequest = useRef(0)
+  const listInFlight = useRef(false)
+  const detailInFlight = useRef<string>()
+  const dialogTrigger = useRef<HTMLElement>()
+  const actionLock = useRef(false)
+  const panelRef = useRef<HTMLDivElement>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [dialog, setDialog] = useState<DialogState | undefined>(undefined)
   const [busy, setBusy] = useState(false)
@@ -1431,59 +1111,79 @@ function Panel(): ReactNode {
   const [continueDesigns, setContinueDesigns] = useState('')
   const [checkNote, setCheckNote] = useState('')
   const [viewer, setViewer] = useState<Viewer | undefined>(undefined)
-  showViewer = setViewer
+  showViewer = view => {
+    if (view?.topicId !== undefined && view.topicId !== selectedRef.current) return
+    setViewer(view)
+  }
 
   useEffect(() => {
-    if (notice === undefined) return
+    if (notice === undefined || dialog !== undefined) return
     const timer = setTimeout(() => setNotice(undefined), 4_000)
     return () => clearTimeout(timer)
-  }, [notice])
+  }, [notice, dialog])
 
   useEffect(() => {
-    if (viewer === undefined && dialog === undefined) return
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      if (viewer !== undefined) setViewer(undefined)
-      else setDialog(undefined)
+    const closeMenus = (event: Event): void => {
+      panelRef.current?.querySelectorAll<HTMLDetailsElement>('.dshpro-more[open]').forEach(menu => {
+        if (event instanceof KeyboardEvent) {
+          if (event.key !== 'Escape') return
+          menu.open = false
+          menu.querySelector<HTMLElement>('summary')?.focus()
+        } else if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false
+      })
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [viewer, dialog])
+    document.addEventListener('pointerdown', closeMenus)
+    document.addEventListener('keydown', closeMenus)
+    return () => { document.removeEventListener('pointerdown', closeMenus); document.removeEventListener('keydown', closeMenus) }
+  }, [])
 
   const loadList = async (): Promise<void> => {
+    if (listInFlight.current) return
+    listInFlight.current = true
+    const request = ++listRequest.current
     setListLoading(true)
     try {
       const data = await getJson<{ topics: TopicRow[] }>(`${config.routes}/topics`)
+      if (request !== listRequest.current) return
       setTopics(data.topics)
-      setError(undefined)
+      setListError(undefined)
       setSelected(current => current ?? data.topics[0]?.topic_id)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      if (request === listRequest.current) setListError(cause instanceof Error ? cause.message : String(cause))
     } finally {
-      setListLoading(false)
+      listInFlight.current = false
+      if (request === listRequest.current) setListLoading(false)
     }
   }
 
   const loadDetail = async (id: string): Promise<void> => {
+    if (selectedRef.current !== id || detailInFlight.current === id) return
+    detailInFlight.current = id
+    const request = ++detailRequest.current
     setDetailLoading(true)
     try {
       const data = await getJson<{ topic: TopicDetail }>(`${config.routes}/topic?id=${encodeURIComponent(id)}`)
+      if (selectedRef.current !== id || request !== detailRequest.current) return
       setDetail(data.topic)
       setError(undefined)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      if (selectedRef.current === id && request === detailRequest.current) setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
-      setDetailLoading(false)
+      if (request === detailRequest.current) {
+        detailInFlight.current = undefined
+        if (selectedRef.current === id) setDetailLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     void loadList()
     const timer = setInterval(() => { void loadList() }, POLL_MS)
-    return () => clearInterval(timer)
+    return () => { clearInterval(timer); listRequest.current++; detailRequest.current++ }
   }, [])
 
   useEffect(() => {
+    setError(undefined)
     if (selected === undefined) return
     void loadDetail(selected)
     const timer = setInterval(() => { void loadDetail(selected) }, POLL_MS)
@@ -1493,7 +1193,7 @@ function Panel(): ReactNode {
   useEffect(() => {
     if (selected === undefined || detail === undefined) return
     const listed = topics.find(topic => topic.topic_id === selected)
-    if (listed !== undefined && listed.status !== detail.status) void loadDetail(selected)
+    if (listed !== undefined && detail.topic_id === selected && listed.status !== detail.status) void loadDetail(selected)
   }, [topics, selected, detail])
 
   useEffect(() => {
@@ -1513,17 +1213,17 @@ function Panel(): ReactNode {
   }, [selected])
 
   useEffect(() => {
+    viewerRequest++
     setTab('overview')
     setDialog(undefined)
     setViewer(undefined)
     if (selected === undefined) return
     const reveal = (): void => {
-      const row = document.querySelector<HTMLElement>(`[data-topic-id="${selected}"]`)
-      row?.scrollIntoView({ block: 'nearest' })
+      const row = panelRef.current?.querySelector<HTMLElement>(`[data-topic-id="${selected}"]`)
+      if (row !== undefined && row !== null && row.getClientRects().length > 0) row.scrollIntoView({ block: 'nearest' })
     }
     reveal()
-    window.addEventListener('resize', reveal)
-    return () => window.removeEventListener('resize', reveal)
+    panelRef.current?.querySelector('.dshpro-detail')?.scrollTo(0, 0)
   }, [selected])
 
   const act = async (action: string, conclusion?: string, note?: string): Promise<boolean> => {
@@ -1674,32 +1374,46 @@ function Panel(): ReactNode {
     if (ok) setCheckNote('')
   }
 
-  const submitDialog = (): void => {
-    if (dialog === undefined || busy) return
+  const runExclusive = async (task: () => Promise<unknown>): Promise<void> => {
+    if (actionLock.current) return
+    actionLock.current = true
     setBusy(true)
-    const task = dialog.kind === 'regenerate'
-      ? submitRegenerate()
-      : dialog.kind === 'continue'
-        ? submitContinue()
-        : submitHumanCheck()
-    void task.finally(() => setBusy(false))
+    try { await task() } finally { actionLock.current = false; setBusy(false) }
+  }
+
+  const submitDialog = (): void => {
+    if (dialog === undefined) return
+    void runExclusive(() => dialog.kind === 'regenerate' ? submitRegenerate() : dialog.kind === 'continue' ? submitContinue() : submitHumanCheck())
   }
 
   const openRegenerate = (): void => {
+    dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    setNotice(undefined)
     setRegenNote('')
     setDialog({ kind: 'regenerate' })
   }
 
   const openContinue = (): void => {
+    dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    setNotice(undefined)
     setContinueNote('')
     setContinueDesigns('')
     setDialog({ kind: 'continue' })
   }
 
   const openCheck = (conclusion: 'submitted' | 'not_submitted' | 'reopen'): void => {
+    dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    setNotice(undefined)
     setCheckNote('')
     setDialog({ kind: 'check', conclusion })
   }
+
+  useEffect(() => {
+    if (dialog !== undefined || busy || dialogTrigger.current === undefined) return
+    if (dialogTrigger.current.isConnected && !dialogTrigger.current.matches(':disabled')) dialogTrigger.current.focus()
+    else panelRef.current?.querySelector<HTMLElement>('.dshpro-title')?.focus()
+    dialogTrigger.current = undefined
+  }, [dialog, busy])
 
   const current = detail !== undefined && detail.topic_id === selected ? detail : undefined
   const hasArtifacts = (current?.artifacts.length ?? 0) > 0
@@ -1715,12 +1429,14 @@ function Panel(): ReactNode {
   const canWake = current !== undefined && current.status === 'completed'
   const canCancel = current !== undefined && ACTIVE.has(current.status)
   const canResume = current !== undefined && (current.status === 'stalled' || current.status === 'failed')
+  const canDelete = current !== undefined && (current.status === 'draft' || current.status === 'completed' || current.status === 'cancelled'
+    || current.status === 'capped' || current.status === 'failed' || current.status === 'stalled')
   const acceptLabel = current !== undefined && (current.status === 'capped' || current.status === 'reviewing') ? '接受结果' : '接受已有产物'
 
   let primary: { label: string; run: () => void } | undefined
   if (current !== undefined) {
-    if (canResume) primary = { label: '恢复运行', run: () => { void act('resume') } }
-    else if (canAccept) primary = { label: acceptLabel, run: () => { void act('accept') } }
+    if (canResume) primary = { label: '恢复运行', run: () => { void runExclusive(() => act('resume')) } }
+    else if (canAccept) primary = { label: acceptLabel, run: () => { void runExclusive(() => act('accept')) } }
     else if (current.status === 'completed' && canContinue) primary = { label: '继续一轮', run: openContinue }
   }
 
@@ -1728,10 +1444,10 @@ function Panel(): ReactNode {
   if (current !== undefined) {
     if (canContinue && primary?.label !== '继续一轮') secondary.push({ label: '继续一轮', run: openContinue })
     if (canRegenerate && primary?.label !== '重新生成') secondary.push({ label: '重新生成', run: openRegenerate })
-    if (canReview) secondary.push({ label: current.status === 'reviewing' ? '再次提醒原会话' : '请原会话判断', run: () => { void act('review') } })
-    if (canReviewCancel) secondary.push({ label: '撤回判断请求', run: () => { void act('review_cancel') } })
-    if (canWake) secondary.push({ label: '唤醒原会话', run: () => { void act('wake') } })
-    if (canAccept && primary?.label !== acceptLabel) secondary.push({ label: acceptLabel, run: () => { void act('accept') } })
+    if (canReview) secondary.push({ label: current.status === 'reviewing' ? '再次提醒原会话' : '请原会话判断', run: () => { void runExclusive(() => act('review')) } })
+    if (canReviewCancel) secondary.push({ label: '撤回判断请求', run: () => { void runExclusive(() => act('review_cancel')) } })
+    if (canWake) secondary.push({ label: '唤醒原会话', run: () => { void runExclusive(() => act('wake')) } })
+    if (canAccept && primary?.label !== acceptLabel) secondary.push({ label: acceptLabel, run: () => { void runExclusive(() => act('accept')) } })
   }
 
   const counts = useMemo(() => {
@@ -1766,6 +1482,27 @@ function Panel(): ReactNode {
     }
   }
 
+  const runDelete = async (): Promise<void> => {
+    const target = detail?.topic_id
+    if (selected === undefined || target === undefined || target !== selected) {
+      setNotice({ kind: 'error', text: '主题正在切换，请等详情加载完成后再操作' })
+      return
+    }
+    const confirmed = typeof window.confirm === 'function'
+      ? window.confirm(`删除主题「${current?.title ?? target}」？\n\n主题目录、原始答复与面板记录都会被删除，且不可恢复。`)
+      : false
+    if (!confirmed) return
+    try {
+      await postAction({ action: 'delete', topic_id: target })
+      setNotice({ kind: 'ok', text: '主题已删除' })
+      setSelected(undefined)
+      setDetail(undefined)
+      await loadList()
+    } catch (cause) {
+      setNotice({ kind: 'error', text: cause instanceof Error ? cause.message : String(cause) })
+    }
+  }
+
   const refresh = (): void => {
     if (selected !== undefined) void loadDetail(selected)
     void loadList()
@@ -1774,9 +1511,9 @@ function Panel(): ReactNode {
   const hasBanner = current !== undefined && (current.status === 'capped' || current.status === 'reviewing' || current.status === 'stalled' || current.status === 'failed' || current.status === 'draft' || ACTIVE.has(current.status))
 
   return (
-    <div className="dshpro-root" data-plugin={config.designMode ? 'design' : 'research'}>
+    <div className="dshpro-host"><div ref={panelRef} className="dshpro-root" data-mobile-detail={mobileDetail} data-plugin={config.designMode ? 'design' : 'research'}>
       <style data-dsh-pro-panel dangerouslySetInnerHTML={{ __html: PANEL_CSS }} />
-      <aside className="dshpro-list">
+      <aside className="dshpro-list" aria-label="任务列表">
         <div className="dshpro-list-head">
           <div className="dshpro-brand">
             <span className="dshpro-brand-mark">{config.designMode ? 'D' : 'R'}</span>
@@ -1805,8 +1542,8 @@ function Panel(): ReactNode {
           </div>
         </div>
         <div className="dshpro-list-scroll" aria-busy={listLoading}>
-          {error !== undefined && topics.length === 0 && (
-            <div className="dshpro-list-error">加载失败：{error} <button type="button" className="dshpro-card-link" onClick={() => { void loadList() }}>重试</button></div>
+          {listError !== undefined && (
+            <div className="dshpro-list-error" role="alert">列表加载失败：{listError} <button type="button" className="dshpro-card-link" onClick={() => { void loadList() }}>重试</button></div>
           )}
           {listLoading && topics.length === 0
             ? <ListSkeleton />
@@ -1814,7 +1551,7 @@ function Panel(): ReactNode {
               ? (
                 <div className="dshpro-list-empty">
                   <div className="dshpro-empty-icon"><Glyph name={config.designMode ? 'image' : 'file'} size={24} /></div>
-                  <p>{config.designMode ? '还没有设计任务' : '还没有研究任务'}</p>
+                  <p>{listError !== undefined ? '任务列表暂不可用' : config.designMode ? '还没有设计任务' : '还没有研究任务'}</p>
                   <span>{config.designMode ? '在会话里用 /gpt-image-design 开始。' : '在会话里用 /pro-research 开始。'}</span>
                 </div>
               )
@@ -1831,17 +1568,20 @@ function Panel(): ReactNode {
                     key={topic.topic_id}
                     topic={topic}
                     selected={topic.topic_id === selected}
+                    disabled={busy}
                     design={config.designMode}
                     onSelect={() => {
                       markTopicSeen(config.panelId, topic.topic_id, topic.updated)
                       setSelected(topic.topic_id)
+                      setMobileDetail(true)
                     }}
                   />
                 ))}
         </div>
       </aside>
 
-      <main className="dshpro-detail">
+      <main className="dshpro-detail" aria-label="任务详情">
+        <button type="button" className="dshpro-btn dshpro-back" disabled={busy} onClick={() => setMobileDetail(false)}>‹ 返回任务列表</button>
         {error !== undefined && topics.length > 0 && (
           <div className="dshpro-error-banner" role="alert">
             <Glyph name="alert" size={13} />
@@ -1856,42 +1596,34 @@ function Panel(): ReactNode {
             : (
               <>
                 <header className="dshpro-head">
+                  <div className="dshpro-head-info">
+                  <div className="dshpro-eyebrow">{current.type === 'design' ? '设计工作台' : '研究工作台'}<span> / 第 {generationList(current).at(-1)?.n ?? 1} 版</span></div>
                   <div className="dshpro-title-row">
-                    <h2 className="dshpro-title">{current.title}</h2>
+                    <h2 className="dshpro-title" tabIndex={-1}>{current.title}</h2>
                     <StatusPill status={current.status} />
                   </div>
                   <div className="dshpro-meta">
                     <span>{current.rounds}/{current.rounds_cap} 轮</span>
-                    <span>{current.type === 'design' ? '设计' : '研究'}</span>
                     {channelLabel(current.channel) !== undefined && <span>{channelLabel(current.channel)}</span>}
-                    {current.model !== undefined && current.model !== '' && <span>{current.model}</span>}
                     {current.designs != null && <span>每轮 {current.designs} 个方向</span>}
                     <span>更新 {formatRelative(current.updated)}</span>
                   </div>
-                  {current.stop_reason !== null && (
-                    <div className="dshpro-card-sub" style={{ marginTop: 6 }}>停止依据：{current.stop_reason}</div>
-                  )}
-                  {(current.judge_enabled === false || (current.judge_enabled === undefined && (current.stop_reason ?? '').includes('未配置裁决模型'))) && current.status === 'capped' && (
-                    <div className="dshpro-card-sub" style={{ marginTop: 6, color: 'var(--dshpro-warn)' }}>当前没有可用的自动裁决模型：跑满轮次后进入待接受。</div>
-                  )}
-                  {current.path !== undefined && current.path !== '' && (
-                    <div className="dshpro-path">
-                      <Glyph name="folder" size={12} />
-                      <span title={current.path}>{current.path}</span>
-                      <button type="button" className="dshpro-icon-btn" title="复制路径" aria-label="复制主题路径" onClick={() => { void copyPath() }}><Glyph name="copy" size={12} /></button>
-                    </div>
-                  )}
+                  </div>
                   <div className="dshpro-actions">
-                    {primary !== undefined && <button type="button" className="dshpro-btn primary" onClick={primary.run}>{primary.label}</button>}
-                    {secondary.map(item => <button key={item.label} type="button" className="dshpro-btn" onClick={item.run}>{item.label}</button>)}
-                    {canCancel && <button type="button" className="dshpro-btn danger" onClick={() => { void act('cancel') }}>取消运行</button>}
+                    {primary !== undefined && <button type="button" className="dshpro-btn primary" disabled={busy} onClick={primary.run}>{busy ? '处理中…' : primary.label}</button>}
+                    {secondary.slice(0, 2).map(item => <button key={item.label} type="button" className="dshpro-btn" disabled={busy} onClick={item.run}>{item.label}</button>)}
+                    {canCancel && <button type="button" className="dshpro-btn danger" disabled={busy} onClick={() => { void runExclusive(() => act('cancel')) }}>取消运行</button>}
                     <details className="dshpro-more">
                       <summary className="dshpro-btn"><Glyph name="more" size={13} /> 更多</summary>
                       <div className="dshpro-menu">
-                        <button type="button" onClick={event => { closeMenu(event); void runPanelAction('probe') }}>自检</button>
-                        <button type="button" onClick={event => { closeMenu(event); void runPanelAction('login') }}>登录</button>
+                        {secondary.slice(2).map(item => <button key={item.label} type="button" disabled={busy} onClick={event => { closeMenu(event); item.run() }}>{item.label}</button>)}
+                        <button type="button" disabled={busy} onClick={event => { closeMenu(event); void runExclusive(() => runPanelAction('probe')) }}>自检</button>
+                        <button type="button" disabled={busy} onClick={event => { closeMenu(event); void runExclusive(() => runPanelAction('login')) }}>登录</button>
                         <button type="button" onClick={event => { closeMenu(event); void copyPath() }}>复制主题路径</button>
                         <button type="button" onClick={event => { closeMenu(event); refresh() }}>刷新</button>
+                        {canDelete && (
+                          <button type="button" disabled={busy} style={{ color: 'var(--dshpro-error)' }} onClick={event => { closeMenu(event); void runExclusive(runDelete) }}>删除主题…</button>
+                        )}
                       </div>
                     </details>
                   </div>
@@ -1904,29 +1636,34 @@ function Panel(): ReactNode {
                         : current.status === 'reviewing' ? 'review' : 'active'
                   }>
                     {current.status === 'stalled' && <><strong>卡住了</strong><span>{STALL_LABEL[current.stall_reason ?? ''] ?? '需要人工检查'}；检查共享 Chrome 现场后恢复，或做人工核对。</span></>}
-                    {current.status === 'failed' && <><strong>运行失败</strong><span>可恢复运行，或接受已有产物。</span></>}
+                    {current.status === 'failed' && <><strong>运行失败</strong><span>{hasArtifacts ? '可恢复运行，或检查已有产物后接受。' : '检查原因后可恢复运行。'}</span></>}
                     {current.status === 'capped' && <><strong>已达到轮次上限</strong><span>检查产物后接受结果，或继续一轮。</span></>}
                     {current.status === 'reviewing' && <><strong>待原会话判断</strong><span>结果已交给发起会话；可以接受结果，或撤回判断请求。</span></>}
-                    {ACTIVE.has(current.status) && <><strong>正在运行</strong><span>{statusLabel(current.status)} · 每 3 秒刷新</span></>}
+                    {ACTIVE.has(current.status) && <><strong>正在运行</strong><span>{statusLabel(current.status)} · 自动更新</span></>}
                     {current.status === 'draft' && <><strong>草稿</strong><span>等待确认后开始。</span></>}
                     {current.status === 'stalled' && (
                       <div className="dshpro-check-actions">
                         <span>人工核对</span>
-                        <button type="button" className="dshpro-btn small" onClick={() => openCheck('submitted')}>已提交</button>
-                        <button type="button" className="dshpro-btn small" onClick={() => openCheck('not_submitted')}>未提交</button>
-                        <button type="button" className="dshpro-btn small" onClick={() => openCheck('reopen')}>需重开</button>
+                        <button type="button" className="dshpro-btn small" disabled={busy} onClick={() => openCheck('submitted')}>已提交</button>
+                        <button type="button" className="dshpro-btn small" disabled={busy} onClick={() => openCheck('not_submitted')}>未提交</button>
+                        <button type="button" className="dshpro-btn small" disabled={busy} onClick={() => openCheck('reopen')}>需重开</button>
                       </div>
                     )}
                   </div>
                 )}
 
-                <nav className="dshpro-tabs" role="tablist">
-                  <button type="button" role="tab" aria-selected={tab === 'overview'} className={`dshpro-tab${tab === 'overview' ? ' is-on' : ''}`} onClick={() => setTab('overview')}>概览</button>
-                  <button type="button" role="tab" aria-selected={tab === 'rounds'} className={`dshpro-tab${tab === 'rounds' ? ' is-on' : ''}`} onClick={() => setTab('rounds')}>轮次<em>{current.rounds}</em></button>
-                  <button type="button" role="tab" aria-selected={tab === 'artifacts'} className={`dshpro-tab${tab === 'artifacts' ? ' is-on' : ''}`} onClick={() => setTab('artifacts')}>产物<em>{current.artifacts.length}</em></button>
+                <nav className="dshpro-tabs" role="tablist" aria-label="主题内容" onKeyDown={event => {
+                  const tabs: Tab[] = ['overview', 'rounds', 'artifacts']
+                  const index = tabs.indexOf(tab)
+                  const next = event.key === 'ArrowRight' ? tabs[(index + 1) % 3] : event.key === 'ArrowLeft' ? tabs[(index + 2) % 3] : event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs[2] : undefined
+                  if (next !== undefined) { event.preventDefault(); setTab(next); event.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus() }
+                }}>
+                  <button type="button" role="tab" data-tab="overview" id={`${config.panelId}-tab-overview`} aria-controls={`${config.panelId}-content`} tabIndex={tab === 'overview' ? 0 : -1} aria-selected={tab === 'overview'} className={`dshpro-tab${tab === 'overview' ? ' is-on' : ''}`} onClick={() => setTab('overview')}>概览</button>
+                  <button type="button" role="tab" data-tab="rounds" id={`${config.panelId}-tab-rounds`} aria-controls={`${config.panelId}-content`} tabIndex={tab === 'rounds' ? 0 : -1} aria-selected={tab === 'rounds'} className={`dshpro-tab${tab === 'rounds' ? ' is-on' : ''}`} onClick={() => setTab('rounds')}>轮次<em>{current.rounds}</em></button>
+                  <button type="button" role="tab" data-tab="artifacts" id={`${config.panelId}-tab-artifacts`} aria-controls={`${config.panelId}-content`} tabIndex={tab === 'artifacts' ? 0 : -1} aria-selected={tab === 'artifacts'} className={`dshpro-tab${tab === 'artifacts' ? ' is-on' : ''}`} onClick={() => setTab('artifacts')}>产物<em>{current.artifacts.length}</em></button>
                 </nav>
 
-                <div className="dshpro-body">
+                <div className="dshpro-body" data-view={tab} role="tabpanel" id={`${config.panelId}-content`} aria-labelledby={`${config.panelId}-tab-${tab}`} tabIndex={0}>
                   <div className="dshpro-main">
                     {tab === 'overview' && (config.designMode
                       ? <DesignOverview detail={current} onTab={setTab} />
@@ -1934,7 +1671,7 @@ function Panel(): ReactNode {
                     {tab === 'rounds' && <RoundsView detail={current} />}
                     {tab === 'artifacts' && <ArtifactsView detail={current} />}
                   </div>
-                  <Rail detail={current} onTab={setTab} />
+                  {tab === 'overview' && <Rail detail={current} onTab={setTab} />}
                 </div>
               </>
             )}
@@ -1953,15 +1690,16 @@ function Panel(): ReactNode {
           onContinueNote={setContinueNote}
           onContinueDesigns={setContinueDesigns}
           onCheckNote={setCheckNote}
-          onClose={() => setDialog(undefined)}
+          onClose={() => { if (!actionLock.current) setDialog(undefined) }}
           onSubmit={submitDialog}
+          feedback={notice}
         />
       )}
       {viewer !== undefined && (
-        <ViewerModal view={viewer} basePath={current?.path} onClose={() => setViewer(undefined)} />
+        <ViewerModal view={viewer} basePath={current?.path} onClose={() => { viewerRequest++; setViewer(undefined) }} />
       )}
-      {notice !== undefined && <div className="dshpro-toast" data-kind={notice.kind} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.text}</div>}
-    </div>
+      {notice !== undefined && dialog === undefined && <div className="dshpro-toast" data-kind={notice.kind} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.text}</div>}
+    </div></div>
   )
 }
 

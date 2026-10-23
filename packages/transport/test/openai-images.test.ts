@@ -119,12 +119,13 @@ describe('OpenAIImageTransport', () => {
     expect(answer.answer).toContain('结果：2 张 / 请求 2 个方向')
 
     expect(server.requests).toHaveLength(2)
+    const prompts = server.requests.map(entry => String(JSON.parse(entry.body.toString('utf8')).prompt))
+    // Directions run concurrently now: assert on content, not arrival order.
+    expect(prompts.some(prompt => prompt.includes('第 1 个方向（共 2 个）'))).toBe(true)
+    expect(prompts.some(prompt => prompt.includes('第 2 个方向（共 2 个）'))).toBe(true)
+    expect(prompts.every(prompt => prompt.includes('中文大标题'))).toBe(true)
     const first = JSON.parse(server.requests[0]!.body.toString('utf8')) as Record<string, unknown>
     expect(first).toMatchObject({ model: 'gpt-image-1', n: 1, size: '1024x1024', quality: 'high' })
-    expect(String(first.prompt)).toContain('第 1 个方向（共 2 个）')
-    expect(String(first.prompt)).toContain('中文大标题')
-    const second = JSON.parse(server.requests[1]!.body.toString('utf8')) as Record<string, unknown>
-    expect(String(second.prompt)).toContain('第 2 个方向（共 2 个）')
     expect(server.requests[0]?.headers.authorization).toBe('Bearer test-key')
   })
 
@@ -183,10 +184,9 @@ describe('OpenAIImageTransport', () => {
   })
 
   it('keeps successful directions when another one fails', async () => {
-    let calls = 0
-    const server = await startServer((_request, response) => {
-      calls += 1
-      if (calls === 1) json(response, 500, { error: 'boom' })
+    const server = await startServer((request, response) => {
+      const prompt = String(JSON.parse(request.body.toString('utf8')).prompt)
+      if (prompt.includes('第 2 个方向')) json(response, 500, { error: 'boom' })
       else json(response, 200, imageBody())
     })
     const transport = transportFor(server.baseUrl)
@@ -195,7 +195,7 @@ describe('OpenAIImageTransport', () => {
 
     expect(answer.images).toHaveLength(1)
     expect(answer.answer).toContain('## 失败')
-    expect(answer.answer).toContain('第 1 个方向失败')
+    expect(answer.answer).toContain('第 2 个方向失败')
     expect(answer.answer).toContain('结果：1 张 / 请求 2 个方向')
   })
 
@@ -275,4 +275,70 @@ describe('OpenAIImageTransport', () => {
     expect(fallback.ok).toBe(true)
     expect(fallback.reason).toContain('/models')
   })
+
+  it('runs at most two directions concurrently', async () => {
+    let inflight = 0
+    let maxInflight = 0
+    const server = await startServer(async (_request, response) => {
+      inflight += 1
+      maxInflight = Math.max(maxInflight, inflight)
+      await new Promise(resolve => setTimeout(resolve, 120))
+      inflight -= 1
+      json(response, 200, imageBody())
+    })
+    const transport = transportFor(server.baseUrl)
+    const startedAt = Date.now()
+    const submitted = await transport.submit(request({ designs: 3 }))
+    const answer = await waitAnswered(transport, submitted.submissionId)
+    const elapsed = Date.now() - startedAt
+
+    expect(answer.images).toHaveLength(3)
+    expect(maxInflight).toBe(2)
+    // Three sequential 120ms calls would take >= 360ms; two lanes finish sooner.
+    expect(elapsed).toBeLessThan(340)
+  })
+
+  it('reports progress only when a direction actually completes', async () => {
+    const server = await startServer(async (_request, response) => {
+      // poll() clamps its slice to >= 1s, so the provider must outlast that.
+      await new Promise(resolve => setTimeout(resolve, 1_600))
+      json(response, 200, imageBody())
+    })
+    const transport = transportFor(server.baseUrl)
+    const submitted = await transport.submit(request({ designs: 1 }))
+
+    const early = await transport.poll({ submissionId: submitted.submissionId, timeoutMs: 30 })
+    expect(early.state).toBe('waiting')
+    expect(early.progress).toBeUndefined()
+
+    const answer = await waitAnswered(transport, submitted.submissionId, 8_000)
+    expect(answer.images).toHaveLength(1)
+  }, 10_000)
+
+  it('releases a failed job after surfacing its error once', async () => {
+    const server = await startServer((_request, response) => json(response, 500, { error: 'boom' }))
+    const transport = transportFor(server.baseUrl)
+    const submitted = await transport.submit(request())
+
+    const error = await transport.poll({ submissionId: submitted.submissionId, timeoutMs: 5_000 }).catch(caught => caught)
+    expect(error).toBeInstanceOf(TransportError)
+    const after = await transport.poll({ submissionId: submitted.submissionId, timeoutMs: 50 })
+    expect(after.state).toBe('unknown')
+  })
+
+  it('retries a rate-limited direction once and still completes the round', async () => {
+    let calls = 0
+    const server = await startServer((_request, response) => {
+      calls += 1
+      if (calls === 1) json(response, 429, { error: 'slow down' })
+      else json(response, 200, imageBody())
+    })
+    const transport = transportFor(server.baseUrl)
+    const submitted = await transport.submit(request({ designs: 2 }))
+    const answer = await waitAnswered(transport, submitted.submissionId, 10_000)
+
+    expect(answer.images).toHaveLength(2)
+    expect(server.requests).toHaveLength(3)
+    expect(answer.answer).toContain('结果：2 张 / 请求 2 个方向')
+  }, 15_000)
 })

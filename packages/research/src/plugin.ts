@@ -17,6 +17,7 @@ import {
   buildManifest,
   defaultConfig,
   findSecret,
+  isHtmlSource,
   type Channel,
   type ImageApiConfig,
   type ImageFormat,
@@ -153,10 +154,6 @@ function homeDir(): string {
   return process.env.DSH_HOME ?? join(homedir(), '.dsh')
 }
 
-function isHtmlSource(text: string): boolean {
-  return /^\s*(?:<!doctype\s+html|<html[\s>])/i.test(text.slice(0, 512))
-}
-
 function mimeFor(path: string): string {
   switch (extname(path).toLowerCase()) {
     case '.png': return 'image/png'
@@ -202,6 +199,16 @@ function imageAuthOf(value: string | undefined): 'bearer' | 'api-key' {
 
 function imageEditOf(value: string | undefined): 'auto' | 'off' {
   return value === undefined || value.trim() === '' ? 'auto' : value as 'auto' | 'off'
+}
+
+/**
+ * Settings arrive from a loader-validated form, but a hand-edited config file
+ * can still carry garbage. Clamp instead of throwing: one typo must not take
+ * the whole plugin down, and the engine needs sane stall/round numbers.
+ */
+function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value) || value < min) return fallback
+  return Math.min(max, Math.round(value))
 }
 
 /** Settings are flat for the generated settings form; the engine keeps one object. */
@@ -252,6 +259,15 @@ export function resolvePluginConfig(spec: PluginSpec, config: ResearchConfig | u
     ...(config?.judgeProvider !== undefined && config.judgeProvider !== '' ? { judgeProvider: config.judgeProvider } : {}),
     ...(config?.judgeModel !== undefined && config.judgeModel !== '' ? { judgeModel: config.judgeModel } : {}),
   }
+  merged.rounds = clampInt(merged.rounds, 1, 10, base.rounds)
+  merged.designs = clampInt(merged.designs, 1, 6, base.designs)
+  merged.stallMinutes = clampInt(merged.stallMinutes, 1, 7 * 24 * 60, base.stallMinutes)
+  merged.maxRoundMinutes = Math.max(
+    clampInt(merged.maxRoundMinutes, 1, 30 * 24 * 60, base.maxRoundMinutes),
+    merged.stallMinutes,
+  )
+  merged.maxFiles = clampInt(merged.maxFiles, 1, 100, base.maxFiles)
+  if (!Number.isFinite(merged.maxTotalMB) || merged.maxTotalMB <= 0) merged.maxTotalMB = base.maxTotalMB
   return merged
 }
 
@@ -417,6 +433,9 @@ class ProResearchService {
       transport: this.transportFor(),
       judge: this.judge(),
       config: this.config,
+      onError: error => {
+        this.log(`topic run failed inside failure handling: ${error instanceof Error ? error.message : String(error)}`)
+      },
       onEvent: event => {
         if (event.type === 'status' && (event.status === 'stalled' || event.status === 'failed')) {
           this.log(`topic ${event.topicId} ${event.status}${event.reason !== undefined ? ` (${event.reason})` : ''}`)
@@ -440,6 +459,14 @@ class ProResearchService {
     scoped?.info?.(message)
   }
 
+  /**
+   * Loud, one-line signal when the host provides no connection guard. The host
+   * always does in production; without it the HTTP routes would fail open.
+   */
+  noteMissingConnectionGuard(): void {
+    this.log(`${this.spec.name}: connection service unavailable; HTTP routes have no host auth guard (dev/test only)`)
+  }
+
   private async find(cwd: string, topicId: string): Promise<{ store: ResearchStore; engine: ResearchEngine; topic: Topic }> {
     const entry = await this.entryFor(topicId)
     if (entry !== undefined) {
@@ -451,10 +478,16 @@ class ProResearchService {
       const topic = await store.load(topicId)
       return { store, engine: this.engineFor(cwd), topic }
     } catch {
-      for (const candidate of this.stores.values()) {
+      // The store map key is `${mode}:${root}`; carrying the pair forward keeps
+      // the engine bound to the SAME root/mode as the store that owns the
+      // topic (a bare engineFor(cwd) would run actions against the wrong root).
+      for (const [key, candidate] of this.stores.entries()) {
         try {
           const topic = await candidate.load(topicId)
-          return { store: candidate, engine: this.engineFor(cwd), topic }
+          const separator = key.indexOf(':')
+          const mode = key.slice(0, separator) === 'local' ? 'local' : 'project'
+          const root = key.slice(separator + 1)
+          return { store: candidate, engine: this.engineFor(root, mode), topic }
         } catch {
           // keep looking
         }
@@ -525,6 +558,35 @@ class ProResearchService {
         ...(sessionId !== undefined && sessionId !== '' ? { sessionId } : {}),
       })
       await this.writeRegistry(entries)
+    }
+    const next = this.registryChain.then(job, job)
+    this.registryChain = next.catch(() => undefined)
+    await next
+  }
+
+  /**
+   * Write scan-discovered topics back into the registry; otherwise a lost
+   * registry hides interrupted topics from the sidebar forever. Existing
+   * entries keep their recorded sessionId. The chain job re-reads the file so
+   * concurrent record() calls cannot be overwritten.
+   */
+  private async mergeRegistry(discovered: RegistryEntry[]): Promise<void> {
+    const job = async (): Promise<void> => {
+      const entries = await this.readRegistry()
+      const known = new Set(entries.map(entry => entry.id))
+      const additions = discovered.filter(entry => !known.has(entry.id))
+      if (additions.length === 0) return
+      await this.writeRegistry([...entries, ...additions])
+    }
+    const next = this.registryChain.then(job, job)
+    this.registryChain = next.catch(() => undefined)
+    await next
+  }
+
+  /** Remove one registry entry; callers delete the topic directory FIRST so a rescan cannot resurrect it. */
+  private async removeFromRegistry(id: string): Promise<void> {
+    const job = async (): Promise<void> => {
+      await this.writeRegistry((await this.readRegistry()).filter(entry => entry.id !== id))
     }
     const next = this.registryChain.then(job, job)
     this.registryChain = next.catch(() => undefined)
@@ -849,18 +911,32 @@ class ProResearchService {
     action: string,
     conclusion?: 'submitted' | 'not_submitted' | 'reopen',
     note?: string,
+    materialPaths?: string[],
   ): Promise<Record<string, unknown>> {
     const entry = await this.entryFor(id)
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
     const engine = this.engineFor(entry.root, entry.mode)
     if (action === 'resume') {
-      const topic = await this.storeAt(entry.root, entry.mode).load(id)
-      if (topic.channel === 'api' && topic.rounds.some(round => round.submissionId !== undefined)) {
-        throw new Error('API 通道重启后无法接管已发出的生图请求；请接受已有产物、重新生成或取消')
-      }
+      // The engine probes the transport before refusing an api-channel resume,
+      // so a still-live job recovers instead of hitting a blanket error.
       return this.view(await engine.resume(id))
     }
     if (action === 'cancel') return this.view(await engine.cancel(id))
+    if (action === 'delete') {
+      const store = this.storeAt(entry.root, entry.mode)
+      const topic = await store.load(id)
+      const deletable = topic.status === 'draft' || topic.status === 'completed' || topic.status === 'cancelled'
+        || topic.status === 'capped' || topic.status === 'failed' || topic.status === 'stalled'
+      if (!deletable) {
+        throw new Error(`topic ${id} is ${topic.status}; only draft/capped/completed/failed/stalled/cancelled topics can be deleted${topic.status === 'reviewing' ? '；请先撤回判断请求' : ''}`)
+      }
+      // Directory first, registry second: a startup rescan would otherwise
+      // resurrect a registry-less topic back into the sidebar.
+      await store.remove(topic)
+      await this.removeFromRegistry(id)
+      this.topicSessions.delete(id)
+      return { deleted: true, topic_id: id, title: topic.title }
+    }
     if (action === 'accept') {
       const accepted = await engine.accept(id)
       const wake = await this.notifyAccepted(id, accepted)
@@ -904,6 +980,13 @@ class ProResearchService {
       }
       const feedback = (note ?? '').trim()
       this.assertTextSafe('regenerate note', feedback)
+      // Materials resolve against the topic's own project root, so the tool
+      // path and the panel route agree on what a relative path means.
+      let refs: MaterialRef[] | undefined
+      if (materialPaths !== undefined && materialPaths.length > 0) {
+        refs = this.withSources(entry.root, await buildManifest(entry.root, materialPaths, undefined, this.config.secretGlobs))
+        assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
+      }
       const brief = [
         `继续主题「${topic.title}」：用户对上一轮结果不满意，请基于已有上下文重新生成并改进。`,
         '## 用户反馈',
@@ -915,9 +998,10 @@ class ProResearchService {
         id,
         this.withDesignCount(brief, topic.designs ?? this.config.designs),
         feedback,
+        refs,
       ))
     }
-    throw new Error('action must be resume, cancel, accept, review, review_cancel, wake, human_check or regenerate')
+    throw new Error('action must be resume, cancel, delete, accept, review, review_cancel, wake, human_check or regenerate')
   }
 
   async handle(args: Record<string, unknown>, exec: ToolRunContext): Promise<Record<string, unknown>> {
@@ -984,7 +1068,17 @@ class ProResearchService {
       case 'review_cancel':
         return await this.act(this.requireId(args), 'review_cancel')
       case 'regenerate':
-        return await this.act(this.requireId(args), 'regenerate', undefined, typeof args.note === 'string' ? args.note : '')
+        return await this.act(
+          this.requireId(args),
+          'regenerate',
+          undefined,
+          typeof args.note === 'string' ? args.note : '',
+          Array.isArray(args.materials) && args.materials.length > 0
+            ? this.stringArray(args.materials, 'materials')
+            : undefined,
+        )
+      case 'delete':
+        return await this.act(this.requireId(args), 'delete')
       case 'probe': {
         const probe = await this.transportFor().probe()
         return {
@@ -1009,7 +1103,7 @@ class ProResearchService {
         }
         return { login: await (this.transportFor() as ChatGptWebTransport).login() }
       default:
-        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, review, review_cancel, wake, regenerate, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, delete, human_check, accept, review, review_cancel, wake, regenerate, probe or login')
     }
   }
 
@@ -1140,7 +1234,10 @@ class ProResearchService {
    */
   async recoverActive(): Promise<void> {
     const active = new Set(['queued', 'uploading', 'submitted', 'waiting', 'answered', 'adjudicating'])
+    const registered = await this.readRegistry()
     const entries = await this.knownEntries()
+    const discovered = entries.filter(entry => !registered.some(item => item.id === entry.id))
+    if (discovered.length > 0) await this.mergeRegistry(discovered).catch(() => undefined)
     for (const entry of entries) {
       try {
         const store = this.storeAt(entry.root, entry.mode)
@@ -1159,7 +1256,26 @@ class ProResearchService {
         if (this.config.channel === 'api') {
           if (topic.status === 'reviewing') await engine.cancelReview(entry.id)
           if (active.has(topic.status)) {
+            // An answered-but-unjudged api round needs only the local judge.
+            if (topic.status === 'answered' || topic.status === 'adjudicating') {
+              await engine.resume(entry.id).catch(async () => {
+                await engine.interrupt(entry.id, 'API 主题恢复裁决失败；请人工核对')
+                await this.notifyStalled(entry.id, 'unknown_submission')
+              })
+              continue
+            }
             await engine.interrupt(entry.id, 'API 生图请求在 DSH 重启后已丢失，本轮不会自动重发；已生成的图片见 artifacts，确认后可重新发起或取消')
+            await this.notifyStalled(entry.id, 'unknown_submission')
+          }
+          continue
+        }
+        if (topic.status === 'answered' || topic.status === 'adjudicating') {
+          // The answer is already on disk; finish the adjudication locally
+          // instead of parking the topic for a human.
+          try {
+            await engine.resume(entry.id)
+          } catch (error) {
+            await engine.interrupt(entry.id, `恢复裁决失败：${error instanceof Error ? error.message : String(error)}`)
             await this.notifyStalled(entry.id, 'unknown_submission')
           }
           continue
@@ -1270,11 +1386,38 @@ function sendJson(res: HttpResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value))
 }
 
-async function readJsonBody(req: HttpRequest): Promise<Record<string, unknown>> {
-  let body = ''
-  for await (const chunk of req) {
-    body += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+/**
+ * Uniform artifact response policy: nosniff everywhere; HTML demos run
+ * sandboxed scripts (opaque origin, no forms/popups); SVG gets no script
+ * execution at all (inline <img> display is unaffected).
+ */
+function artifactHeaders(mime: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'content-type': mime,
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
   }
+  if (mime.startsWith('text/html')) headers['content-security-policy'] = 'sandbox allow-scripts'
+  else if (mime.startsWith('image/svg+xml')) headers['content-security-policy'] = 'sandbox'
+  return headers
+}
+
+const MAX_BODY_BYTES = 1_000_000
+
+class BodyTooLargeError extends Error {}
+
+async function readJsonBody(req: HttpRequest): Promise<Record<string, unknown>> {
+  // Buffer first, decode once: decoding per chunk corrupts multibyte UTF-8
+  // (e.g. a Chinese note) split across chunk boundaries.
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk)
+    total += buffer.byteLength
+    if (total > MAX_BODY_BYTES) throw new BodyTooLargeError('body exceeds 1 MB')
+    chunks.push(buffer)
+  }
+  const body = Buffer.concat(chunks).toString('utf8')
   if (body.trim() === '') return {}
   return JSON.parse(body) as Record<string, unknown>
 }
@@ -1287,7 +1430,15 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
   const connection = (scoped.get('connection') ?? undefined) as
     | { requestRejection?(req: HttpRequest): 401 | 403 | undefined }
     | undefined
-  const reject = (req: HttpRequest): 401 | 403 | undefined => connection?.requestRejection?.(req)
+  if (connection === undefined) service.noteMissingConnectionGuard()
+  const reject = (req: HttpRequest): 401 | 403 | undefined => {
+    // Depth defense: a cross-site POST never reaches the action surface, even
+    // if the host connection guard is missing.
+    const site = req.headers['sec-fetch-site']
+    const value = Array.isArray(site) ? site[0] : site
+    if (req.method === 'POST' && value === 'cross-site') return 403
+    return connection?.requestRejection?.(req)
+  }
 
   scoped.effect(() => webServer.register({
     kind: 'exact',
@@ -1336,13 +1487,17 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
           ? body.conclusion
           : undefined
         const note = typeof body.note === 'string' ? body.note : undefined
+        const materials = Array.isArray(body.materials)
+          ? body.materials.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+          : undefined
         if (action === 'probe' || action === 'login') {
           sendJson(res, 200, await service.handle({ action }, { agent: undefined } as never))
           return
         }
-        sendJson(res, 200, { topic: await service.act(id, action, conclusion, note) })
+        sendJson(res, 200, { topic: await service.act(id, action, conclusion, note, materials) })
       } catch (error) {
-        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+        const status = error instanceof BodyTooLargeError ? 413 : 400
+        sendJson(res, status, { error: error instanceof Error ? error.message : String(error) })
       }
     },
   }), `${spec.name}: action route`)
@@ -1358,13 +1513,7 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
       const path = url.searchParams.get('path') ?? ''
       try {
         const asset = await service.readArtifact(id, path)
-        const headers: Record<string, string> = {
-          'content-type': asset.mime,
-          'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-        }
-        if (asset.mime.startsWith('text/html')) headers['content-security-policy'] = 'sandbox allow-scripts'
-        res.writeHead(200, headers)
+        res.writeHead(200, artifactHeaders(asset.mime))
         res.end(asset.bytes)
       } catch {
         sendJson(res, 404, { error: 'unknown artifact' })
@@ -1386,13 +1535,7 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
         const id = decodeURIComponent(rest.slice(0, slash))
         const relativePath = decodeURIComponent(rest.slice(slash + 1))
         const asset = await service.readArtifact(id, relativePath)
-        const headers: Record<string, string> = {
-          'content-type': asset.mime,
-          'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-        }
-        if (asset.mime.startsWith('text/html')) headers['content-security-policy'] = 'sandbox allow-scripts'
-        res.writeHead(200, headers)
+        res.writeHead(200, artifactHeaders(asset.mime))
         res.end(asset.bytes)
       } catch {
         sendJson(res, 404, { error: 'unknown artifact' })
@@ -1436,7 +1579,7 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
       try {
         const text = await service.answerText(id, round)
         if (text === undefined) return sendJson(res, 404, { error: 'answer not found' })
-        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
         res.end(text)
       } catch (error) {
         sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -1455,10 +1598,10 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
       const path = url.searchParams.get('path') ?? ''
       try {
         const file = await service.topicText(id, path)
-        res.writeHead(200, {
-          'content-type': file.mime.includes('charset=') ? file.mime : `${file.mime}; charset=utf-8`,
-          'cache-control': 'no-store',
-        })
+        const mime = file.mime.includes('charset=') ? file.mime : `${file.mime}; charset=utf-8`
+        // topicText can reach HTML/SVG inside the topic directory: serve them
+        // with the same sandbox policy as the artifact routes.
+        res.writeHead(200, artifactHeaders(mime))
         res.end(file.text)
       } catch {
         sendJson(res, 404, { error: 'unknown file' })
@@ -1481,7 +1624,8 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
         else await service.revealFile(id, relativePath)
         sendJson(res, 200, { ok: true })
       } catch (error) {
-        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+        const status = error instanceof BodyTooLargeError ? 413 : 400
+        sendJson(res, status, { error: error instanceof Error ? error.message : String(error) })
       }
     },
   }), `${spec.name}: open route`)
@@ -1494,19 +1638,19 @@ function toolDescription(spec: PluginSpec, config: ProConfig): string {
         `用 OpenAI 兼容生图 API（${config.image.model}）按方向生成设计图，保存到本地并出现在设计面板；此通道只出图，不产出 HTML demo。`,
         'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径、模型）；用户确认后传 confirmed=true。',
         'key 只读插件设置或环境变量 GPT_IMAGE_API_KEY，不要在会话里回显；probe 检查 base URL / key / 模型名。',
-        'action: start | continue | status | list | resume | cancel | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
+        'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
       ].join(' ')
     }
     return [
       '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
       'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-      'action: start | continue | status | list | resume | cancel | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
+      'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
     ].join(' ')
   }
   return [
     '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
     'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-    'action: start | continue | status | list | resume | cancel | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
+    'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
   ].join(' ')
 }
 
@@ -1538,16 +1682,16 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
     name: spec.tool,
     description: toolDescription(spec, resolved),
     parameters: {
-      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|review|review_cancel|wake|regenerate|probe|login' },
+      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|delete|human_check|accept|review|review_cancel|wake|regenerate|probe|login' },
       title: { type: 'string', description: '主题标题（start 必填）' },
       question: { type: 'string', description: '研究问题（start 必填）' },
       brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },
       criteria: { type: 'array', items: { type: 'string' }, description: '成功判据（start 必填）' },
-      materials: { type: 'array', items: { type: 'string' }, description: '相对工作目录的材料路径（start 可选）' },
+      materials: { type: 'array', items: { type: 'string' }, description: '材料路径（start/continue/regenerate 可选；regenerate 时相对主题项目根目录）' },
       materialReasons: { type: 'object', additionalProperties: true, description: '可选：材料路径 → 选择理由' },
       rounds: { type: 'number', description: '本次轮次上限（1–10）' },
       designs: { type: 'number', description: '设计插件本轮生成的方向/图片数（1–6，默认取设置）' },
-      topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check/accept/review/wake/regenerate 的主题 id' },
+      topic_id: { type: 'string', description: 'status/continue/resume/cancel/delete/human_check/accept/review/wake/regenerate 的主题 id' },
       parent: { type: 'string', description: '可选：父主题 id，用于把 follow-up 串成同一棵树' },
       conclusion: { type: 'string', description: 'human_check 结论：submitted|not_submitted|reopen' },
       note: { type: 'string', description: 'human_check 依据；regenerate 时作为不满意点/新要求' },
@@ -1565,9 +1709,10 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
         || args.action === 'continue'
         || args.action === 'regenerate'
         || args.action === 'accept'
+        || args.action === 'delete'
       const autoStart = args.action === 'start' && service.autoStartEnabled()
       if (writeAction && args.confirmed !== true && !autoStart) {
-        throw new Error('start, continue, regenerate and accept require confirmed=true after the user has seen the card')
+        throw new Error('start, continue, regenerate, accept and delete require confirmed=true after the user has seen the card')
       }
       return (await service.handle(args, exec)) as never
     },

@@ -6,7 +6,7 @@ import { ResearchEngine } from '../src/engine.ts'
 import { ResearchStore } from '../src/store.ts'
 import { defaultConfig } from '../src/config.ts'
 import { buildManifest } from '../src/materials.ts'
-import { TransportError, type Judge, type ResearchCard, type SubmitRequest, type Transport } from '../src/types.ts'
+import { TransportError, type Judge, type PollResult, type ResearchCard, type SubmitRequest, type Transport } from '../src/types.ts'
 
 const cleanups: string[] = []
 
@@ -40,7 +40,7 @@ class FakeTransport implements Transport {
     }
   }
 
-  async poll(request: { submissionId: string; signal?: AbortSignal }) {
+  async poll(request: { submissionId: string; signal?: AbortSignal }): Promise<PollResult> {
     this.polling = true
     if (this.hang) {
       return await new Promise<never>((_resolve, reject) => {
@@ -270,6 +270,129 @@ describe('engine', () => {
     expect(final.status).toBe('completed')
     expect(transport.submits).toHaveLength(1)
   })
+
+  it('adjudicates an on-disk answer without touching the transport', async () => {
+    let calls = 0
+    const judge: Judge = async () => {
+      calls += 1
+      if (calls === 1) throw new Error('judge unavailable')
+      return { verdict: 'accepted', reason: 'ok', done: true, summary: 'done' }
+    }
+    class ReattachTransport extends FakeTransport {
+      reattachCalls = 0
+      async reattach(): Promise<never> {
+        this.reattachCalls += 1
+        throw new Error('reattach must not run for a local adjudication')
+      }
+    }
+    const transport = new ReattachTransport(['first answer'])
+    const { engine } = await harness({ doneAt: 1, judge, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('failed')
+
+    await engine.resume(topic.id)
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('completed')
+    expect(transport.reattachCalls).toBe(0)
+    expect(transport.submits).toHaveLength(1)
+  })
+
+  it('cancels a run that is aborted between rounds', async () => {
+    let releaseJudge: () => void = () => {}
+    const judge: Judge = async () => {
+      await new Promise<void>(resolve => { releaseJudge = resolve })
+      return { verdict: 'partial', reason: 'more', done: false, summary: 'more' }
+    }
+    const { engine } = await harness({ doneAt: 99, judge })
+    const topic = await engine.start(card())
+    const deadline = Date.now() + 2_000
+    while (Date.now() < deadline) {
+      const current = await engine.status(topic.id).catch(() => undefined)
+      if (current?.status === 'adjudicating') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    const cancelling = engine.cancel(topic.id)
+    releaseJudge()
+    await cancelling
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('cancelled')
+  })
+
+  it('refuses human_check submitted when the round was never dispatched', async () => {
+    const transport = new FakeTransport(['first answer'])
+    transport.submitFail = new TransportError('network dropped during submit', 'network')
+    const { engine, store } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('stalled')
+
+    // The failed submit left a dispatch; clear it to reach the no-record branch.
+    const stalled = await store.load(topic.id)
+    delete stalled.rounds[0]?.dispatch
+    await store.save(stalled)
+
+    await expect(engine.humanCheck(topic.id, 'submitted', 'no submission record exists'))
+      .rejects.toThrow(/没有任何提交记录/)
+  })
+
+  it('refuses human_check submitted when a reattach-less transport lost the job', async () => {
+    class LostTransport extends FakeTransport {
+      override async poll(): Promise<PollResult> {
+        return { state: 'unknown' }
+      }
+    }
+    const transport = new LostTransport(['first answer'])
+    const { engine } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    // poll never sees the submission: the round stalls with only a submission id.
+    expect((await engine.status(topic.id)).status).toBe('stalled')
+
+    await expect(engine.humanCheck(topic.id, 'submitted', 'the job is gone after a restart'))
+      .rejects.toThrow(/无法接管核对/)
+  })
+
+  it('resumes an api topic only while its job is still alive', async () => {
+    class ApiTransport extends FakeTransport {
+      lost = false
+      override async poll(request: { submissionId: string; signal?: AbortSignal }): Promise<PollResult> {
+        if (this.lost) return { state: 'unknown' }
+        return await super.poll(request)
+      }
+    }
+    const transport = new ApiTransport(['first answer'])
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-engine-'))
+    cleanups.push(root)
+    const config = { ...defaultConfig(root), channel: 'api' as const, maxRoundMinutes: 1, stallMinutes: 1 }
+    const store = new ResearchStore({ mode: 'project', projectRoot: root, localRoot: root, rawDir: join(root, 'raw'), rawAnswers: 'local' })
+    const alwaysDone: Judge = async () => ({ verdict: 'accepted', reason: 'ok', done: true, summary: 'done' })
+    const engine = new ResearchEngine({ store, transport, judge: alwaysDone, config, pollIntervalMs: 10 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('completed')
+
+    // Simulate a failed second round whose in-flight job is still alive.
+    const resurrect = await store.load(topic.id)
+    resurrect.status = 'stalled'
+    resurrect.stallReason = 'timeout'
+    resurrect.rounds.push({ n: 2, files: 0, submissionId: 'sub-live', attempts: 1 })
+    await store.save(resurrect)
+    await engine.resume(topic.id)
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('completed')
+    expect(transport.submits).toHaveLength(1)
+
+    // Once the job is gone, resume refuses instead of stalling again.
+    const lost = await store.load(topic.id)
+    lost.status = 'stalled'
+    lost.stallReason = 'unknown_submission'
+    lost.rounds.push({ n: 3, files: 0, submissionId: 'sub-gone', attempts: 1 })
+    await store.save(lost)
+    transport.lost = true
+    await expect(engine.resume(topic.id)).rejects.toThrow(/已丢失，无法接管/)
+  })
+
 
   it('adds an explicit follow-up round to a completed topic', async () => {
     const judge: Judge = async () => ({ verdict: 'accepted', reason: 'enough', done: true, summary: 'done' })

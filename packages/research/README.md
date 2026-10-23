@@ -54,7 +54,7 @@ dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#<40-ch
 dsh plugin --profile <profile> add chatgpt-pro-research
 ```
 
-npm 上现有 `0.2.x`；本仓库的 `0.3.1` 以 Git/dsh.pub 分发为准。
+npm 上现有 `0.2.x`；当前源码版本为 `0.3.2`，尚未同步到分发仓库或发布到市场。安装时请核对分发仓库的已发布版本。
 
 ### 启用
 
@@ -89,7 +89,7 @@ pro_research(
 
 - `start` 需要 `confirmed=true`，表示你已经确认问题、判据和轮次。
 - `human_check` 用于回答 agent 的人工核对请求（`submitted` / `not_submitted` / `reopen`）。
-- `resume` 恢复中断的主题；`cancel` 取消；`review` / `review_cancel` 处理 capped 后的交接。
+- `resume` 恢复中断的主题；`cancel` 取消；`delete` 删除终态主题；`review` / `review_cancel` 处理 capped 后的交接；`regenerate` 可附 `materials` 补新材料。
 
 ## 设置
 
@@ -146,7 +146,7 @@ pro_research(
 - **权限边界**：插件以 DSH 进程权限运行，可以读写上述目录、启动本机 Chrome、通过 DSH 的工具/模型服务工作；它不读取与调研无关的浏览器 profile。
 - **文件管理器**：插件只用固定的 `explorer.exe` / `open` / `xdg-open` 参数打开它自己生成的产物文件/目录，不拼接用户输入，也不执行 shell 命令。
 - **不会**把登录态、Cookie、完整原始答复写进仓库；`rawAnswers` 默认 `local`。
-- **清理**：删除主题目录即可删除该主题；卸载时见下文。不要把 `~/.dsh/pro-research` 提交到任何仓库。
+- **清理**：面板「更多 → 删除主题」或 `action=delete`（终态主题、需 `confirmed=true`）会删除主题目录、原始答复与面板记录；卸载时见下文。不要把 `~/.dsh/pro-research` 提交到任何仓库。
 
 ## 已知限制
 
