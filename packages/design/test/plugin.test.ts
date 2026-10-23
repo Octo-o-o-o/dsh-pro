@@ -56,7 +56,7 @@ describe('design plugin wiring', () => {
       '/gpt-image-design/bundle',
       '/gpt-image-design/file',
       '/gpt-image-design/open',
-      '/gpt-image-design/raw/',
+      '/gpt-image-design/raw',
       '/gpt-image-design/topic',
       '/gpt-image-design/topics',
     ])

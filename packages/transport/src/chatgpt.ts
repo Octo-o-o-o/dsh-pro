@@ -104,6 +104,7 @@ export class ChatGptWebTransport implements Transport {
     await mkdir(this.options.profileDir, { recursive: true })
     const base = {
       headless: this.options.headless ?? false,
+      acceptDownloads: true,
       viewport: { width: 1440, height: 960 },
       args: ['--disable-blink-features=AutomationControlled'],
     }
@@ -330,8 +331,8 @@ export class ChatGptWebTransport implements Transport {
       const out: string[] = []
       const messages = [...document.querySelectorAll(selector)]
       const last = messages[messages.length - 1]
-      const root = last?.closest('article')
-        ?? last?.closest('[data-testid^="conversation-turn"]')
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
         ?? last?.parentElement
         ?? document.querySelector('main')
       if (root === null || root === undefined) return out
@@ -401,8 +402,8 @@ export class ChatGptWebTransport implements Transport {
     return await page.evaluate(selector => {
       const messages = [...document.querySelectorAll(selector)]
       const last = messages[messages.length - 1]
-      const root = last?.closest('article')
-        ?? last?.closest('[data-testid^="conversation-turn"]')
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
         ?? last?.parentElement
         ?? document.querySelector('main')
       if (root === null || root === undefined) return []
@@ -444,8 +445,8 @@ export class ChatGptWebTransport implements Transport {
     const links = await page.evaluate(selector => {
       const messages = [...document.querySelectorAll(selector)]
       const last = messages[messages.length - 1]
-      const root = last?.closest('article')
-        ?? last?.closest('[data-testid^="conversation-turn"]')
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
         ?? last?.parentElement
         ?? document.querySelector('main')
       if (root === null || root === undefined) return []
@@ -598,8 +599,8 @@ export class ChatGptWebTransport implements Transport {
     const fingerprint = await page.evaluate(selector => {
       const messages = [...document.querySelectorAll(selector)]
       const last = messages[messages.length - 1]
-      const root = last?.closest('article')
-        ?? last?.closest('[data-testid^="conversation-turn"]')
+      const root = last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.closest('article')
         ?? last?.parentElement
         ?? document.querySelector('main')
       if (root === null || root === undefined) return { images: [] as string[], codeLength: 0 }

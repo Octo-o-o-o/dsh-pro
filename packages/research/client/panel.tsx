@@ -186,6 +186,8 @@ function Panel(): ReturnType<typeof createElement> {
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | undefined>(undefined)
   const [regenOpen, setRegenOpen] = useState(false)
   const [regenNote, setRegenNote] = useState('')
+  const [checkOpen, setCheckOpen] = useState<'submitted' | 'not_submitted' | 'reopen' | undefined>(undefined)
+  const [checkNote, setCheckNote] = useState('')
   const [viewer, setViewer] = useState<Viewer | undefined>(undefined)
   const [viewerNotice, setViewerNotice] = useState<string | undefined>(undefined)
   showViewer = setViewer
@@ -267,14 +269,8 @@ function Panel(): ReturnType<typeof createElement> {
     return () => window.removeEventListener('keydown', onKey)
   }, [viewer])
 
-  const act = useCallback(async (action: string, conclusion?: string) => {
+  const act = useCallback(async (action: string, conclusion?: string, note?: string) => {
     if (selected === undefined) return
-    let note: string | undefined
-    if (action === 'human_check') {
-      const input = window.prompt('核对结论的依据（必填）')
-      if (input === null || input.trim() === '') return
-      note = input.trim()
-    }
     try {
       const result = await postAction<{ topic: TopicRow; wake?: { ok: boolean; resumed?: boolean; reason?: string } }>({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
       if (action === 'accept') {
@@ -325,6 +321,18 @@ function Panel(): ReturnType<typeof createElement> {
       setNotice({ kind: 'error', text: message })
     }
   }, [selected, regenNote, loadDetail, loadList])
+
+  const submitHumanCheck = useCallback(async () => {
+    if (selected === undefined || checkOpen === undefined) return
+    const note = checkNote.trim()
+    if (note === '') {
+      setNotice({ kind: 'error', text: '请填写核对依据' })
+      return
+    }
+    await act('human_check', checkOpen, note)
+    setCheckOpen(undefined)
+    setCheckNote('')
+  }, [selected, checkOpen, checkNote, act])
 
   const list = createElement('div', { style: { width: 240, borderRight: '1px solid rgba(127,127,127,.2)', overflowY: 'auto', flex: '0 0 auto' } },
     createElement('div', { style: { padding: '10px 12px', fontWeight: 600, fontSize: 13, opacity: 0.8 } }, config.title),
@@ -408,9 +416,9 @@ function Panel(): ReturnType<typeof createElement> {
             : undefined,
           detail.status === 'stalled'
             ? createElement('span', { style: { display: 'flex', gap: 8 } },
-              createElement('button', { onClick: () => void act('human_check', 'submitted'), style: buttonStyle() }, '已提交'),
-              createElement('button', { onClick: () => void act('human_check', 'not_submitted'), style: buttonStyle() }, '未提交'),
-              createElement('button', { onClick: () => void act('human_check', 'reopen'), style: buttonStyle() }, '需重开'))
+              createElement('button', { onClick: () => { setCheckNote(''); setCheckOpen('submitted') }, style: buttonStyle() }, '已提交'),
+              createElement('button', { onClick: () => { setCheckNote(''); setCheckOpen('not_submitted') }, style: buttonStyle() }, '未提交'),
+              createElement('button', { onClick: () => { setCheckNote(''); setCheckOpen('reopen') }, style: buttonStyle() }, '需重开'))
             : undefined),
         regenOpen
           ? createElement('div', {
@@ -453,6 +461,42 @@ function Panel(): ReturnType<typeof createElement> {
                 onClick: () => void submitRegenerate(),
                 style: { ...buttonStyle(), borderColor: 'rgba(111,159,208,.55)', background: 'rgba(111,159,208,.16)' },
               }, '提交重新生成'))))
+          : undefined,
+        checkOpen !== undefined
+          ? createElement('div', {
+            style: {
+              maxWidth: 640,
+              marginBottom: 18,
+              padding: '12px 14px',
+              border: '1px solid rgba(127,127,127,.22)',
+              borderRadius: 10,
+              background: 'rgba(127,127,127,.05)',
+              boxSizing: 'border-box',
+            },
+          },
+          createElement('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 8 } },
+            `人工核对：${checkOpen === 'submitted' ? '确认已提交' : checkOpen === 'not_submitted' ? '确认未提交' : '需要重开'}`),
+          createElement('textarea', {
+            value: checkNote,
+            onChange: (event: { target: { value: string } }) => setCheckNote(event.target.value),
+            rows: 2,
+            placeholder: '写一下核对依据，方便后续追溯（必填）',
+            style: {
+              width: '100%',
+              boxSizing: 'border-box',
+              resize: 'vertical',
+              padding: '8px 10px',
+              borderRadius: 8,
+              border: '1px solid rgba(127,127,127,.3)',
+              background: 'transparent',
+              color: 'inherit',
+              fontSize: 12,
+              lineHeight: 1.55,
+            },
+          }),
+          createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 } },
+            createElement('button', { onClick: () => { setCheckOpen(undefined); setCheckNote('') }, style: buttonStyle() }, '取消'),
+            createElement('button', { onClick: () => void submitHumanCheck(), style: buttonStyle() }, '提交核对')))
           : undefined,
         createElement('div', { style: { fontWeight: 600, marginBottom: 6, fontSize: 13 } }, '轮次'),
         (detail.rounds_detail ?? []).length === 0
@@ -770,7 +814,7 @@ function renderGenerations(detail: TopicDetail, rounds: RoundRow[]): ReturnType<
 }
 
 function renderRoundTable(detail: TopicDetail, rounds: RoundRow[], generation: number): ReturnType<typeof createElement> {
-  const header = ['轮次', '裁决', '文件', '提交', '完成', '重试', '操作']
+  const header = ['轮次', '裁决', '附件', '提交', '完成', '重试', '操作']
   return createElement('div', { style: { overflowX: 'auto' } },
     createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12, tableLayout: 'auto' } },
       createElement('thead', {}, createElement('tr', {}, header.map(label => createElement('th', {
@@ -967,10 +1011,6 @@ function buttonStyle(): Record<string, string | number> {
     cursor: 'pointer',
     fontSize: 12,
   }
-}
-
-function cellStyle(): Record<string, string> {
-  return { padding: '4px 6px', borderBottom: '1px solid rgba(127,127,127,.12)' }
 }
 
 function Icon({ kind }: { kind: 'research' | 'design' }): ReturnType<typeof createElement> {

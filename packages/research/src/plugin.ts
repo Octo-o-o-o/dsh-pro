@@ -170,6 +170,15 @@ function mimeFor(path: string): string {
     case '.js': return 'text/javascript; charset=utf-8'
     case '.json': return 'application/json; charset=utf-8'
     case '.zip': return 'application/zip'
+    case '.woff2': return 'font/woff2'
+    case '.woff': return 'font/woff'
+    case '.ttf': return 'font/ttf'
+    case '.otf': return 'font/otf'
+    case '.ico': return 'image/x-icon'
+    case '.wasm': return 'application/wasm'
+    case '.mp4': return 'video/mp4'
+    case '.webm': return 'video/webm'
+    case '.mp3': return 'audio/mpeg'
     case '.md':
     case '.markdown': return 'text/markdown; charset=utf-8'
     case '.txt': return 'text/plain; charset=utf-8'
@@ -487,20 +496,28 @@ class ProResearchService {
    * the session is no longer live the sidebar still shows the state, so a
    * missing agent is not an error.
    */
+  useAgentFactory(factory: AgentFactory): void {
+    this.agentFactory = factory
+  }
+
+  private liveAgent(sessionId: string): LiveAgent | undefined {
+    const agents = this.agentFactory ?? this.ctx.get('agents') as AgentFactory | undefined
+    return agents?.get(sessionId)
+  }
+
   private async notifyStalled(id: string, reason: string | undefined): Promise<void> {
     try {
       const entry = await this.entryFor(id)
       const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
       if (sessionId === undefined) return
-      const agents = this.ctx.get('agents') as { get(id: string): LiveAgent | undefined } | undefined
-      const agent = agents?.get(sessionId)
+      const agent = this.liveAgent(sessionId)
       if (agent === undefined) return
       const topic = entry === undefined ? undefined : await this.storeAt(entry.root, entry.mode).load(id).catch(() => undefined)
       const title = topic?.title ?? id
       agent.inject(createUserMessage({
         content: [{
           type: 'text',
-          text: `<system-reminder>Pro 研究「${title}」卡住了${reason === undefined ? '' : `（${reason}）`}。在侧边栏「Pro」里查看现场，然后恢复、取消或人工核对。</system-reminder>`,
+          text: `<system-reminder>Pro ${this.spec.topicType === 'design' ? '设计' : '研究'}「${title}」卡住了${reason === undefined ? '' : `（${reason}）`}。在侧边栏「Pro」里查看现场，然后恢复、取消或人工核对。</system-reminder>`,
         }],
         source: { kind: 'plugin', plugin: this.spec.name },
       }))
@@ -547,8 +564,7 @@ class ProResearchService {
       const entry = await this.entryFor(id)
       const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
       if (sessionId === undefined) return
-      const agents = this.ctx.get('agents') as { get(id: string): LiveAgent | undefined } | undefined
-      const agent = agents?.get(sessionId)
+      const agent = this.liveAgent(sessionId)
       if (agent === undefined) return
       const topic = entry === undefined ? undefined : await this.storeAt(entry.root, entry.mode).load(id).catch(() => undefined)
       const title = topic?.title ?? id
@@ -562,14 +578,6 @@ class ProResearchService {
     } catch {
       // Best-effort reminder.
     }
-  }
-
-  /**
-   * A human accepted a result. Wake the originating conversation so the agent
-   * continues whatever it was doing before it handed this topic off.
-   */
-  useAgentFactory(factory: AgentFactory): void {
-    this.agentFactory = factory
   }
 
   private async wakeSession(sessionId: string, text: string): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
@@ -596,6 +604,10 @@ class ProResearchService {
     return { ok: true, ...(resumed ? { resumed: true } : {}) }
   }
 
+  /**
+   * A human accepted a result. Wake the originating conversation so the agent
+   * continues whatever it was doing before it handed this topic off.
+   */
   private async notifyAccepted(id: string, topic: Topic): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
     try {
       const entry = await this.entryFor(id)
@@ -1261,12 +1273,12 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
 
   scoped.effect(() => webServer.register({
     kind: 'prefix',
-    path: `${spec.routes}/raw/`,
+    path: `${spec.routes}/raw`,
     handler: async (req, res) => {
       const denied = reject(req)
       if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
       const url = new URL(req.url ?? '/', 'http://localhost')
-      const rest = url.pathname.slice(`${spec.routes}/raw/`.length)
+      const rest = url.pathname.slice(`${spec.routes}/raw`.length).replace(/^\/+/, '')
       const slash = rest.indexOf('/')
       if (slash <= 0) return sendJson(res, 404, { error: 'unknown artifact' })
       try {

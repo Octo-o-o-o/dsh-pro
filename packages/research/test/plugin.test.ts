@@ -86,7 +86,7 @@ describe('plugin wiring', () => {
       '/chatgpt-pro-research/bundle',
       '/chatgpt-pro-research/file',
       '/chatgpt-pro-research/open',
-      '/chatgpt-pro-research/raw/',
+      '/chatgpt-pro-research/raw',
       '/chatgpt-pro-research/topic',
       '/chatgpt-pro-research/topics',
     ])
