@@ -145,7 +145,14 @@ async function postAction<T>(body: Record<string, unknown>): Promise<T> {
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')
-    throw new Error(text === '' ? `${response.status}` : text)
+    let message = text === '' ? `${response.status}` : text
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown }
+      if (typeof parsed.error === 'string') message = parsed.error
+    } catch {
+      // Non-JSON error body: keep the raw text.
+    }
+    throw new Error(message)
   }
   return await response.json() as T
 }
@@ -245,7 +252,7 @@ function Panel(): ReturnType<typeof createElement> {
       await loadList()
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
-      setError(message)
+      setError(undefined)
       setNotice({ kind: 'error', text: message })
     }
   }, [selected, loadDetail, loadList])
@@ -262,7 +269,7 @@ function Panel(): ReturnType<typeof createElement> {
       await loadList()
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
-      setError(message)
+      setError(undefined)
       setNotice({ kind: 'error', text: message })
     }
   }, [selected, regenNote, loadDetail, loadList])

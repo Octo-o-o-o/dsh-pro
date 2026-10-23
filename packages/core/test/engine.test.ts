@@ -340,6 +340,19 @@ describe('engine', () => {
     expect(await readFile(join(dir, 'finals', 'attempt-01.md'), 'utf8')).toContain('状态：completed')
   })
 
+  it('treats the legacy web-pro channel as web', async () => {
+    const { engine, store } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const legacy = await store.load(topic.id)
+    legacy.channel = 'web-pro'
+    await store.save(legacy)
+
+    await engine.continue(topic.id, 'continue on a legacy topic')
+    await engine.drain()
+    expect(['completed', 'capped']).toContain((await engine.status(topic.id)).status)
+  })
+
   it('stages follow-up materials and records absolute paths for that round', async () => {
     const { engine, store, root } = await harness({ doneAt: 1 })
     const topic = await engine.start(card())

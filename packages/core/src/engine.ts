@@ -88,8 +88,9 @@ export class ResearchEngine {
   }
 
   private assertChannel(topic: Topic): void {
-    if (topic.channel !== this.options.config.channel) {
-      throw new Error(`主题属于 ${topic.channel} 通道，当前设置为 ${this.options.config.channel}；请切回原通道或新建主题`)
+    const topicChannel = topic.channel === 'api' ? 'api' : 'web'
+    if (topicChannel !== this.options.config.channel) {
+      throw new Error(`主题属于 ${topicChannel} 通道，当前设置为 ${this.options.config.channel}；请切回原通道或新建主题`)
     }
   }
 
