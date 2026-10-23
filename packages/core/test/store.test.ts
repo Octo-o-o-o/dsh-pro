@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { unzipSync, zipSync } from 'fflate'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ResearchStore } from '../src/store.ts'
 import type { ResearchCard } from '../src/types.ts'
@@ -57,6 +58,39 @@ describe('project store', () => {
 
     const manifest = await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')
     expect(manifest).toContain('materials')
+  })
+
+  it('preserves named multi-file code and extracts a downloaded zip', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic } = await store.create(card(), 3, 'pro', 'web')
+    const archive = Buffer.from(zipSync({
+      'pkg/index.html': new TextEncoder().encode('<!doctype html><link rel="stylesheet" href="./style.css">'),
+      'pkg/style.css': new TextEncoder().encode('body{color:red}'),
+    }))
+    const added = await store.writeArtifacts(topic, 1, {
+      answer: '',
+      codeBlocks: [
+        { language: 'tsx', name: 'src/App.tsx', text: 'export default function App() {}' },
+        { language: '', name: 'index.html', text: '<!doctype html><link rel="stylesheet" href="./style.css">' },
+      ],
+      archives: [{ name: 'pkg.zip', base64: archive.toString('base64') }],
+    })
+    expect(added).toContain('artifacts/round-01/src/App.tsx')
+    expect(added).toContain('artifacts/round-01/index.html')
+    expect(added).toContain('artifacts/round-01/pkg.zip')
+    expect(added).toContain('artifacts/round-01/pkg/index.html')
+    const bundle = await store.bundleRound(topic, 1)
+    const entries = unzipSync(new Uint8Array(bundle.bytes))
+    expect(Object.keys(entries)).toContain('src/App.tsx')
+    expect(Object.keys(entries)).toContain('pkg/index.html')
   })
 
   it('keeps the parent link for follow-up topics', async () => {

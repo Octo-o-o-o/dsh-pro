@@ -662,6 +662,11 @@ function assetUrl(topicId: string, path: string): string {
   return `${config.routes}/asset?id=${encodeURIComponent(topicId)}&path=${encodeURIComponent(path)}`
 }
 
+function rawUrl(topicId: string, path: string): string {
+  const encoded = path.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')
+  return `${config.routes}/raw/${encodeURIComponent(topicId)}/${encoded}`
+}
+
 function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> | undefined {
   const artifacts = detail.artifacts ?? []
   if (artifacts.length === 0) return undefined
@@ -694,7 +699,7 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
         createElement('div', { style: { fontWeight: 600, marginBottom: 6 } }, '前端 demo'),
         demos.map(path => createElement('iframe', {
           key: path,
-          src: assetUrl(detail.topic_id, path),
+          src: rawUrl(detail.topic_id, path),
           sandbox: 'allow-scripts',
           title: path,
           style: { width: '100%', height: 420, border: '1px solid rgba(127,127,127,.25)', borderRadius: 8, background: '#fff' },
@@ -713,7 +718,7 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
                   kind: 'frame',
                   title: path.split('/').pop() ?? path,
                   topicId: detail.topic_id,
-                  src: assetUrl(detail.topic_id, path),
+                  src: rawUrl(detail.topic_id, path),
                   path,
                 }),
                 style: chipStyle(),
@@ -856,7 +861,7 @@ function renderRoundRows(detail: TopicDetail, round: RoundRow, label: string): R
                   kind: 'frame',
                   title: path.split('/').pop() ?? path,
                   topicId: detail.topic_id,
-                  src: assetUrl(detail.topic_id, path),
+                  src: rawUrl(detail.topic_id, path),
                   path,
                 }),
                 style: chipStyle(),
@@ -890,7 +895,7 @@ function artifactChip(topicId: string, path: string): ReturnType<typeof createEl
   if (/\.html?$/i.test(path)) {
     return createElement('button', {
       key: path,
-      onClick: () => showViewer({ kind: 'frame', title: name, topicId, src: assetUrl(topicId, path), path }),
+      onClick: () => showViewer({ kind: 'frame', title: name, topicId, src: rawUrl(topicId, path), path }),
       style: chipStyle(),
       title: '预览 demo',
     }, `${name} ↗`)

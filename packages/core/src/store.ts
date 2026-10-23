@@ -404,16 +404,25 @@ export class ResearchStore {
       try {
         const entries = unzipSync(new Uint8Array(bytes))
         const rootName = zipName.replace(/\.zip$/i, '')
+        const valid = Object.entries(entries).filter(([entry, data]) => {
+          const normalized = entry.replace(/\\/g, '/')
+          return !normalized.endsWith('/')
+            && !normalized.startsWith('/')
+            && !isAbsolute(normalized)
+            && !normalized.split('/').includes('..')
+            && !normalized.startsWith('__MACOSX/')
+            && data.length > 0
+        })
+        const topLevel = new Set(valid.map(([entry]) => entry.replace(/\\/g, '/').split('/')[0]))
+        const useRoot = topLevel.size > 1 || valid.some(([entry]) => !entry.replace(/\\/g, '/').includes('/'))
         let count = 0
         let total = 0
-        for (const [entry, data] of Object.entries(entries)) {
+        for (const [entry, data] of valid) {
           const normalized = entry.replace(/\\/g, '/')
-          if (normalized.endsWith('/') || normalized.startsWith('/') || normalized.split('/').includes('..')) continue
-          if (normalized.startsWith('__MACOSX/') || data.length === 0) continue
           count += 1
           total += data.length
           if (count > 100 || total > 50 * 1024 * 1024) break
-          const nested = join(base, rootName, normalized)
+          const nested = join(base, useRoot ? rootName : '', normalized)
           await mkdir(dirname(nested), { recursive: true })
           await writeFile(nested, data)
           added.push(relative(dir, nested).replace(/\\/g, '/'))

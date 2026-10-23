@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
 import type { ArchiveAsset, CodeBlock, FetchedAnswer, ImageAsset, PollResult, ReattachRequest, ReattachResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
 import { TransportError } from 'dsh-pro-core'
@@ -325,10 +325,17 @@ export class ChatGptWebTransport implements Transport {
 
   /** Large images in the answer; blob URLs are read in-page, https through cookies. */
   private async collectImages(page: Page): Promise<ImageAsset[]> {
-    const sources: string[] = await page.evaluate(() => {
+    const sources: string[] = await page.evaluate(selector => {
       const seen = new Set<string>()
       const out: string[] = []
-      for (const image of document.querySelectorAll('main img')) {
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('article')
+        ?? last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return out
+      for (const image of root.querySelectorAll('img')) {
         const element = image as HTMLImageElement
         if (element.naturalWidth < 300 || element.naturalHeight < 300) continue
         if (element.closest('form') !== null || element.closest('[data-message-author-role="user"]') !== null) continue
@@ -338,7 +345,7 @@ export class ChatGptWebTransport implements Transport {
         }
       }
       return out
-    })
+    }, SELECTORS.assistantMessage)
     const images: ImageAsset[] = []
     for (const [index, source] of sources.slice(0, 8).entries()) {
       try {
@@ -391,7 +398,14 @@ export class ChatGptWebTransport implements Transport {
   }
 
   private async collectCodeBlocks(page: Page): Promise<CodeBlock[]> {
-    return await page.evaluate(() => {
+    return await page.evaluate(selector => {
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('article')
+        ?? last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return []
       const filePattern = /([\w.-]+\.(?:html?|css|jsx?|tsx?|json|md|py|vue|svelte|sh|ya?ml))/i
       const nameOf = (code: HTMLElement): string => {
         const pre = code.closest('pre')
@@ -413,7 +427,7 @@ export class ChatGptWebTransport implements Transport {
         }
         return ''
       }
-      return [...document.querySelectorAll('main pre code')]
+      return [...root.querySelectorAll('pre code')]
         .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
         .slice(0, 20)
         .map(code => ({
@@ -422,40 +436,78 @@ export class ChatGptWebTransport implements Transport {
           text: code.textContent ?? '',
         }))
         .filter(block => block.text.trim() !== '')
-    })
+    }, SELECTORS.assistantMessage)
   }
 
   /** Download zip links rendered in the assistant answer (code interpreter downloads). */
   private async collectArchives(page: Page): Promise<ArchiveAsset[]> {
-    const links = await page.evaluate(() => [...document.querySelectorAll('main a[href]')]
-      .filter(anchor => anchor.closest('form') === null && anchor.closest('[data-message-author-role="user"]') === null)
-      .map(anchor => {
-        const element = anchor as HTMLAnchorElement
+    const links = await page.evaluate(selector => {
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('article')
+        ?? last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return []
+      const controls = [...root.querySelectorAll('a[href], button, [role="button"]')]
+        .filter(element => element.closest('form') === null && element.closest('[data-message-author-role="user"]') === null)
+      const picked: Array<{ href: string; label: string; marker: string; local: boolean }> = []
+      for (const control of controls) {
+        const element = control as HTMLElement & { href?: string }
+        const href = element instanceof HTMLAnchorElement ? element.href : ''
         const label = (element.getAttribute('download') ?? element.textContent ?? '').trim()
-        return { href: element.href, label }
-      })
-      .filter(link => link.href !== '' && (link.label.toLowerCase().endsWith('.zip') || link.href.toLowerCase().includes('.zip')))
-      .slice(0, 3))
+        const context = (element.closest('div, li, article')?.textContent ?? '').slice(0, 300)
+        const downloadable = label.toLowerCase().includes('.zip')
+          || href.toLowerCase().includes('.zip')
+          || (/download|下载|zip/i.test(label) && context.toLowerCase().includes('.zip'))
+        if (!downloadable) continue
+        const marker = `[data-dsh-zip="${picked.length}"]`
+        element.setAttribute('data-dsh-zip', String(picked.length))
+        picked.push({
+          href,
+          label,
+          marker,
+          local: href === '' || !/^(?:https?|blob|data):/i.test(href),
+        })
+        if (picked.length >= 3) break
+      }
+      return picked
+    }, SELECTORS.assistantMessage)
     const archives: ArchiveAsset[] = []
     for (const link of links) {
       try {
-        const encoded = await page.evaluate(async href => {
-          const response = await fetch(href)
-          if (!response.ok) throw new Error(`zip download failed: ${response.status}`)
-          const bytes = new Uint8Array(await response.arrayBuffer())
-          if (bytes.byteLength > 50 * 1024 * 1024) throw new Error('zip is larger than 50 MB')
-          let binary = ''
-          for (let index = 0; index < bytes.length; index += 0x8000) {
-            binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
-          }
-          return btoa(binary)
-        }, link.href)
-        const name = (link.label !== '' ? link.label : link.href.split('/').pop() ?? 'archive.zip').replace(/[^\w.-]/g, '_')
+        let encoded = ''
+        let name = (link.label !== '' ? link.label : link.href.split('/').pop() ?? 'archive.zip').replace(/[^\w.-]/g, '_')
+        if (link.local) {
+          const [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: 10_000 }),
+            page.locator(link.marker).click(),
+          ])
+          const temp = await download.path()
+          if (temp === null) throw new Error('download had no local file')
+          const bytes = await readFile(temp)
+          if (bytes.length > 50 * 1024 * 1024) throw new Error('zip is larger than 50 MB')
+          encoded = bytes.toString('base64')
+          name = download.suggestedFilename().replace(/[^\w.-]/g, '_')
+        } else {
+          encoded = await page.evaluate(async href => {
+            const response = await fetch(href)
+            if (!response.ok) throw new Error(`zip download failed: ${response.status}`)
+            const bytes = new Uint8Array(await response.arrayBuffer())
+            if (bytes.byteLength > 50 * 1024 * 1024) throw new Error('zip is larger than 50 MB')
+            let binary = ''
+            for (let index = 0; index < bytes.length; index += 0x8000) {
+              binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+            }
+            return btoa(binary)
+          }, link.href)
+        }
         archives.push({ name: name.endsWith('.zip') ? name : `${name}.zip`, base64: String(encoded) })
       } catch {
         // A dead/private download link must not fail the whole answer.
       }
     }
+    await page.evaluate(() => document.querySelectorAll('[data-dsh-zip]').forEach(node => node.removeAttribute('data-dsh-zip'))).catch(() => undefined)
     return archives
   }
 
@@ -543,15 +595,24 @@ export class ChatGptWebTransport implements Transport {
     if (text !== '') return text
     // Image-only answers have no text; use a short count/dimension fingerprint
     // (never the base64 payload) so a gallery response still completes.
-    const images: string[] = await page.evaluate(() => [...document.querySelectorAll('main img')]
-      .filter(image => (image as HTMLImageElement).naturalWidth >= 300)
-      .map(image => `${(image as HTMLImageElement).naturalWidth}x${(image as HTMLImageElement).naturalHeight}`))
-    if (images.length > 0) return `image:${images.length}:${images.join(',')}`
-    // Code-only demo answers need a stability fingerprint too.
-    const codeLength = await page.evaluate(() => [...document.querySelectorAll('main pre code')]
-      .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
-      .reduce((sum, code) => sum + (code.textContent?.length ?? 0), 0))
-    return codeLength > 0 ? `code:${codeLength}` : ''
+    const fingerprint = await page.evaluate(selector => {
+      const messages = [...document.querySelectorAll(selector)]
+      const last = messages[messages.length - 1]
+      const root = last?.closest('article')
+        ?? last?.closest('[data-testid^="conversation-turn"]')
+        ?? last?.parentElement
+        ?? document.querySelector('main')
+      if (root === null || root === undefined) return { images: [] as string[], codeLength: 0 }
+      const images = [...root.querySelectorAll('img')]
+        .filter(image => (image as HTMLImageElement).naturalWidth >= 300)
+        .map(image => `${(image as HTMLImageElement).naturalWidth}x${(image as HTMLImageElement).naturalHeight}`)
+      const codeLength = [...root.querySelectorAll('pre code')]
+        .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
+        .reduce((sum, code) => sum + (code.textContent?.length ?? 0), 0)
+      return { images, codeLength }
+    }, SELECTORS.assistantMessage)
+    if (fingerprint.images.length > 0) return `image:${fingerprint.images.length}:${fingerprint.images.join(',')}`
+    return fingerprint.codeLength > 0 ? `code:${fingerprint.codeLength}` : ''
   }
 
   private async lastAssistantText(page: Page): Promise<string> {

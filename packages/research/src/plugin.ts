@@ -510,7 +510,7 @@ class ProResearchService {
   }
 
   /** Ask the originating agent to inspect a capped/failed result and decide. */
-  private async notifyCappedReview(id: string): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
+  private async notifyCappedReview(id: string, resumeCold = false): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
     try {
       const entry = await this.entryFor(id)
       const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
@@ -519,12 +519,23 @@ class ProResearchService {
       if (topic === undefined) return { ok: false, reason: '主题不存在' }
       const dir = await this.storeAt(entry?.root ?? this.rootFor(''), entry?.mode ?? this.config.store).dirOf(id)
       const state = topic.status === 'capped' ? '已到轮次上限' : topic.status === 'failed' ? '失败' : '停下等待核对'
-      return await this.wakeSession(sessionId, `<system-reminder>Pro 主题「${topic.title}」${state}，结果等待确认。请先检查产物和判据：
-- 满足：调用 ${this.spec.tool} action=accept topic_id=${id}
-- 还需改进：调用 ${this.spec.tool} action=regenerate topic_id=${id} note="具体问题"
-- 需要继续研究但不用换版：调用 ${this.spec.tool} action=continue topic_id=${id} brief="下一轮问题"
+      const message = `<system-reminder>Pro 主题「${topic.title}」${state}，结果等待确认。请先检查产物和判据：
+- 满足：调用 ${this.spec.tool} action=accept topic_id=${id} confirmed=true
+- 还需改进：调用 ${this.spec.tool} action=regenerate topic_id=${id} confirmed=true note="具体问题"
+- 需要继续研究但不用换版：调用 ${this.spec.tool} action=continue topic_id=${id} confirmed=true brief="下一轮问题"
 产物目录：${dir}
-最终汇总：${join(dir, 'final.md')}</system-reminder>`)
+最终汇总：${join(dir, 'final.md')}</system-reminder>`
+      if (resumeCold) return await this.wakeSession(sessionId, message)
+      // Automatic review only nudges a still-live session; accepting a cold
+      // session remains an explicit user action.
+      const agents = this.agentFactory ?? this.ctx.get('agents') as AgentFactory | undefined
+      const agent = agents?.get(sessionId)
+      if (agent?.followup === undefined) return { ok: false, reason: '原会话当前未运行' }
+      agent.followup(createUserMessage({
+        content: [{ type: 'text', text: message }],
+        source: { kind: 'plugin', plugin: this.spec.name },
+      }))
+      return { ok: true }
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) }
     }
@@ -697,7 +708,6 @@ class ProResearchService {
     return await store.readAnswer(topic, round)
   }
 
-  /** Read a text file (final.md, verdict, question) from inside a topic. */
   /** Bundle one round's artifacts into a zip for download. */
   async bundleArtifacts(id: string, round: number): Promise<{ name: string; bytes: Buffer }> {
     const entry = await this.entryFor(id)
@@ -796,7 +806,7 @@ class ProResearchService {
       if (topic.status !== 'capped' && topic.status !== 'failed' && topic.status !== 'stalled') {
         throw new Error(`topic ${id} is ${topic.status}; only capped/failed/stalled topics need review`)
       }
-      const wake = await this.notifyCappedReview(id)
+      const wake = await this.notifyCappedReview(id, true)
       return { ...this.view(topic), wake }
     }
     if (action === 'human_check') {
@@ -879,6 +889,8 @@ class ProResearchService {
       }
       case 'accept':
         return await this.act(this.requireId(args), 'accept')
+      case 'wake':
+        return await this.act(this.requireId(args), 'wake')
       case 'review':
         return await this.act(this.requireId(args), 'review')
       case 'regenerate':
@@ -907,7 +919,7 @@ class ProResearchService {
         }
         return { login: await (this.transportFor() as ChatGptWebTransport).login() }
       default:
-        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, review, regenerate, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, review, wake, regenerate, probe or login')
     }
   }
 
@@ -1160,7 +1172,7 @@ async function readJsonBody(req: HttpRequest): Promise<Record<string, unknown>> 
 
 function registerRoutes(scoped: Context, service: ProResearchService, spec: PluginSpec): void {
   const webServer = (scoped as unknown as {
-    webServer?: { register(route: { kind: 'exact'; path: string; handler: (req: HttpRequest, res: HttpResponse) => void | Promise<void> }): () => void }
+    webServer?: { register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: HttpRequest, res: HttpResponse) => void | Promise<void> }): () => void }
   }).webServer
   if (webServer === undefined) return
   const connection = (scoped.get('connection') ?? undefined) as
@@ -1246,6 +1258,34 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
       }
     },
   }), `${spec.name}: asset route`)
+
+  scoped.effect(() => webServer.register({
+    kind: 'prefix',
+    path: `${spec.routes}/raw/`,
+    handler: async (req, res) => {
+      const denied = reject(req)
+      if (denied !== undefined) return sendJson(res, denied, { error: 'unauthorized' })
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const rest = url.pathname.slice(`${spec.routes}/raw/`.length)
+      const slash = rest.indexOf('/')
+      if (slash <= 0) return sendJson(res, 404, { error: 'unknown artifact' })
+      try {
+        const id = decodeURIComponent(rest.slice(0, slash))
+        const relativePath = decodeURIComponent(rest.slice(slash + 1))
+        const asset = await service.readArtifact(id, relativePath)
+        const headers: Record<string, string> = {
+          'content-type': asset.mime,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        }
+        if (asset.mime.startsWith('text/html')) headers['content-security-policy'] = 'sandbox allow-scripts'
+        res.writeHead(200, headers)
+        res.end(asset.bytes)
+      } catch {
+        sendJson(res, 404, { error: 'unknown artifact' })
+      }
+    },
+  }), `${spec.name}: raw artifact route`)
 
   scoped.effect(() => webServer.register({
     kind: 'exact',
@@ -1341,19 +1381,19 @@ function toolDescription(spec: PluginSpec, config: ProConfig): string {
         `用 OpenAI 兼容生图 API（${config.image.model}）按方向生成设计图，保存到本地并出现在设计面板；此通道只出图，不产出 HTML demo。`,
         'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径、模型）；用户确认后传 confirmed=true。',
         'key 只读插件设置或环境变量 GPT_IMAGE_API_KEY，不要在会话里回显；probe 检查 base URL / key / 模型名。',
-        'action: start | continue | status | list | resume | cancel | human_check | accept | review | regenerate | probe | login。',
+        'action: start | continue | status | list | resume | cancel | human_check | accept | review | wake | regenerate | probe | login。',
       ].join(' ')
     }
     return [
       '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
       'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-      'action: start | continue | status | list | resume | cancel | human_check | accept | review | regenerate | probe | login。',
+      'action: start | continue | status | list | resume | cancel | human_check | accept | review | wake | regenerate | probe | login。',
     ].join(' ')
   }
   return [
     '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
     'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-    'action: start | continue | status | list | resume | cancel | human_check | accept | review | regenerate | probe | login。',
+    'action: start | continue | status | list | resume | cancel | human_check | accept | review | wake | regenerate | probe | login。',
   ].join(' ')
 }
 
@@ -1377,7 +1417,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
     name: spec.tool,
     description: toolDescription(spec, resolved),
     parameters: {
-      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|review|regenerate|probe|login' },
+      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|review|wake|regenerate|probe|login' },
       title: { type: 'string', description: '主题标题（start 必填）' },
       question: { type: 'string', description: '研究问题（start 必填）' },
       brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },
@@ -1385,7 +1425,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       materials: { type: 'array', items: { type: 'string' }, description: '相对工作目录的材料路径（start 可选）' },
       rounds: { type: 'number', description: '本次轮次上限（1–10）' },
       designs: { type: 'number', description: '设计插件本轮生成的方向/图片数（1–6，默认取设置）' },
-      topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check 的主题 id' },
+      topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check/accept/review/wake/regenerate 的主题 id' },
       parent: { type: 'string', description: '可选：父主题 id，用于把 follow-up 串成同一棵树' },
       conclusion: { type: 'string', description: 'human_check 结论：submitted|not_submitted|reopen' },
       note: { type: 'string', description: 'human_check 依据；regenerate 时作为不满意点/新要求' },

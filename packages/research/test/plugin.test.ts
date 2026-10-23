@@ -63,7 +63,7 @@ function fakeContext(captured: Captured) {
 }
 
 describe('plugin wiring', () => {
-  it('registers one tool, eight routes and one skill', async () => {
+  it('registers one tool, nine routes and one skill', async () => {
     const captured: Captured = { tools: [], routes: [], skills: [] }
     apply(fakeContext(captured) as never, { rounds: 2 })
     await Promise.resolve()
@@ -86,6 +86,7 @@ describe('plugin wiring', () => {
       '/chatgpt-pro-research/bundle',
       '/chatgpt-pro-research/file',
       '/chatgpt-pro-research/open',
+      '/chatgpt-pro-research/raw/',
       '/chatgpt-pro-research/topic',
       '/chatgpt-pro-research/topics',
     ])
