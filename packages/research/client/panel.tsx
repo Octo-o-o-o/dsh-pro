@@ -272,26 +272,30 @@ function Panel(): ReturnType<typeof createElement> {
   const act = useCallback(async (action: string, conclusion?: string, note?: string) => {
     if (selected === undefined) return
     try {
-      const result = await postAction<{ topic: TopicRow; wake?: { ok: boolean; resumed?: boolean; reason?: string } }>({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
+      const result = await postAction<{ topic: TopicRow & { wake?: { ok: boolean; resumed?: boolean; reason?: string } } }>({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
+      const wake = result.topic?.wake
       if (action === 'accept') {
         setDetail(current => current === undefined ? current : { ...current, status: 'completed' })
         if (result.topic?.updated !== undefined) markTopicSeen(config.panelId, selected, result.topic.updated)
-        if (result.wake?.ok === true) {
-          setNotice({ kind: 'ok', text: result.wake.resumed === true ? '已接受结果，并恢复了原会话' : '已接受结果，原会话已唤醒' })
+        if (wake?.ok === true) {
+          setNotice({ kind: 'ok', text: wake.resumed === true ? '已接受结果，并恢复了原会话' : '已接受结果，原会话已唤醒' })
         } else {
-          setNotice({ kind: 'error', text: `已接受结果，但没能唤醒原会话：${result.wake?.reason ?? '原因未知'}` })
+          const reason = wake?.reason ?? (wake === undefined ? '宿主未返回唤醒结果，请重启 DSH 后重试' : '原因未知')
+          setNotice({ kind: 'error', text: `已接受结果，但没能唤醒原会话：${reason}` })
         }
       } else if (action === 'review') {
-        if (result.wake?.ok === true) {
-          setNotice({ kind: 'ok', text: result.wake.resumed === true ? '已恢复原会话，请它判断是否接受' : '已把结果交给原会话判断' })
+        if (wake?.ok === true) {
+          setNotice({ kind: 'ok', text: wake.resumed === true ? '已恢复原会话，请它判断是否接受' : '已把结果交给原会话判断' })
         } else {
-          setNotice({ kind: 'error', text: `没能通知原会话：${result.wake?.reason ?? '原因未知'}` })
+          const reason = wake?.reason ?? (wake === undefined ? '宿主未返回唤醒结果，请重启 DSH 后重试' : '原因未知')
+          setNotice({ kind: 'error', text: `没能通知原会话：${reason}` })
         }
       } else if (action === 'wake') {
-        if (result.wake?.ok === true) {
-          setNotice({ kind: 'ok', text: result.wake.resumed === true ? '已恢复原会话' : '原会话已唤醒' })
+        if (wake?.ok === true) {
+          setNotice({ kind: 'ok', text: wake.resumed === true ? '已恢复原会话' : '原会话已唤醒' })
         } else {
-          setNotice({ kind: 'error', text: `没能唤醒原会话：${result.wake?.reason ?? '原因未知'}` })
+          const reason = wake?.reason ?? (wake === undefined ? '宿主未返回唤醒结果，请重启 DSH 后重试' : '原因未知')
+          setNotice({ kind: 'error', text: `没能唤醒原会话：${reason}` })
         }
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })

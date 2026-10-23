@@ -378,7 +378,7 @@ class ProResearchService {
         system: JUDGE_SYSTEM,
         messages: [createUserMessage({
           content: [{ type: 'text', text: user }],
-          source: { kind: 'plugin', plugin: this.spec.name },
+          source: { kind: this.spec.name } as never,
         })],
         maxTokens: 1_200,
         signal: AbortSignal.timeout(120_000),
@@ -519,7 +519,7 @@ class ProResearchService {
           type: 'text',
           text: `<system-reminder>Pro ${this.spec.topicType === 'design' ? '设计' : '研究'}「${title}」卡住了${reason === undefined ? '' : `（${reason}）`}。在侧边栏「Pro」里查看现场，然后恢复、取消或人工核对。</system-reminder>`,
         }],
-        source: { kind: 'plugin', plugin: this.spec.name },
+        source: { kind: this.spec.name } as never,
       }))
     } catch {
       // Notification is best-effort; the sidebar and records remain the truth.
@@ -550,7 +550,7 @@ class ProResearchService {
       if (agent?.followup === undefined) return { ok: false, reason: '原会话当前未运行' }
       agent.followup(createUserMessage({
         content: [{ type: 'text', text: message }],
-        source: { kind: 'plugin', plugin: this.spec.name },
+        source: { kind: this.spec.name } as never,
       }))
       return { ok: true }
     } catch (error) {
@@ -573,7 +573,7 @@ class ProResearchService {
           type: 'text',
           text: `<system-reminder>Pro 主题「${title}」已${status === 'completed' ? '完成' : status === 'capped' ? '到轮次上限' : '取消'}。产物与最终汇总在侧边栏对应面板里。</system-reminder>`,
         }],
-        source: { kind: 'plugin', plugin: this.spec.name },
+        source: { kind: this.spec.name } as never,
       }))
     } catch {
       // Best-effort reminder.
@@ -599,7 +599,7 @@ class ProResearchService {
     if (agent.followup === undefined) return { ok: false, reason: '当前运行时不支持唤醒会话' }
     agent.followup(createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: this.spec.name },
+      source: { kind: this.spec.name } as never,
     }))
     return { ok: true, ...(resumed ? { resumed: true } : {}) }
   }
