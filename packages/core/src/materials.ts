@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { MaterialRef } from './types.ts'
 
 const SECRET_CONTENT: ReadonlyArray<[string, RegExp]> = [
@@ -65,10 +65,21 @@ export async function buildManifest(
   root: string,
   relativePaths: readonly string[],
   reasons?: Readonly<Record<string, string>>,
+  secretGlobs: readonly string[] = [],
 ): Promise<MaterialRef[]> {
   const refs: MaterialRef[] = []
+  const normalizedRoot = resolve(root)
   for (const relativePath of relativePaths) {
-    const absolute = join(root, relativePath)
+    if (isAbsolute(relativePath)) throw new Error(`material path must be relative: ${relativePath}`)
+    const normalized = relativePath.replace(/\\/g, '/')
+    if (normalized.split('/').includes('..')) throw new Error(`material path escapes the workspace: ${relativePath}`)
+    const absolute = resolve(normalizedRoot, normalized)
+    if (absolute !== normalizedRoot && !absolute.startsWith(`${normalizedRoot}${sep}`)) {
+      throw new Error(`material path escapes the workspace: ${relativePath}`)
+    }
+    if (isSecretPath(normalized, secretGlobs)) {
+      throw new Error(`material path matches a secret pattern: ${relativePath}`)
+    }
     const info = await stat(absolute)
     if (!info.isFile()) throw new Error(`material is not a file: ${relativePath}`)
     const bytes = await readFile(absolute)
@@ -76,7 +87,7 @@ export async function buildManifest(
     const secret = findSecret(text)
     if (secret !== undefined) throw new Error(`material contains a ${secret}: ${relativePath}`)
     refs.push({
-      path: relativePath.replace(/\\/g, '/'),
+      path: relative(normalizedRoot, absolute).replace(/\\/g, '/'),
       bytes: info.size,
       sha256: createHash('sha256').update(bytes).digest('hex'),
       ...(reasons?.[relativePath] !== undefined ? { reason: reasons[relativePath] } : {}),

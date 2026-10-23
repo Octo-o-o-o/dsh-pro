@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -155,7 +156,6 @@ function mimeFor(path: string): string {
     case '.txt': return 'text/plain; charset=utf-8'
     case '.ts':
     case '.tsx':
-    case '.js':
     case '.jsx': return 'text/plain; charset=utf-8'
     default: return 'application/octet-stream'
   }
@@ -255,6 +255,7 @@ class ProResearchService {
   private readonly engines = new Map<string, ResearchEngine>()
   private readonly stores = new Map<string, ResearchStore>()
   private readonly topicSessions = new Map<string, string>()
+  private registryChain: Promise<void> = Promise.resolve()
   private transport?: ChatGptWebTransport
   private imageTransport?: OpenAIImageTransport
   private shared?: SharedTransport
@@ -337,7 +338,7 @@ class ProResearchService {
       const user = [
         `主题：${input.topic.title}`,
         `成功判据：\n${input.criteria.map(item => `- ${item}`).join('\n')}`,
-        `本轮问题：\n${input.topic.rounds[input.topic.rounds.length - 1]?.n ?? input.round}`,
+        `本轮问题：\n${input.question ?? '（未记录）'}`,
         `本轮答复：\n${input.answer.slice(0, 30_000)}`,
       ].join('\n\n')
       for await (const chunk of llm.stream({
@@ -373,6 +374,9 @@ class ProResearchService {
         if (event.type === 'status' && (event.status === 'stalled' || event.status === 'failed')) {
           this.log(`topic ${event.topicId} ${event.status}${event.reason !== undefined ? ` (${event.reason})` : ''}`)
           void this.notifyStalled(event.topicId, event.reason)
+        }
+        if (event.type === 'finished' && this.config.notify === 'all') {
+          void this.notifyFinished(event.topicId, event.status)
         }
       },
     })
@@ -416,7 +420,11 @@ class ProResearchService {
   private async readRegistry(): Promise<RegistryEntry[]> {
     try {
       const parsed = JSON.parse(await readFile(this.registryFile, 'utf8')) as { topics?: RegistryEntry[] }
-      return Array.isArray(parsed.topics) ? parsed.topics : []
+      return Array.isArray(parsed.topics)
+        ? parsed.topics
+          .filter(entry => entry !== null && typeof entry === 'object' && typeof entry.id === 'string')
+          .map(entry => ({ ...entry, mode: entry.mode === 'local' ? 'local' : 'project' }))
+        : []
     } catch {
       return []
     }
@@ -424,21 +432,28 @@ class ProResearchService {
 
   private async writeRegistry(entries: RegistryEntry[]): Promise<void> {
     await mkdir(dirname(this.registryFile), { recursive: true })
-    await writeFile(this.registryFile, `${JSON.stringify({ version: 1, topics: entries }, null, 2)}\n`, 'utf8')
+    const temp = `${this.registryFile}.${randomUUID()}.tmp`
+    await writeFile(temp, `${JSON.stringify({ version: 1, topics: entries }, null, 2)}\n`, 'utf8')
+    await rename(temp, this.registryFile)
   }
 
   private async record(topic: Topic, root: string, sessionId?: string): Promise<void> {
     if (sessionId !== undefined && sessionId !== '') this.topicSessions.set(topic.id, sessionId)
-    const entries = (await this.readRegistry()).filter(entry => entry.id !== topic.id)
-    entries.push({
-      id: topic.id,
-      root,
-      mode: this.config.store,
-      title: topic.title,
-      updated: topic.updated,
-      ...(sessionId !== undefined && sessionId !== '' ? { sessionId } : {}),
-    })
-    await this.writeRegistry(entries)
+    const job = async (): Promise<void> => {
+      const entries = (await this.readRegistry()).filter(entry => entry.id !== topic.id)
+      entries.push({
+        id: topic.id,
+        root,
+        mode: this.config.store,
+        title: topic.title,
+        updated: topic.updated,
+        ...(sessionId !== undefined && sessionId !== '' ? { sessionId } : {}),
+      })
+      await this.writeRegistry(entries)
+    }
+    const next = this.registryChain.then(job, job)
+    this.registryChain = next.catch(() => undefined)
+    await next
   }
 
   /**
@@ -473,6 +488,28 @@ class ProResearchService {
    * A human accepted a capped result. Wake the originating conversation so the
    * agent continues whatever it was doing before it handed this topic off.
    */
+  private async notifyFinished(id: string, status: 'completed' | 'capped' | 'cancelled'): Promise<void> {
+    try {
+      const entry = await this.entryFor(id)
+      const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
+      if (sessionId === undefined) return
+      const agents = this.ctx.get('agents') as { get(id: string): LiveAgent | undefined } | undefined
+      const agent = agents?.get(sessionId)
+      if (agent === undefined) return
+      const topic = entry === undefined ? undefined : await this.storeAt(entry.root, entry.mode).load(id).catch(() => undefined)
+      const title = topic?.title ?? id
+      agent.inject(createUserMessage({
+        content: [{
+          type: 'text',
+          text: `<system-reminder>Pro 主题「${title}」已${status === 'completed' ? '完成' : status === 'capped' ? '到轮次上限' : '取消'}。产物与最终汇总在侧边栏对应面板里。</system-reminder>`,
+        }],
+        source: { kind: 'plugin', plugin: this.spec.name },
+      }))
+    } catch {
+      // Best-effort reminder.
+    }
+  }
+
   private async notifyAccepted(id: string, topic: Topic): Promise<void> {
     try {
       const entry = await this.entryFor(id)
@@ -586,8 +623,14 @@ class ProResearchService {
   ): Promise<Record<string, unknown>> {
     const entry = await this.entryFor(id)
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
-    const engine = this.engineFor(entry.root)
-    if (action === 'resume') return this.view(await engine.resume(id))
+    const engine = this.engineFor(entry.root, entry.mode)
+    if (action === 'resume') {
+      const topic = await this.storeAt(entry.root, entry.mode).load(id)
+      if (topic.channel === 'api' && topic.rounds.some(round => round.submissionId !== undefined)) {
+        throw new Error('API 通道重启后无法接管已发出的生图请求；请接受已有产物、重新生成或取消')
+      }
+      return this.view(await engine.resume(id))
+    }
     if (action === 'cancel') return this.view(await engine.cancel(id))
     if (action === 'accept') {
       const accepted = await engine.accept(id)
@@ -601,9 +644,11 @@ class ProResearchService {
       return this.view(await engine.humanCheck(id, conclusion, reason))
     }
     if (action === 'regenerate') {
-      const topic = await this.storeFor(entry.root).load(id)
-      if (topic.status !== 'completed' && topic.status !== 'capped') {
-        throw new Error(`topic ${id} is ${topic.status}; regenerate needs completed or capped`)
+      const topic = await this.storeAt(entry.root, entry.mode).load(id)
+      const finished = topic.status === 'completed' || topic.status === 'capped'
+      const recoverable = topic.status === 'failed' || topic.status === 'stalled'
+      if (!finished && !recoverable) {
+        throw new Error(`topic ${id} is ${topic.status}; regenerate needs completed/capped or failed/stalled`)
       }
       const feedback = (note ?? '').trim()
       const brief = [
@@ -613,7 +658,7 @@ class ProResearchService {
         '## 要求',
         '不要重复上一轮已确认的内容；给出新的产物或方向，并说明与上一版的差异。',
       ].join('\n\n')
-      return this.view(await engine.continue(id, brief))
+      return this.view(await engine.continue(id, this.withDesignCount(brief, topic.designs ?? this.config.designs)))
     }
     throw new Error('action must be resume, cancel, accept, human_check or regenerate')
   }
@@ -645,7 +690,7 @@ class ProResearchService {
         const paths = Array.isArray(args.materials) && args.materials.length > 0
           ? this.stringArray(args.materials, 'materials')
           : []
-        const refs = paths.length > 0 ? this.withSources(cwd, await buildManifest(cwd, paths)) : []
+        const refs = paths.length > 0 ? this.withSources(cwd, await buildManifest(cwd, paths, undefined, this.config.secretGlobs)) : []
         assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
         const { engine } = await this.find(cwd, id)
         return this.view(await engine.continue(id, brief, refs))
@@ -666,6 +711,10 @@ class ProResearchService {
         const { engine } = await this.find(cwd, id)
         return this.view(await engine.humanCheck(id, conclusion, note))
       }
+      case 'accept':
+        return await this.act(this.requireId(args), 'accept')
+      case 'regenerate':
+        return await this.act(this.requireId(args), 'regenerate', undefined, typeof args.note === 'string' ? args.note : '')
       case 'probe': {
         const probe = await this.transportFor().probe()
         return {
@@ -690,7 +739,7 @@ class ProResearchService {
         }
         return { login: await (this.transportFor() as ChatGptWebTransport).login() }
       default:
-        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, regenerate, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, human_check, accept, regenerate, probe or login')
     }
   }
 
@@ -699,6 +748,10 @@ class ProResearchService {
       ...ref,
       source: isAbsolute(ref.path) ? ref.path : resolve(cwd, ref.path),
     }))
+  }
+
+  autoStartEnabled(): boolean {
+    return this.config.autoStart
   }
 
   private judgeEnabled(): boolean {
@@ -728,14 +781,14 @@ class ProResearchService {
       ? []
       : this.stringArray(args.materials, 'materials')
     const reasons = (args.materialReasons ?? {}) as Record<string, string>
-    const refs = this.withSources(cwd, await buildManifest(cwd, materialPaths, reasons))
+    const refs = this.withSources(cwd, await buildManifest(cwd, materialPaths, reasons, this.config.secretGlobs))
     assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
     // A billable API round is not repeated by default: without an automatic
     // judge, round 2 would just buy another three images.
     const defaultRounds = this.config.channel === 'api' && !this.judgeEnabled() ? 1 : this.config.rounds
     const card: ResearchCard = {
       title,
-      type: args.type === 'design' ? 'design' : this.spec.topicType,
+      type: this.spec.topicType,
       question,
       successCriteria: criteria,
       brief: this.withDesignCount(brief, designs),
@@ -1045,7 +1098,10 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
       const path = url.searchParams.get('path') ?? ''
       try {
         const file = await service.topicText(id, path)
-        res.writeHead(200, { 'content-type': `${file.mime}; charset=utf-8`, 'cache-control': 'no-store' })
+        res.writeHead(200, {
+          'content-type': file.mime.includes('charset=') ? file.mime : `${file.mime}; charset=utf-8`,
+          'cache-control': 'no-store',
+        })
         res.end(file.text)
       } catch {
         sendJson(res, 404, { error: 'unknown file' })
@@ -1080,19 +1136,19 @@ function toolDescription(spec: PluginSpec, config: ProConfig): string {
         `用 OpenAI 兼容生图 API（${config.image.model}）按方向生成设计图，保存到本地并出现在设计面板；此通道只出图，不产出 HTML demo。`,
         'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径、模型）；用户确认后传 confirmed=true。',
         'key 只读插件设置或环境变量 GPT_IMAGE_API_KEY，不要在会话里回显；probe 检查 base URL / key / 模型名。',
-        'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
+        'action: start | continue | status | list | resume | cancel | human_check | accept | regenerate | probe | login。',
       ].join(' ')
     }
     return [
       '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
       'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-      'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
+      'action: start | continue | status | list | resume | cancel | human_check | accept | regenerate | probe | login。',
     ].join(' ')
   }
   return [
     '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
     'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-    'action: start | continue | status | list | resume | cancel | human_check | regenerate | probe | login。',
+    'action: start | continue | status | list | resume | cancel | human_check | accept | regenerate | probe | login。',
   ].join(' ')
 }
 
@@ -1112,13 +1168,12 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
     name: spec.tool,
     description: toolDescription(spec, resolved),
     parameters: {
-      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|probe|login' },
+      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|human_check|accept|regenerate|probe|login' },
       title: { type: 'string', description: '主题标题（start 必填）' },
       question: { type: 'string', description: '研究问题（start 必填）' },
       brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },
       criteria: { type: 'array', items: { type: 'string' }, description: '成功判据（start 必填）' },
       materials: { type: 'array', items: { type: 'string' }, description: '相对工作目录的材料路径（start 可选）' },
-      type: { type: 'string', description: 'research 或 design；默认按插件类型' },
       rounds: { type: 'number', description: '本次轮次上限（1–10）' },
       designs: { type: 'number', description: '设计插件本轮生成的方向/图片数（1–6，默认取设置）' },
       topic_id: { type: 'string', description: 'status/continue/resume/cancel/human_check 的主题 id' },
@@ -1135,8 +1190,13 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     execute: async (args: Record<string, unknown>, exec: ToolRunContext) => {
-      if ((args.action === 'start' || args.action === 'continue' || args.action === 'regenerate') && args.confirmed !== true) {
-        throw new Error('start, continue and regenerate require confirmed=true after the user has seen the card')
+      const writeAction = args.action === 'start'
+        || args.action === 'continue'
+        || args.action === 'regenerate'
+        || args.action === 'accept'
+      const autoStart = args.action === 'start' && service.autoStartEnabled()
+      if (writeAction && args.confirmed !== true && !autoStart) {
+        throw new Error('start, continue, regenerate and accept require confirmed=true after the user has seen the card')
       }
       return (await service.handle(args, exec)) as never
     },

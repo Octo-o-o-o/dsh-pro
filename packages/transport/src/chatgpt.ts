@@ -28,13 +28,21 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex')
 }
 
-function briefMarker(brief: string): string {
-  return brief
+function briefMarkers(brief: string): string[] {
+  const text = brief
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/[#>*_`|~]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 60)
+  if (text === '') return []
+  const sentences = text
+    .split(/[。！？!?；;\n]/)
+    .map(item => item.trim())
+    .filter(item => item.length >= 8)
+  const candidates = [...new Set([...sentences, text])]
+    .sort((left, right) => right.length - left.length)
+    .map(item => item.slice(0, 80))
+  return candidates.slice(0, 3)
 }
 
 function extensionFor(mime: string): string {  if (mime.includes('jpeg')) return 'jpg'
@@ -223,9 +231,12 @@ export class ChatGptWebTransport implements Transport {
       await page.goto(request.conversationUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       const composer = await firstVisible(page, SELECTORS.composer, 30_000)
       if (composer === undefined) return { attached: false }
-      const marker = briefMarker(request.brief)
-      if (marker === '') return { attached: false }
-      const found = await page.evaluate(text => (document.body.innerText ?? '').includes(text), marker)
+      const markerList = briefMarkers(request.brief)
+      if (markerList.length === 0) return { attached: false }
+      const found = await page.evaluate(
+        texts => texts.some(text => (document.body.innerText ?? '').includes(text)),
+        markerList,
+      )
       if (!found) return { attached: false }
       const submissionId = randomUUID()
       this.submissions.set(submissionId, {
@@ -260,23 +271,26 @@ export class ChatGptWebTransport implements Transport {
     if (page.isClosed()) return { state: 'unknown' }
 
     const deadline = Date.now() + Math.max(1_000, request.timeoutMs)
+    let progressed = false
     try {
       while (Date.now() < deadline) {
         if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
         if (page.isClosed()) return { state: 'unknown' }
         const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
+        if (streaming) progressed = true
         const text = streaming ? '' : await this.richAnswerText(page)
         const next = advanceCompletion(
           { lastText: submission.lastText, stable: submission.stable },
           text,
           streaming,
         )
+        if (next.lastText !== submission.lastText) progressed = true
         submission.lastText = next.lastText
         submission.stable = next.stable
         if (next.answered) return { state: 'answered', answer: next.lastText }
         await page.waitForTimeout(3_000)
       }
-      return { state: 'waiting' }
+      return { state: 'waiting', ...(progressed ? { progress: true } : {}) }
     } catch (error) {
       if (isAborted(request.signal)) throw error
       if (page.isClosed()) return { state: 'unknown' }
@@ -315,6 +329,7 @@ export class ChatGptWebTransport implements Transport {
       for (const image of document.querySelectorAll('main img')) {
         const element = image as HTMLImageElement
         if (element.naturalWidth < 300 || element.naturalHeight < 300) continue
+        if (element.closest('form') !== null || element.closest('[data-message-author-role="user"]') !== null) continue
         if (element.src !== '' && !seen.has(element.src)) {
           seen.add(element.src)
           out.push(element.src)
@@ -375,12 +390,23 @@ export class ChatGptWebTransport implements Transport {
 
   private async collectCodeBlocks(page: Page): Promise<CodeBlock[]> {
     return await page.evaluate(() => [...document.querySelectorAll('main pre code')]
+      .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
       .slice(0, 20)
       .map(code => ({
         language: /language-([\w-]+)/.exec(code.className)?.[1] ?? '',
         text: code.textContent ?? '',
       }))
       .filter(block => block.text.trim() !== ''))
+  }
+
+  async cancelSubmission(submissionId: string): Promise<void> {
+    const submission = this.submissions.get(submissionId)
+    if (submission === undefined) return
+    this.submissions.delete(submissionId)
+    for (const [topicId, page] of this.topicPages) {
+      if (page === submission.page) this.topicPages.delete(topicId)
+    }
+    await submission.page.close().catch(() => undefined)
   }
 
   async cancel(): Promise<void> {
@@ -460,7 +486,12 @@ export class ChatGptWebTransport implements Transport {
     const images: string[] = await page.evaluate(() => [...document.querySelectorAll('main img')]
       .filter(image => (image as HTMLImageElement).naturalWidth >= 300)
       .map(image => `${(image as HTMLImageElement).naturalWidth}x${(image as HTMLImageElement).naturalHeight}`))
-    return images.length > 0 ? `image:${images.length}:${images.join(',')}` : ''
+    if (images.length > 0) return `image:${images.length}:${images.join(',')}`
+    // Code-only demo answers need a stability fingerprint too.
+    const codeLength = await page.evaluate(() => [...document.querySelectorAll('main pre code')]
+      .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
+      .reduce((sum, code) => sum + (code.textContent?.length ?? 0), 0))
+    return codeLength > 0 ? `code:${codeLength}` : ''
   }
 
   private async lastAssistantText(page: Page): Promise<string> {

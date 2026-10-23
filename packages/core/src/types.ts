@@ -57,6 +57,8 @@ export interface Topic {
   successCriteria: string[]
   artifacts: string[]
   stopReason?: string
+  /** Judge-authored brief for the next round, persisted across restarts. */
+  nextBrief?: string
   humanCheck?: HumanCheck
 }
 
@@ -143,6 +145,8 @@ export interface PollResult {
   state: 'waiting' | 'answered' | 'unknown'
   answer?: string
   snapshotPath?: string
+  /** The page/request visibly changed since the previous poll. */
+  progress?: boolean
 }
 
 /** One image produced by the answer (base64 payload, no filesystem assumptions). */
@@ -188,6 +192,7 @@ export interface Transport {
   reattach?(request: ReattachRequest): Promise<ReattachResult>
   poll(request: { submissionId: string; timeoutMs: number; signal?: AbortSignal }): Promise<PollResult>
   fetch(request: { submissionId: string }): Promise<FetchedAnswer>
+  cancelSubmission?(submissionId: string): Promise<void>
   cancel(): Promise<void>
 }
 
@@ -196,6 +201,7 @@ export interface JudgeInput {
   round: number
   answer: string
   criteria: string[]
+  question?: string
 }
 
 export interface JudgeResult {

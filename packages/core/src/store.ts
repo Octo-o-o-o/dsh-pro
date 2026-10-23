@@ -1,5 +1,5 @@
 import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
 
@@ -188,7 +188,11 @@ export class ResearchStore {
         staged.push(ref)
         continue
       }
-      const target = join(dir, 'materials', ref.path)
+      const safePath = ref.path.replace(/\\/g, '/')
+      if (isAbsolute(safePath) || safePath.split('/').includes('..')) {
+        throw new Error(`material path escapes the topic: ${ref.path}`)
+      }
+      const target = join(dir, 'materials', safePath)
       await mkdir(dirname(target), { recursive: true })
       await copyFile(ref.source, target)
       staged.push({ ...ref, path: target, source: ref.path })
@@ -271,8 +275,8 @@ export class ResearchStore {
   }
 
   /** Merge new material references into the topic manifest (follow-up rounds). */
-  async addMaterials(topic: Topic, refs: readonly MaterialRef[]): Promise<void> {
-    if (refs.length === 0) return
+  async addMaterials(topic: Topic, refs: readonly MaterialRef[]): Promise<MaterialRef[]> {
+    if (refs.length === 0) return []
     const dir = await this.dirOf(topic.id)
     const file = join(dir, 'materials', 'manifest.json')
     let existing: MaterialRef[] = []
@@ -286,6 +290,7 @@ export class ResearchStore {
     const staged = await this.stageMaterials(dir, refs)
     for (const ref of staged) byPath.set(ref.source ?? ref.path, ref)
     await this.atomic(file, `${JSON.stringify({ materials: [...byPath.values()] }, null, 2)}\n`)
+    return staged
   }
 
   /** Materials introduced by one follow-up round (empty means "no delta"). */
@@ -385,6 +390,14 @@ export class ResearchStore {
     const dir = await this.dirOf(topic.id)
     await this.atomic(join(dir, 'final.md'), text)
     if (!topic.artifacts.includes('final.md')) topic.artifacts.push('final.md')
+  }
+
+  async readFinal(topic: Topic): Promise<string | undefined> {
+    try {
+      return await readFile(join(await this.dirOf(topic.id), 'final.md'), 'utf8')
+    } catch {
+      return undefined
+    }
   }
 
   async writeHumanCheck(topic: Topic, check: HumanCheck): Promise<void> {

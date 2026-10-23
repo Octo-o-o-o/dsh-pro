@@ -76,7 +76,11 @@ export class ResearchEngine {
     if (topic.status === 'completed' || topic.status === 'cancelled') return topic
     const run = this.runs.get(id)
     if (run !== undefined) {
+      const last = [...topic.rounds].reverse().find(round => round.submissionId !== undefined)
       run.controller.abort()
+      if (last?.submissionId !== undefined) {
+        void this.options.transport.cancelSubmission?.(last.submissionId)
+      }
       return topic
     }
     await this.transition(topic, 'cancelled')
@@ -89,6 +93,9 @@ export class ResearchEngine {
       throw new Error(`topic ${id} is ${topic.status}, not stalled or failed`)
     }
     const round = [...topic.rounds].reverse().find(candidate => candidate.submissionId !== undefined)
+    if (topic.channel === 'api' && round !== undefined) {
+      throw new Error('API 生图请求在重启后已丢失，无法接管；请接受已有产物、重新生成或取消')
+    }
     if (round !== undefined && this.options.transport.reattach !== undefined) {
       const attached = await this.tryAttach(topic)
       if (!attached) {
@@ -151,12 +158,21 @@ export class ResearchEngine {
     return topic
   }
 
-  /** Human accepts a capped result: the only path from capped to completed. */
+  /** Human accepts a capped or artifact-bearing failed/stalled result. */
   async accept(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
     if (topic.status === 'completed') return topic
-    if (topic.status !== 'capped') throw new Error(`topic ${id} is ${topic.status}; only capped can be accepted`)
+    const withArtifacts = (topic.status === 'failed' || topic.status === 'stalled') && topic.artifacts.length > 0
+    if (topic.status !== 'capped' && !withArtifacts) {
+      throw new Error(`topic ${id} is ${topic.status}; only capped or failed/stalled with artifacts can be accepted`)
+    }
+    const existing = await this.options.store.readFinal(topic)
+    const text = existing === undefined
+      ? this.finalDocument(topic, undefined, '人工接受结果', 'completed')
+      : `${existing.replace(/^- 状态：.*$/m, '- 状态：completed').trimEnd()}\n- 人工接受：${new Date().toISOString()}\n`
+    await this.options.store.writeFinal(topic, text)
     await this.transition(topic, 'completed', { stopReason: '人工接受结果' })
+    this.emit({ type: 'finished', topicId: topic.id, status: 'completed' })
     return topic
   }
 
@@ -177,14 +193,17 @@ export class ResearchEngine {
   async continue(id: string, brief: string, materials?: MaterialRef[]): Promise<Topic> {
     const topic = await this.options.store.load(id)
     if (brief.trim() === '') throw new Error('brief is required')
-    if (topic.status !== 'completed' && topic.status !== 'capped') {
-      throw new Error(`topic ${id} is ${topic.status}; only completed or capped topics accept a follow-up`)
+    const finished = topic.status === 'completed' || topic.status === 'capped'
+    const recoverable = topic.status === 'failed' || topic.status === 'stalled'
+    if (!finished && !recoverable) {
+      throw new Error(`topic ${id} is ${topic.status}; only completed/capped or failed/stalled topics accept a follow-up`)
     }
     const next = topic.rounds.length + 1
     if (next > topic.roundsCap) topic.roundsCap = next
+    delete topic.nextBrief
     await this.options.store.writeQuestion(topic, next, brief)
-    await this.options.store.addMaterials(topic, materials ?? [])
-    await this.options.store.writeRoundMaterials(topic, next, materials ?? [])
+    const staged = await this.options.store.addMaterials(topic, materials ?? [])
+    await this.options.store.writeRoundMaterials(topic, next, staged)
     delete topic.stopReason
     await this.transition(topic, 'queued')
     this.enqueue(id)
@@ -202,6 +221,12 @@ export class ResearchEngine {
     topic.humanCheck = check
     await this.options.store.writeHumanCheck(topic, check)
     if (conclusion === 'submitted') {
+      if (this.options.transport.reattach !== undefined) {
+        const attached = await this.tryAttach(topic)
+        if (!attached) {
+          throw new Error('无法在原会话里确认这一轮的 prompt；请核对后用“未提交”重开，避免重复发送')
+        }
+      }
       await this.transition(topic, 'waiting')
       this.enqueue(id)
     } else if (conclusion === 'not_submitted') {
@@ -241,6 +266,7 @@ export class ResearchEngine {
   }
 
   private enqueue(id: string): void {
+    if (this.runs.has(id) || this.queue.includes(id)) return
     this.queue.push(id)
     void this.pump()
   }
@@ -371,8 +397,12 @@ export class ResearchEngine {
     const submissionId = round.submissionId
     if (submissionId === undefined) throw new Error('round has no submission')
     const deadline = this.now() + this.options.config.maxRoundMinutes * 60_000
+    let stallDeadline = this.now() + this.options.config.stallMinutes * 60_000
     while (this.now() < deadline) {
       if (signal.aborted) throw new DOMException('aborted', 'AbortError')
+      if (this.now() > stallDeadline) {
+        throw new TransportError(`no progress for ${this.options.config.stallMinutes} minutes`, 'timeout')
+      }
       const polled: PollResult = await this.options.transport.poll({
         submissionId,
         timeoutMs: this.options.pollIntervalMs ?? 60_000,
@@ -390,6 +420,7 @@ export class ResearchEngine {
         }
       }
       if (polled.state === 'unknown') throw new TransportError('page state is unknown', 'ui')
+      if (polled.progress === true) stallDeadline = this.now() + this.options.config.stallMinutes * 60_000
     }
     throw new TransportError('no progress before maxRoundMinutes', 'timeout')
   }
@@ -400,7 +431,8 @@ export class ResearchEngine {
       throw new TransportError('answer file is missing for adjudication', 'ui')
     }
     await this.transition(topic, 'adjudicating')
-    const result = await this.options.judge({ topic, round: round.n, answer, criteria: topic.successCriteria })
+    const question = (await this.options.store.readQuestion(topic, round.n)) ?? ''
+    const result = await this.options.judge({ topic, round: round.n, answer, criteria: topic.successCriteria, question })
     const verdictText = `# 第 ${round.n} 轮裁决\n\n- 结论：${result.verdict}\n- 停止：${result.done ? '是' : '否'}\n- 理由：${result.reason}\n\n## 摘要\n\n${result.summary}\n`
     await this.options.store.writeVerdict(topic, round.n, verdictText)
     round.verdict = result.verdict
@@ -419,16 +451,20 @@ export class ResearchEngine {
       return
     }
     this.nextBrief.set(topic.id, result.nextBrief)
+    if (result.nextBrief !== undefined && result.nextBrief.trim() !== '') topic.nextBrief = result.nextBrief
+    else delete topic.nextBrief
     await this.transition(topic, 'queued')
   }
 
   private followUpBrief(topic: Topic): string {
-    const stored = this.nextBrief.get(topic.id)
+    const stored = this.nextBrief.get(topic.id) ?? topic.nextBrief
     if (stored !== undefined && stored.trim() !== '') return stored
     const last = topic.rounds[topic.rounds.length - 1]
     if (topic.type === 'design') {
       return [
         `继续主题「${topic.title}」，给出与上一轮明显不同的新方向；若上一轮只部分满足判据，就在保留已确认部分的前提下修订。不要重复已确认的方案。`,
+        '',
+        `本轮请生成 ${topic.designs ?? 3} 个可区分的设计方向，每个方向单独一张图；需要前端时给一个可运行的单文件 HTML demo。`,
         '',
         '## 成功判据',
         ...topic.successCriteria.map(item => `- ${item}`),

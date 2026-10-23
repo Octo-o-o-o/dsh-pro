@@ -51,6 +51,16 @@ describe('manifest', () => {
     await expect(buildManifest(root, ['b.md'])).rejects.toThrow(/github-token/)
   })
 
+  it('rejects traversal, absolute paths and secret globs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-mat-'))
+    cleanups.push(root)
+    await writeFile(join(root, 'a.md'), 'hello', 'utf8')
+    await writeFile(join(root, '.env'), 'A=1', 'utf8')
+    await expect(buildManifest(root, ['../outside.md'])).rejects.toThrow(/escapes/)
+    await expect(buildManifest(root, [join(root, 'a.md')])).rejects.toThrow(/relative/)
+    await expect(buildManifest(root, ['.env'], undefined, ['.env'])).rejects.toThrow(/secret pattern/)
+  })
+
   it('enforces count and size caps', () => {
     const ref = { path: 'a', bytes: 1024, sha256: 'x' }
     expect(() => assertMaterialLimits([ref], 1, 1)).not.toThrow()

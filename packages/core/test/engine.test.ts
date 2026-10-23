@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ResearchEngine } from '../src/engine.ts'
 import { ResearchStore } from '../src/store.ts'
 import { defaultConfig } from '../src/config.ts'
+import { buildManifest } from '../src/materials.ts'
 import { TransportError, type Judge, type ResearchCard, type SubmitRequest, type Transport } from '../src/types.ts'
 
 const cleanups: string[] = []
@@ -299,6 +300,41 @@ describe('engine', () => {
     const accepted = await engine.accept(topic.id)
     expect(accepted.status).toBe('completed')
     expect(accepted.stopReason).toBe('人工接受结果')
+  })
+
+  it('accepts a failed topic that still has artifacts', async () => {
+    const { engine, store } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const failed = await store.load(topic.id)
+    failed.status = 'failed'
+    failed.artifacts = ['artifacts/round-01/image-01.png']
+    failed.stopReason = 'page closed'
+    await store.save(failed)
+
+    const accepted = await engine.accept(topic.id)
+    expect(accepted.status).toBe('completed')
+    expect(accepted.stopReason).toBe('人工接受结果')
+    const dir = await store.dirOf(topic.id)
+    const document = await readFile(join(dir, 'final.md'), 'utf8')
+    expect(document).toContain('人工接受')
+  })
+
+  it('stages follow-up materials and records absolute paths for that round', async () => {
+    const { engine, store, root } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    await writeFile(join(root, 'new.md'), 'new material', 'utf8')
+    const refs = await buildManifest(root, ['new.md'])
+    if (refs[0] !== undefined) refs[0].source = join(root, 'new.md')
+
+    await engine.continue(topic.id, 'use the new material', refs)
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    const materials = await store.readRoundMaterials(final, 2)
+    expect(materials).toHaveLength(1)
+    expect(isAbsolute(materials?.[0]?.path ?? '')).toBe(true)
+    expect(await readFile(materials?.[0]?.path ?? '', 'utf8')).toBe('new material')
   })
 
   it('raises the cap when a capped topic is continued', async () => {

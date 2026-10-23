@@ -186,6 +186,7 @@ function Panel(): ReturnType<typeof createElement> {
     try {
       const data = await getJson<{ topic: TopicDetail }>(`${config.routes}/topic?id=${encodeURIComponent(id)}`)
       setDetail(data.topic)
+      setError(undefined)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -203,6 +204,15 @@ function Panel(): ReturnType<typeof createElement> {
     const timer = setInterval(() => { void loadDetail(selected) }, POLL_MS)
     return () => clearInterval(timer)
   }, [selected, loadDetail, topics])
+
+  useEffect(() => {
+    if (viewer === undefined) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setViewer(undefined)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [viewer])
 
   const act = useCallback(async (action: string, conclusion?: string) => {
     if (selected === undefined) return
@@ -273,6 +283,10 @@ function Panel(): ReturnType<typeof createElement> {
       createElement('div', { style: { fontSize: 11, opacity: 0.65, marginLeft: 14, marginTop: 2 } },
         `${STATUS_LABEL[topic.status] ?? topic.status} · ${topic.rounds}/${topic.rounds_cap} 轮`))))
 
+  const hasArtifacts = (detail?.artifacts.length ?? 0) > 0
+  const canAccept = detail !== undefined && (detail.status === 'capped' || ((detail.status === 'failed' || detail.status === 'stalled') && hasArtifacts))
+  const canRegenerate = detail !== undefined && (detail.status === 'completed' || detail.status === 'capped' || detail.status === 'failed' || detail.status === 'stalled')
+
   const body = createElement('div', { style: { flex: 1, overflowY: 'auto', padding: 14, fontSize: 13, lineHeight: 1.6 } },
     error !== undefined ? createElement('div', { style: { color: '#c62828', marginBottom: 8 } }, `接口错误：${error}`) : undefined,
     notice !== undefined
@@ -311,11 +325,11 @@ function Panel(): ReturnType<typeof createElement> {
           detail.status === 'stalled' || detail.status === 'failed'
             ? createElement('button', { onClick: () => void act('resume'), style: buttonStyle() }, '恢复')
             : undefined,
-          detail.status === 'completed' || detail.status === 'capped'
+          canRegenerate
             ? createElement('button', { onClick: () => { setRegenNote(''); setRegenOpen(true) }, style: buttonStyle() }, '重新生成')
             : undefined,
-          detail.status === 'capped'
-            ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, '接受结果')
+          canAccept
+            ? createElement('button', { onClick: () => void act('accept'), style: buttonStyle() }, detail?.status === 'capped' ? '接受结果' : '接受已有产物')
             : undefined,
           detail.status === 'stalled'
             ? createElement('span', { style: { display: 'flex', gap: 8 } },
@@ -417,6 +431,9 @@ function renderViewer(view: Viewer): ReturnType<typeof createElement> {
     },
     onClick: () => showViewer(undefined),
   }, createElement('div', {
+    role: 'dialog',
+    'aria-modal': true,
+    'aria-label': view.title,
     onClick: (event: { stopPropagation(): void }) => event.stopPropagation(),
     style: {
       background: 'Canvas',

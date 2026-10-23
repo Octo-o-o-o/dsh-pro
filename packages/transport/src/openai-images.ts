@@ -368,7 +368,7 @@ export class OpenAIImageTransport implements Transport {
         }),
       ])
       if (outcome === 'aborted') throw new DOMException('aborted', 'AbortError')
-      if (outcome === 'timeout') return { state: 'waiting' }
+      if (outcome === 'timeout') return { state: 'waiting', progress: true }
       if (job.error !== undefined) throw job.error
       return { state: 'answered', answer: job.result?.answer ?? '' }
     } finally {
@@ -391,6 +391,13 @@ export class OpenAIImageTransport implements Transport {
   }
 
   /** Abort every in-flight request; the engine records the round as cancelled. */
+  async cancelSubmission(submissionId: string): Promise<void> {
+    const job = this.jobs.get(submissionId)
+    if (job === undefined) return
+    this.jobs.delete(submissionId)
+    job.controller.abort()
+  }
+
   async cancel(): Promise<void> {
     for (const job of this.jobs.values()) job.controller.abort()
   }
