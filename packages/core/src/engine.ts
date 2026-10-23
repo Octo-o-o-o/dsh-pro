@@ -87,8 +87,15 @@ export class ResearchEngine {
     return topic
   }
 
+  private assertChannel(topic: Topic): void {
+    if (topic.channel !== this.options.config.channel) {
+      throw new Error(`主题属于 ${topic.channel} 通道，当前设置为 ${this.options.config.channel}；请切回原通道或新建主题`)
+    }
+  }
+
   async resume(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
+    this.assertChannel(topic)
     if (topic.status !== 'stalled' && topic.status !== 'failed') {
       throw new Error(`topic ${id} is ${topic.status}, not stalled or failed`)
     }
@@ -142,6 +149,7 @@ export class ResearchEngine {
    */
   async reattach(id: string): Promise<Topic> {
     const topic = await this.options.store.load(id)
+    this.assertChannel(topic)
     if (topic.status !== 'waiting' && topic.status !== 'submitted') {
       throw new Error(`topic ${id} is ${topic.status}, not waiting`)
     }
@@ -192,14 +200,27 @@ export class ResearchEngine {
    */
   async continue(id: string, brief: string, materials?: MaterialRef[]): Promise<Topic> {
     const topic = await this.options.store.load(id)
+    this.assertChannel(topic)
     if (brief.trim() === '') throw new Error('brief is required')
     const finished = topic.status === 'completed' || topic.status === 'capped'
     const recoverable = topic.status === 'failed' || topic.status === 'stalled'
     if (!finished && !recoverable) {
       throw new Error(`topic ${id} is ${topic.status}; only completed/capped or failed/stalled topics accept a follow-up`)
     }
-    const next = topic.rounds.length + 1
-    if (next > topic.roundsCap) topic.roundsCap = next
+    const last = topic.rounds[topic.rounds.length - 1]
+    const retryCurrent = recoverable && last !== undefined && last.answeredAt === undefined
+    const next = retryCurrent ? last.n : topic.rounds.length + 1
+    if (retryCurrent) {
+      // The previous attempt never produced an answer: replace it with the
+      // user's feedback instead of appending a round that runTopic would skip.
+      delete last.submissionId
+      delete last.fingerprint
+      delete last.submittedAt
+      delete last.verdict
+      delete last.done
+    } else if (next > topic.roundsCap) {
+      topic.roundsCap = next
+    }
     delete topic.nextBrief
     await this.options.store.writeQuestion(topic, next, brief)
     const staged = await this.options.store.addMaterials(topic, materials ?? [])
@@ -216,6 +237,7 @@ export class ResearchEngine {
     note: string,
   ): Promise<Topic> {
     const topic = await this.options.store.load(id)
+    this.assertChannel(topic)
     if (topic.status !== 'stalled') throw new Error(`topic ${id} is ${topic.status}, not stalled`)
     const check = { at: new Date().toISOString(), conclusion, note }
     topic.humanCheck = check

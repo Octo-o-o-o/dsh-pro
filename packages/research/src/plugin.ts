@@ -875,9 +875,17 @@ class ProResearchService {
           continue
         }
         if (topic.status === 'waiting' || topic.status === 'submitted') {
-          await engine.reattach(entry.id)
-          const recovered = await store.load(entry.id)
-          if (recovered.status === 'stalled') await this.notifyStalled(entry.id, recovered.stallReason)
+          try {
+            await engine.reattach(entry.id)
+            const recovered = await store.load(entry.id)
+            if (recovered.status === 'stalled') await this.notifyStalled(entry.id, recovered.stallReason)
+          } catch (error) {
+            await engine.interrupt(entry.id, `恢复失败：${error instanceof Error ? error.message : String(error)}`)
+            await this.notifyStalled(entry.id, 'unknown_submission')
+          }
+        } else if (topic.status === 'draft') {
+          await engine.interrupt(entry.id, 'DSH 在启动阶段中断；已转入人工核对')
+          await this.notifyStalled(entry.id, 'unknown_submission')
         } else if (active.has(topic.status)) {
           await engine.interrupt(entry.id, 'DSH 重启时任务尚未完成；已停止自动重发，请核对后恢复')
           await this.notifyStalled(entry.id, 'unknown_submission')

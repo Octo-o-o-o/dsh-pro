@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ResearchEngine } from '../src/engine.ts'
 import { ResearchStore } from '../src/store.ts'
@@ -275,7 +275,7 @@ describe('engine', () => {
     const topic = await engine.start(card({ materials: [{ path: 'base.md', bytes: 1, sha256: 'b' }] }))
     await engine.drain()
     expect((await engine.status(topic.id)).status).toBe('completed')
-    expect(transport.submits[0]?.files).toEqual(['base.md'])
+    expect(transport.submits[0]?.files.map(path => basename(path))).toEqual(['base.md'])
 
     await engine.continue(topic.id, 'follow-up brief', [{ path: 'new.md', bytes: 1, sha256: 'x' }])
     await engine.drain()
@@ -283,8 +283,8 @@ describe('engine', () => {
     expect(final.status).toBe('completed')
     expect(final.rounds).toHaveLength(2)
     expect(transport.submits).toHaveLength(2)
-    expect(transport.submits[1]?.files).toEqual(['new.md'])
-    expect(transport.submits[1]?.fallbackFiles).toEqual(['base.md', 'new.md'])
+    expect(transport.submits[1]?.files.map(path => basename(path))).toEqual(['new.md'])
+    expect(transport.submits[1]?.fallbackFiles?.map(path => basename(path))).toEqual(['base.md', 'new.md'])
     expect(transport.submits[1]?.session?.conversationUrl).toBe('https://chatgpt.com/c/example')
     expect(final.rounds[1]?.files).toBe(1)
     const dir = await store.dirOf(topic.id)
@@ -335,6 +335,23 @@ describe('engine', () => {
     expect(materials).toHaveLength(1)
     expect(isAbsolute(materials?.[0]?.path ?? '')).toBe(true)
     expect(await readFile(materials?.[0]?.path ?? '', 'utf8')).toBe('new material')
+  })
+
+  it('retries the unanswered round with the follow-up brief after a stall', async () => {
+    const transport = new FakeTransport(['first answer'])
+    transport.fail = new TransportError('page changed', 'ui')
+    const { engine } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('stalled')
+
+    transport.fail = undefined
+    await engine.continue(topic.id, 'new feedback after the stall')
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.status).toBe('completed')
+    expect(final.rounds).toHaveLength(1)
+    expect(transport.submits[transport.submits.length - 1]?.brief).toContain('new feedback after the stall')
   })
 
   it('raises the cap when a capped topic is continued', async () => {

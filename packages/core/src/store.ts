@@ -266,9 +266,11 @@ export class ResearchStore {
       const parsed = JSON.parse(await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')) as {
         materials?: Array<{ path?: unknown }>
       }
+      const materialsRoot = join(dir, 'materials')
       return (parsed.materials ?? [])
         .map(item => item.path)
         .filter((path): path is string => typeof path === 'string' && path !== '')
+        .map(path => isAbsolute(path) ? path : join(materialsRoot, path))
     } catch {
       return []
     }
@@ -305,7 +307,12 @@ export class ResearchStore {
       const parsed = JSON.parse(await readFile(join(dir, 'rounds', `${pad(round)}-materials.json`), 'utf8')) as {
         materials?: MaterialRef[]
       }
-      return Array.isArray(parsed.materials) ? parsed.materials : undefined
+      if (!Array.isArray(parsed.materials)) return undefined
+      const materialsRoot = join(dir, 'materials')
+      return parsed.materials.map(item => ({
+        ...item,
+        path: isAbsolute(item.path) ? item.path : join(materialsRoot, item.path),
+      }))
     } catch {
       return undefined
     }
