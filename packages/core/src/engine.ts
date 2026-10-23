@@ -194,6 +194,46 @@ export class ResearchEngine {
   }
 
   /**
+   * Start a new retained generation (a "version") rather than appending a
+   * round to the current one. Failed rounds without an answer are retried in
+   * place; finished topics get a fresh generation.
+   */
+  async regenerate(id: string, brief: string, reason: string, materials?: MaterialRef[]): Promise<Topic> {
+    const topic = await this.options.store.load(id)
+    this.assertChannel(topic)
+    if (brief.trim() === '') throw new Error('brief is required')
+    const recoverable = topic.status === 'failed' || topic.status === 'stalled'
+    const last = topic.rounds[topic.rounds.length - 1]
+    if (recoverable && last !== undefined && last.answeredAt === undefined) {
+      return await this.continue(id, brief, materials)
+    }
+    const finished = topic.status === 'completed' || topic.status === 'capped' || recoverable
+    if (!finished) throw new Error(`topic ${id} is ${topic.status}; regenerate needs a terminal topic`)
+
+    if (topic.generations === undefined) {
+      topic.generations = [{ n: 1, createdAt: topic.created, reason: '初始任务' }]
+    }
+    // Older topics finished before generations existed: archive their current
+    // final as generation 1 before starting generation 2.
+    if (topic.generations.length === 1 && topic.generations[0]?.final === undefined) {
+      const previous = await this.options.store.readFinal(topic)
+      if (previous !== undefined) await this.options.store.writeFinal(topic, previous)
+    }
+    const generation = (topic.generations.at(-1)?.n ?? 1) + 1
+    topic.generations.push({ n: generation, createdAt: new Date().toISOString(), reason: reason.trim() || '用户重新生成' })
+    const next = topic.rounds.length + 1
+    if (next > topic.roundsCap) topic.roundsCap = next
+    delete topic.nextBrief
+    await this.options.store.writeQuestion(topic, next, brief)
+    const staged = await this.options.store.addMaterials(topic, materials ?? [])
+    await this.options.store.writeRoundMaterials(topic, next, staged)
+    delete topic.stopReason
+    await this.transition(topic, 'queued')
+    this.enqueue(id)
+    return topic
+  }
+
+  /**
    * Explicit follow-up on a finished topic: one more round with a new brief.
    * The round limit grows when the follow-up would exceed it, because this is
    * the user-confirmed "+1 round" the design requires.
@@ -333,7 +373,7 @@ export class ResearchEngine {
 
         let round = pending ?? topic.rounds.find(item => item.n === n)
         if (round === undefined) {
-          round = { n, files: 0, attempts: 0 }
+          round = { n, files: 0, attempts: 0, generation: topic.generations?.at(-1)?.n ?? 1 }
           topic.rounds.push(round)
           const stored = n === 1
             ? await this.options.store.readQuestion(topic, 0)
@@ -344,6 +384,7 @@ export class ResearchEngine {
         }
 
         if (round.submissionId === undefined) {
+          if (round.generation === undefined) round.generation = topic.generations?.at(-1)?.n ?? 1
           if (topic.status !== 'uploading') await this.transition(topic, 'uploading')
           await this.submitRound(topic, round, signal)
         } else if (topic.status === 'queued') {

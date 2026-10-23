@@ -659,7 +659,11 @@ class ProResearchService {
         '## 要求',
         '不要重复上一轮已确认的内容；给出新的产物或方向，并说明与上一版的差异。',
       ].join('\n\n')
-      return this.view(await engine.continue(id, this.withDesignCount(brief, topic.designs ?? this.config.designs)))
+      return this.view(await engine.regenerate(
+        id,
+        this.withDesignCount(brief, topic.designs ?? this.config.designs),
+        feedback,
+      ))
     }
     throw new Error('action must be resume, cancel, accept, human_check or regenerate')
   }
@@ -833,6 +837,8 @@ class ProResearchService {
       status: topic.status,
       channel: topic.channel,
       model: topic.model,
+      created: topic.created,
+      generations: topic.generations ?? [],
       stall_reason: topic.stallReason ?? null,
       rounds: topic.rounds.length,
       rounds_cap: topic.roundsCap,

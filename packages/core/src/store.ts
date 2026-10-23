@@ -165,6 +165,7 @@ export class ResearchStore {
       status: 'draft',
       roundsCap,
       ...(card.designs !== undefined ? { designs: card.designs } : {}),
+      generations: [{ n: 1, createdAt: now, reason: '初始任务' }],
       rounds: [],
       channel,
       model,
@@ -397,6 +398,14 @@ export class ResearchStore {
     const dir = await this.dirOf(topic.id)
     await this.atomic(join(dir, 'final.md'), text)
     if (!topic.artifacts.includes('final.md')) topic.artifacts.push('final.md')
+    if (topic.generations === undefined) {
+      topic.generations = [{ n: 1, createdAt: topic.created, reason: '初始任务' }]
+    }
+    const generation = topic.rounds[topic.rounds.length - 1]?.generation ?? topic.generations.at(-1)?.n ?? 1
+    const relative = `finals/attempt-${pad(generation)}.md`
+    await this.atomic(join(dir, relative), text)
+    const record = topic.generations.find(item => item.n === generation)
+    if (record !== undefined) record.final = relative
   }
 
   async readFinal(topic: Topic): Promise<string | undefined> {

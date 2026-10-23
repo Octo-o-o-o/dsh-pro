@@ -320,6 +320,26 @@ describe('engine', () => {
     expect(document).toContain('人工接受')
   })
 
+  it('records regeneration as a new generation and archives the previous final', async () => {
+    const { engine, store } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const dir = await store.dirOf(topic.id)
+    expect(await readFile(join(dir, 'finals', 'attempt-01.md'), 'utf8')).toContain('状态：completed')
+
+    const regenerated = await engine.regenerate(topic.id, '换一个方向', '上一版太保守')
+    expect(regenerated.status).toBe('queued')
+    expect(regenerated.generations?.map(item => item.n)).toEqual([1, 2])
+    expect(regenerated.generations?.[1]?.reason).toBe('上一版太保守')
+    expect(await readFile(join(dir, 'rounds', '02-question.md'), 'utf8')).toContain('换一个方向')
+
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.rounds[0]?.generation).toBe(1)
+    expect(final.rounds[1]?.generation).toBe(2)
+    expect(await readFile(join(dir, 'finals', 'attempt-01.md'), 'utf8')).toContain('状态：completed')
+  })
+
   it('stages follow-up materials and records absolute paths for that round', async () => {
     const { engine, store, root } = await harness({ doneAt: 1 })
     const topic = await engine.start(card())

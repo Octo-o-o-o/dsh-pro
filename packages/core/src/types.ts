@@ -26,6 +26,8 @@ export type AnswerHome = 'local' | 'repo'
 
 export interface RoundRecord {
   n: number
+  /** Which regeneration/version this round belongs to; 1 is the first run. */
+  generation?: number
   submittedAt?: string
   answeredAt?: string
   verdict?: Verdict
@@ -51,6 +53,8 @@ export interface Topic {
   stallReason?: StallReason
   roundsCap: number
   designs?: number
+  /** One entry per generation: the initial run and each explicit regeneration. */
+  generations?: GenerationRecord[]
   rounds: RoundRecord[]
   channel: string
   model: string
@@ -66,6 +70,15 @@ export interface HumanCheck {
   at: string
   conclusion: 'submitted' | 'not_submitted' | 'reopen'
   note: string
+}
+
+export interface GenerationRecord {
+  n: number
+  createdAt: string
+  /** Why this version was requested, e.g. the user's regeneration feedback. */
+  reason?: string
+  /** Topic-relative archived final for this version. */
+  final?: string
 }
 
 export interface MaterialRef {

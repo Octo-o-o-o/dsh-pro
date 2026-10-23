@@ -57,6 +57,7 @@ interface TopicRow {
 
 interface RoundRow {
   n: number
+  generation?: number
   verdict?: string
   files: number
   submittedAt?: string
@@ -65,7 +66,16 @@ interface RoundRow {
   artifacts?: string[]
 }
 
+interface GenerationRow {
+  n: number
+  createdAt: string
+  reason?: string
+  final?: string
+}
+
 interface TopicDetail extends TopicRow {
+  created?: string
+  generations?: GenerationRow[]
   path?: string
   rounds_detail?: RoundRow[]
 }
@@ -338,34 +348,51 @@ function Panel(): ReturnType<typeof createElement> {
               createElement('button', { onClick: () => void act('human_check', 'reopen'), style: buttonStyle() }, '需重开'))
             : undefined),
         regenOpen
-          ? createElement('div', { style: { marginBottom: 14, padding: 10, border: '1px solid rgba(127,127,127,.22)', borderRadius: 8, background: 'rgba(127,127,127,.05)' } },
-            createElement('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 6 } }, '重新生成：补充要求（可选）'),
-            createElement('textarea', {
-              value: regenNote,
-              onChange: (event: { target: { value: string } }) => setRegenNote(event.target.value),
-              rows: 3,
-              placeholder: '例如：保留版式，只改配色；标题必须出现……；不要再用……',
-              style: {
-                width: '100%',
-                boxSizing: 'border-box',
-                resize: 'vertical',
-                padding: 8,
-                borderRadius: 6,
-                border: '1px solid rgba(127,127,127,.3)',
-                background: 'transparent',
-                color: 'inherit',
-                fontSize: 12,
-                lineHeight: 1.5,
-              },
-            }),
-            createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 } },
+          ? createElement('div', {
+            style: {
+              maxWidth: 640,
+              marginBottom: 18,
+              padding: '12px 14px',
+              border: '1px solid rgba(127,127,127,.22)',
+              borderRadius: 10,
+              background: 'rgba(127,127,127,.05)',
+              boxSizing: 'border-box',
+            },
+          },
+          createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 } },
+            createElement('div', { style: { fontSize: 12, fontWeight: 600 } }, '重新生成'),
+            createElement('div', { style: { fontSize: 11, opacity: 0.55 } }, '可补充不满意的地方；提交后保留已有轮次')),
+          createElement('textarea', {
+            value: regenNote,
+            onChange: (event: { target: { value: string } }) => setRegenNote(event.target.value),
+            rows: 3,
+            placeholder: '例如：保留版式，只改配色；标题必须出现……；不要再用……',
+            style: {
+              width: '100%',
+              boxSizing: 'border-box',
+              resize: 'vertical',
+              padding: '8px 10px',
+              borderRadius: 8,
+              border: '1px solid rgba(127,127,127,.3)',
+              background: 'transparent',
+              color: 'inherit',
+              fontSize: 12,
+              lineHeight: 1.55,
+            },
+          }),
+          createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 8 } },
+            createElement('span', { style: { fontSize: 11, opacity: 0.45 } }, '留空则让它直接换一版'),
+            createElement('div', { style: { display: 'flex', gap: 8 } },
               createElement('button', { onClick: () => { setRegenOpen(false); setRegenNote('') }, style: buttonStyle() }, '取消'),
-              createElement('button', { onClick: () => void submitRegenerate(), style: buttonStyle() }, '提交重新生成')))
+              createElement('button', {
+                onClick: () => void submitRegenerate(),
+                style: { ...buttonStyle(), borderColor: 'rgba(111,159,208,.55)', background: 'rgba(111,159,208,.16)' },
+              }, '提交重新生成'))))
           : undefined,
         createElement('div', { style: { fontWeight: 600, marginBottom: 6, fontSize: 13 } }, '轮次'),
         (detail.rounds_detail ?? []).length === 0
           ? createElement('div', { style: { opacity: 0.6 } }, '还没有提交记录。')
-          : createElement('div', {}, (detail.rounds_detail ?? []).map(round => renderRound(detail, round))),
+          : createElement('div', {}, renderGenerations(detail, detail.rounds_detail ?? [])),
         renderArtifacts(detail)))
 
   return createElement('div', { style: { display: 'flex', height: '100%', minHeight: 0, color: 'inherit' } },
@@ -502,6 +529,43 @@ function renderArtifacts(detail: TopicDetail): ReturnType<typeof createElement> 
         })))
       : undefined,
     createElement('div', { style: { marginTop: 8, opacity: 0.6, fontSize: 11, wordBreak: 'break-all' } }, artifacts.join('、')))
+}
+
+function renderGenerations(detail: TopicDetail, rounds: RoundRow[]): ReturnType<typeof createElement>[] {
+  const generations = detail.generations !== undefined && detail.generations.length > 0
+    ? detail.generations
+    : [{ n: 1, createdAt: detail.created ?? '', reason: '初始任务' }]
+  if (generations.length <= 1) return rounds.map(round => renderRound(detail, round))
+
+  const groups = new Map<number, RoundRow[]>()
+  for (const round of rounds) {
+    const n = round.generation ?? 1
+    const list = groups.get(n) ?? []
+    list.push(round)
+    groups.set(n, list)
+  }
+  for (const generation of generations) {
+    if (!groups.has(generation.n)) groups.set(generation.n, [])
+  }
+
+  return [...generations]
+    .sort((left, right) => left.n - right.n)
+    .map(generation => createElement('div', { key: generation.n, style: { marginBottom: 18 } },
+      createElement('div', { style: { display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', paddingBottom: 6, marginBottom: 8, borderBottom: '1px solid rgba(127,127,127,.18)' } },
+        createElement('strong', { style: { fontSize: 13 } }, `第 ${generation.n} 版`),
+        generation.reason !== undefined && generation.reason !== ''
+          ? createElement('span', { style: { fontSize: 11, opacity: 0.62, flex: 1, minWidth: 160 } }, generation.reason)
+          : undefined,
+        generation.createdAt !== '' ? createElement('span', { style: { fontSize: 11, opacity: 0.45 } }, formatTime(generation.createdAt)) : undefined,
+        generation.final !== undefined
+          ? createElement('button', {
+            onClick: () => void openTopicFile(detail.topic_id, generation.final as string),
+            style: chipStyle(),
+          }, '本版总结')
+          : undefined),
+      (groups.get(generation.n) ?? []).length === 0
+        ? createElement('div', { style: { opacity: 0.55, fontSize: 12 } }, '等待提交…')
+        : (groups.get(generation.n) ?? []).map(round => renderRound(detail, round))))
 }
 
 function renderRound(detail: TopicDetail, round: RoundRow): ReturnType<typeof createElement> {
