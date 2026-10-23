@@ -490,13 +490,14 @@ export class ResearchEngine {
 
   private finalDocument(topic: Topic, summary: string | undefined, stopReason: string, status: Status): string {
     const rows = topic.rounds.map(round =>
-      `| ${round.n} | ${round.verdict ?? '未裁决'} | ${round.files} | ${round.submittedAt ?? '未提交'} |`,
+      `| ${round.n} | ${round.verdict ?? '未裁决'} | ${round.files} | ${round.submittedAt ?? '未提交'} | ${round.answeredAt ?? '未完成'} |`,
     )
     return [
       `# ${topic.title}`,
       '',
       `- 状态：${status}`,
       `- 停止依据：${stopReason}`,
+      `- 通道：${topic.channel}`,
       `- 轮次：${topic.rounds.length}/${topic.roundsCap}`,
       '',
       '## 成功判据',
@@ -509,9 +510,13 @@ export class ResearchEngine {
       '',
       '## 轮次',
       '',
-      '| 轮 | 裁决 | 文件 | 提交时间 |',
-      '|---|---|---|---|',
+      '| 轮 | 裁决 | 文件 | 提交时间 | 完成时间 |',
+      '|---|---|---|---|---|',
       ...rows,
+      '',
+      '## 产物',
+      '',
+      ...(topic.artifacts.length > 0 ? topic.artifacts.map(item => `- \`${item}\``) : ['- （无产物）']),
       '',
       '## 原始答复',
       '',

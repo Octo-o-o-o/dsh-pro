@@ -484,10 +484,7 @@ class ProResearchService {
     }
   }
 
-  /**
-   * A human accepted a capped result. Wake the originating conversation so the
-   * agent continues whatever it was doing before it handed this topic off.
-   */
+  /** Quiet reminder for the opt-in `notify=all` mode. */
   private async notifyFinished(id: string, status: 'completed' | 'capped' | 'cancelled'): Promise<void> {
     try {
       const entry = await this.entryFor(id)
@@ -510,6 +507,10 @@ class ProResearchService {
     }
   }
 
+  /**
+   * A human accepted a result. Wake the originating conversation so the agent
+   * continues whatever it was doing before it handed this topic off.
+   */
   private async notifyAccepted(id: string, topic: Topic): Promise<void> {
     try {
       const entry = await this.entryFor(id)
