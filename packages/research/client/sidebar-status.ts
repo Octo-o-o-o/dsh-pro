@@ -24,8 +24,8 @@ interface Counts {
 const POLL_MS = 5_000
 
 function countTopics(
-  topics: Array<{ id?: string; status?: string; updated?: string }>,
-  isSeen: (topic: { id?: string; status?: string; updated?: string }) => boolean,
+  topics: Array<{ topic_id?: string; status?: string; updated?: string }>,
+  isSeen: (topic: { topic_id?: string; status?: string; updated?: string }) => boolean,
 ): Counts {
   const counts: Counts = { active: 0, completed: 0, incomplete: 0, failed: 0 }
   for (const topic of topics) {
@@ -66,8 +66,8 @@ function badgeText(counts: Counts): string {
 
 /** Pure summary used by the badge and by tests. */
 export function sidebarStatusText(
-  topics: Array<{ id?: string; status?: string; updated?: string }>,
-  isSeen: (topic: { id?: string; status?: string; updated?: string }) => boolean = () => false,
+  topics: Array<{ topic_id?: string; status?: string; updated?: string }>,
+  isSeen: (topic: { topic_id?: string; status?: string; updated?: string }) => boolean = () => false,
 ): string {
   return badgeText(countTopics(topics, isSeen))
 }
@@ -141,10 +141,10 @@ export function mountSidebarStatus(options: SidebarStatusOptions): () => void {
     try {
       const response = await fetch(`${options.routes}/topics`, { headers: { accept: 'application/json' } })
       if (!response.ok) return
-      const data = await response.json() as { topics?: Array<{ id?: string; status?: string; updated?: string }> }
+      const data = await response.json() as { topics?: Array<{ topic_id?: string; status?: string; updated?: string }> }
       applyText(sidebarStatusText(
         data.topics ?? [],
-        topic => isTopicSeen(options.panelId, topic.id ?? '', topic.updated),
+        topic => isTopicSeen(options.panelId, topic.topic_id ?? '', topic.updated),
       ))
     } catch {
       // The host may still be starting; poll again on the next tick.

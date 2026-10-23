@@ -127,7 +127,7 @@ async function getJson<T>(url: string): Promise<T> {
   return await response.json() as T
 }
 
-async function postAction(body: Record<string, unknown>): Promise<void> {
+async function postAction<T>(body: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${config.routes}/action`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -137,6 +137,7 @@ async function postAction(body: Record<string, unknown>): Promise<void> {
     const text = await response.text().catch(() => '')
     throw new Error(text === '' ? `${response.status}` : text)
   }
+  return await response.json() as T
 }
 
 function Dot({ status }: { status: string }): ReturnType<typeof createElement> {
@@ -212,9 +213,10 @@ function Panel(): ReturnType<typeof createElement> {
       note = input.trim()
     }
     try {
-      await postAction({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
+      const result = await postAction<{ topic: TopicRow }>({ action, topic_id: selected, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
       if (action === 'accept') {
         setDetail(current => current === undefined ? current : { ...current, status: 'completed' })
+        if (result.topic?.updated !== undefined) markTopicSeen(config.panelId, selected, result.topic.updated)
         setNotice({ kind: 'ok', text: '已接受结果' })
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
@@ -231,7 +233,7 @@ function Panel(): ReturnType<typeof createElement> {
   const submitRegenerate = useCallback(async () => {
     if (selected === undefined) return
     try {
-      await postAction({ action: 'regenerate', topic_id: selected, note: regenNote.trim() })
+      await postAction<{ topic: TopicRow }>({ action: 'regenerate', topic_id: selected, note: regenNote.trim() })
       setNotice({ kind: 'ok', text: '已提交重新生成' })
       setDetail(current => current === undefined ? current : { ...current, status: 'queued' })
       setRegenOpen(false)

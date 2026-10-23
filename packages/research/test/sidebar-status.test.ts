@@ -20,9 +20,9 @@ describe('sidebar status badge', () => {
 
   it('does not count a completed topic the user has already opened', () => {
     const topics = [
-      { id: 'a', status: 'completed', updated: '2026-10-22T15:00:00.000Z' },
-      { id: 'b', status: 'capped', updated: '2026-10-22T15:01:00.000Z' },
+      { topic_id: 'a', status: 'completed', updated: '2026-10-22T15:00:00.000Z' },
+      { topic_id: 'b', status: 'capped', updated: '2026-10-22T15:01:00.000Z' },
     ]
-    expect(sidebarStatusText(topics, topic => topic.id === 'a')).toBe('1 未完成')
+    expect(sidebarStatusText(topics, topic => topic.topic_id === 'a')).toBe('1 未完成')
   })
 })

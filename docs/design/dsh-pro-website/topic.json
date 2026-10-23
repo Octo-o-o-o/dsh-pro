@@ -5,9 +5,9 @@
   "type": "design",
   "parent": null,
   "created": "2026-10-22T14:18:11.302Z",
-  "updated": "2026-10-22T15:32:08.152Z",
-  "status": "capped",
-  "roundsCap": 2,
+  "updated": "2026-10-23T01:22:14.781Z",
+  "status": "waiting",
+  "roundsCap": 3,
   "designs": 3,
   "rounds": [
     {
@@ -29,6 +29,14 @@
       "answeredAt": "2026-10-22T15:31:15.862Z",
       "verdict": "partial",
       "done": false
+    },
+    {
+      "n": 3,
+      "files": 0,
+      "attempts": 1,
+      "submissionId": "d5edce1f-7344-44bd-8a4c-2ae62838ec08",
+      "fingerprint": "d89c15477b233b418fa7218fdd6209c6b4e973143ea95ecc54c783ee5f3da260",
+      "submittedAt": "2026-10-23T01:22:14.778Z"
     }
   ],
   "channel": "web-pro",
@@ -48,6 +56,5 @@
     "artifacts/round-02/image-04.png",
     "artifacts/round-02/image-05.png",
     "final.md"
-  ],
-  "stopReason": "未配置裁决模型，跑满轮次后交付"
+  ]
 }
