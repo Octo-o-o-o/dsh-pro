@@ -138,14 +138,12 @@ interface LiveAgent {
   whenIdle?(): Promise<void>
 }
 
-interface AgentHandle {
-  agent: LiveAgent
-  dispose(): Promise<void>
-}
-
 interface AgentFactory {
   get(id: string): LiveAgent | undefined
-  resume?(options: { resumeSessionId: string }): Promise<AgentHandle>
+}
+
+interface SessionController {
+  resolveAgent(sessionId: string): Promise<LiveAgent | { agent: LiveAgent } | { error: unknown }>
 }
 
 function homeDir(): string {
@@ -284,7 +282,7 @@ class ProResearchService {
   private readonly engines = new Map<string, ResearchEngine>()
   private readonly stores = new Map<string, ResearchStore>()
   private readonly topicSessions = new Map<string, string>()
-  private readonly wakeHandles = new Map<string, AgentHandle>()
+  private sessionController?: SessionController
   private agentFactory?: AgentFactory
   private registryChain: Promise<void> = Promise.resolve()
   private transport?: ChatGptWebTransport
@@ -500,6 +498,10 @@ class ProResearchService {
     this.agentFactory = factory
   }
 
+  useSessionController(controller: SessionController): void {
+    this.sessionController = controller
+  }
+
   private liveAgent(sessionId: string): LiveAgent | undefined {
     const agents = this.agentFactory ?? this.ctx.get('agents') as AgentFactory | undefined
     return agents?.get(sessionId)
@@ -582,14 +584,17 @@ class ProResearchService {
 
   private async wakeSession(sessionId: string, text: string): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
     const agents = this.agentFactory ?? this.ctx.get('agents') as AgentFactory | undefined
-    if (agents === undefined) return { ok: false, reason: 'agents 服务不可用' }
-    let agent = agents.get(sessionId)
+    let agent = agents?.get(sessionId)
     let resumed = false
-    if (agent === undefined && agents.resume !== undefined) {
+    if (agent === undefined) {
+      const controller = this.sessionController ?? this.ctx.get('sessionController') as SessionController | undefined
+      if (controller === undefined) return { ok: false, reason: 'sessionController 服务不可用，无法恢复冷会话' }
       try {
-        const handle = await agents.resume({ resumeSessionId: sessionId })
-        this.wakeHandles.set(sessionId, handle)
-        agent = handle.agent
+        const resolved = await controller.resolveAgent(sessionId)
+        if ('error' in resolved) {
+          return { ok: false, reason: `恢复会话失败：${String(resolved.error)}` }
+        }
+        agent = 'agent' in resolved ? resolved.agent : resolved
         resumed = true
       } catch (error) {
         return { ok: false, reason: `恢复会话失败：${error instanceof Error ? error.message : String(error)}` }
@@ -1105,8 +1110,6 @@ class ProResearchService {
   dispose(): void {
     this.imageTransport?.dispose()
     this.imageTransport = undefined
-    for (const handle of this.wakeHandles.values()) void handle.dispose()
-    this.wakeHandles.clear()
     this.shared?.release()
     this.shared = undefined
     this.transport = undefined
@@ -1423,6 +1426,10 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
     ;(ctx as ServiceContext).inject(['agents'], scoped => {
       const factory = scoped.get('agents') as AgentFactory | undefined
       if (factory !== undefined) service.useAgentFactory(factory)
+    })
+    ;(ctx as ServiceContext).inject(['sessionController'], scoped => {
+      const controller = scoped.get('sessionController') as SessionController | undefined
+      if (controller !== undefined) service.useSessionController(controller)
     })
     ;(ctx as ServiceContext).inject(['webServer'], scoped => registerRoutes(scoped, service, spec))
   ;(ctx as ServiceContext).tools.register(defineTool({
