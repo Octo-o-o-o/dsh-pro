@@ -144,15 +144,25 @@ export class ChatGptWebTransport implements Transport {
     }
   }
 
-  async probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[] }> {
+  async probe(): Promise<{ ok: boolean; loggedIn: boolean; model: string; available: string[]; reason?: string }> {
     const context = await this.ensureContext()
     const page = await context.newPage()
     try {
       await page.goto(this.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       const composer = await firstVisible(page, SELECTORS.composer, 20_000)
       if (composer === undefined) {
+        // A visible login link proves the opposite of a session: reporting it
+        // as loggedIn=true made the panel show "check failed · logged in".
         const login = await firstVisible(page, SELECTORS.loginLink, 2_000)
-        return { ok: false, loggedIn: login === undefined ? false : true, model: '', available: [] }
+        return {
+          ok: false,
+          loggedIn: false,
+          model: '',
+          available: [],
+          reason: login === undefined
+            ? 'composer not found; the page may still be loading or its UI changed'
+            : 'not logged in: the ChatGPT login link is visible',
+        }
       }
       const model = await this.readModel(page)
       return { ok: true, loggedIn: true, model, available: model === '' ? [] : [model] }
@@ -247,10 +257,15 @@ export class ChatGptWebTransport implements Transport {
   }
 
   async submit(request: SubmitRequest): Promise<SubmitResult> {
+    if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
     return await this.gate.exec(() => this.submitNow(request))
   }
 
   private async submitNow(request: SubmitRequest): Promise<SubmitResult> {
+    // Before the click, cancellation is clean: no message exists yet. After the
+    // click we deliberately finish the submission record instead, so the
+    // engine can cancel the real submission instead of losing track of it.
+    if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
     const context = await this.ensureContext()
     const existing = this.topicPages.get(request.topicId)
     const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
@@ -274,6 +289,7 @@ export class ChatGptWebTransport implements Transport {
       const userBaseline = await page.locator(SELECTORS.userMessage).count().catch(() => 0)
       const copyBaseline = await page.locator(SELECTORS.copyButton).count().catch(() => 0)
 
+      if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
       await this.trySelectModel(page, request.model)
 
       const attachmentsToSend = reused ? request.files : (request.fallbackFiles ?? request.files)
@@ -287,6 +303,7 @@ export class ChatGptWebTransport implements Transport {
         await this.waitForAttachmentCards(page, attachmentsToSend)
       }
 
+      if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
       await composer.fill(request.brief)
       const send = await firstVisible(page, SELECTORS.sendButton, 15_000)
       if (send === undefined) {
@@ -297,6 +314,8 @@ export class ChatGptWebTransport implements Transport {
         }
         throw new TransportError(`send button not found (composer ${composerText.length} chars)`, 'ui')
       }
+      // Last point where cancellation can prevent a send.
+      if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
       await send.click()
 
       // A new chat first gets a local id and only later the server-assigned
@@ -323,6 +342,9 @@ export class ChatGptWebTransport implements Transport {
       return { submissionId, fingerprint, attachments, conversationUrl }
     } catch (error) {
       await page.close().catch(() => undefined)
+      // Keep the cancellation signal intact: wrapping an AbortError as a
+      // network failure would park the topic as stalled instead of cancelled.
+      if (error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted')) throw error
       if (error instanceof TransportError) throw error
       throw new TransportError(`submit failed: ${error instanceof Error ? error.message : String(error)}`, 'network', { cause: error })
     }
@@ -457,6 +479,9 @@ export class ChatGptWebTransport implements Transport {
     if (answer === '' && images.length === 0 && codeBlocks.length === 0 && archives.length === 0) {
       throw new TransportError('no new assistant answer for this round', 'ui')
     }
+    // Keep the submission until the round is persisted: a failed artifact
+    // write makes the engine re-read this answer on resume, and dropping the
+    // reference here would turn that recovery into "page state is unknown".
     return {
       answer,
       ...(images.length > 0 ? { images } : {}),

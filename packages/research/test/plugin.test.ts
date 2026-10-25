@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ResearchStore, type ResearchCard } from '@dsh-pro/core'
 import { apply, resolveResearchConfig } from '../src/index.ts'
+import { externalOpenCommand, externalRevealCommand } from '../src/plugin.ts'
 
 const cleanups: string[] = []
 
@@ -20,9 +21,17 @@ interface Captured {
   tools: Array<Record<string, unknown>>
   routes: Route[]
   skills: Array<{ name: string }>
+  toolUnregistered?: number
+  skillUnregistered?: number
 }
 
-function fakeContext(captured: Captured) {
+function fakeContext(captured: Captured, options: { connection?: boolean } = {}) {
+  const disposers: Array<() => void> = []
+  const effect = (fn: () => () => void): (() => void) => {
+    const dispose = fn()
+    if (typeof dispose === 'function') disposers.push(dispose)
+    return dispose
+  }
   const skills = {
     registerProvider: (factory: (control: { signal: AbortSignal }) => unknown) => {
       const provider = factory({ signal: new AbortController().signal }) as {
@@ -32,7 +41,7 @@ function fakeContext(captured: Captured) {
       captured.skills = [{ name: 'provider' }]
       void provider.list().then(items => { captured.skills = items.map(item => ({ name: item.name })) })
       void provider
-      return () => {}
+      return () => { captured.skillUnregistered = (captured.skillUnregistered ?? 0) + 1 }
     },
   }
   const webServer = {
@@ -42,22 +51,27 @@ function fakeContext(captured: Captured) {
     },
   }
   const scoped = {
-    effect: (fn: () => () => void) => fn(),
-    get: () => undefined,
+    effect,
+    get: (name: string) => {
+      if (name === 'skills') return skills
+      if (name === 'connection' && options.connection !== false) return { requestRejection: () => undefined }
+      return undefined
+    },
     webServer,
   }
   const ctx = {
-    effect: (fn: () => () => void) => fn(),
+    effect,
     tools: {
       register: (tool: Record<string, unknown>) => {
         captured.tools.push(tool)
-        return () => {}
+        return () => { captured.toolUnregistered = (captured.toolUnregistered ?? 0) + 1 }
       },
     },
     get: (name: string) => (name === 'skills' ? skills : undefined),
     inject: (services: string[], callback: (scopedContext: unknown) => void) => {
-      if (services.includes('webServer')) callback(scoped)
+      if (services.includes('webServer') || services.includes('skills')) callback(scoped)
     },
+    dispose: () => { for (const dispose of disposers.splice(0)) dispose() },
   }
   return ctx
 }
@@ -91,6 +105,34 @@ describe('plugin wiring', () => {
       '/chatgpt-pro-research/topics',
     ])
     expect(captured.skills.map(skill => skill.name).sort()).toEqual(['pro-research'])
+  })
+
+  it('releases its tool and skill registrations with the plugin fiber', async () => {
+    const captured: Captured = { tools: [], routes: [], skills: [] }
+    const ctx = fakeContext(captured)
+    apply(ctx as never, {})
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(captured.tools).toHaveLength(1)
+    expect(captured.skills.map(skill => skill.name)).toEqual(['pro-research'])
+    ctx.dispose()
+    expect(captured.toolUnregistered).toBe(1)
+    expect(captured.skillUnregistered).toBe(1)
+  })
+
+  it('opens files through a fixed executable instead of a shell', () => {
+    const opener = externalOpenCommand('win32', 'C:\\topic\\a&b.html')
+    expect(opener.command).toBe('explorer.exe')
+    expect(opener.args).toEqual(['C:\\topic\\a&b.html'])
+    expect(externalOpenCommand('darwin', '/tmp/a&b.html')).toEqual({ command: 'open', args: ['/tmp/a&b.html'] })
+    expect(externalOpenCommand('linux', '/tmp/a&b.html')).toEqual({ command: 'xdg-open', args: ['/tmp/a&b.html'] })
+
+    expect(externalRevealCommand('win32', 'C:\\topic\\a&b.html')).toEqual({
+      command: 'explorer.exe',
+      args: ['/select,C:\\topic\\a&b.html'],
+    })
+    expect(externalRevealCommand('darwin', '/tmp/a.html')).toEqual({ command: 'open', args: ['-R', '/tmp/a.html'] })
+    expect(externalRevealCommand('linux', '/tmp/dir/a.html')).toEqual({ command: 'xdg-open', args: ['/tmp/dir'] })
   })
 
   it('merges settings over defaults and keeps three-layer precedence', () => {
@@ -143,6 +185,14 @@ describe('plugin wiring', () => {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
     }
+  })
+
+  it('does not expose routes when the connection guard is missing', async () => {
+    const captured: Captured = { tools: [], routes: [], skills: [] }
+    apply(fakeContext(captured, { connection: false }) as never, { store: 'local' })
+    await Promise.resolve()
+    expect(captured.tools).toHaveLength(1)
+    expect(captured.routes).toHaveLength(0)
   })
 
   it('serves the topics route from an isolated home', async () => {
@@ -386,6 +436,31 @@ describe('route hardening', () => {
       expect(svg.status).toBe(200)
       expect(svg.headers['content-security-policy']).toBe('sandbox')
       expect(svg.headers['x-content-type-options']).toBe('nosniff')
+    })
+  })
+
+  it('routes the panel continue action through its own branch', async () => {
+    const seed = await seedTopic('waiting')
+    await withEnv(seed.home, async () => {
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      apply(fakeContext(captured) as never, { store: 'local' })
+      const route = captured.routes.find(item => item.path === '/chatgpt-pro-research/action') as Route
+
+      // The old handler raised "action must be ..." before looking at the
+      // body. A missing brief must now come from the continue branch itself.
+      const missing = await call(route, chunkedRequest('/chatgpt-pro-research/action', [
+        Buffer.from(JSON.stringify({ topic_id: seed.topicId, action: 'continue' }), 'utf8'),
+      ]))
+      expect(missing.status).toBe(400)
+      expect(missing.json.error).toBe('brief is required')
+
+      // A brief reaches engine.continue; the status guard is the engine's, not
+      // the route's, which proves the fields were forwarded.
+      const forwarded = await call(route, chunkedRequest('/chatgpt-pro-research/action', [
+        Buffer.from(JSON.stringify({ topic_id: seed.topicId, action: 'continue', brief: 'next round' }), 'utf8'),
+      ]))
+      expect(forwarded.status).toBe(400)
+      expect(forwarded.json.error).toContain('only completed/capped/reviewing')
     })
   })
 

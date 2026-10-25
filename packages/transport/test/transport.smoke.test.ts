@@ -50,4 +50,22 @@ describe.skipIf(!enabled)('transport against the local fixture', () => {
       await rm(profileDir, { recursive: true, force: true }).catch(() => undefined)
     }
   }, 45_000)
+
+  it('reports logged-out when only the login link is visible', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dsh-pro-browser-'))
+    const transport = new ChatGptWebTransport({
+      profileDir,
+      headless: true,
+      appUrl: new URL('./fixtures/logged-out.html', import.meta.url).href,
+    })
+    try {
+      const probe = await transport.probe()
+      expect(probe.ok).toBe(false)
+      expect(probe.loggedIn).toBe(false)
+      expect(probe.reason).toContain('login')
+    } finally {
+      await transport.close()
+      await rm(profileDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }, 45_000)
 })

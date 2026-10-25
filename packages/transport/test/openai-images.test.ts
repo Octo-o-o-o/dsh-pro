@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
@@ -105,6 +106,25 @@ function transportFor(baseUrl: string, overrides: Partial<ConstructorParameters<
 }
 
 describe('OpenAIImageTransport', () => {
+  it.each(['disabled', 'oversize', 'corrupt', 'changed', 'missing', 'multiple', 'count'])('refuses a mandatory base edit with %s input before any API call', async scenario => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-edit-base-'))
+    cleanups.push(async () => { await rm(root, { recursive: true, force: true }) })
+    const file = join(root, 'base.png')
+    const bytes = scenario === 'oversize' ? Buffer.concat([PNG, Buffer.alloc(26 * 1024 * 1024)]) : scenario === 'corrupt' ? Buffer.from('not an image') : PNG
+    if (scenario !== 'missing') await writeFile(file, bytes)
+    let requests = 0
+    const transport = transportFor('https://example.invalid/v1', {
+      editMode: scenario === 'disabled' ? 'off' : 'auto',
+      fetchImpl: async () => { requests++; throw new Error('must not send') },
+    })
+    await expect(transport.submit(request({
+      files: scenario === 'multiple' ? [file, file] : [file],
+      designs: scenario === 'count' ? 2 : 1,
+      editBase: { sha256: scenario === 'changed' ? 'old-digest' : createHash('sha256').update(bytes).digest('hex') },
+    }))).rejects.toThrow()
+    expect(requests).toBe(0)
+  })
+
   it('generates one image per direction with model, size and auth', async () => {
     const server = await startServer((_request, response) => json(response, 200, imageBody()))
     const transport = transportFor(server.baseUrl, { size: '1024x1024', quality: 'high' })

@@ -1,5 +1,5 @@
-import { appendFile, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { appendFile, copyFile, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Unzip, UnzipInflate, UnzipPassThrough, zipSync } from 'fflate'
 import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
@@ -72,6 +72,14 @@ function assertTopicShape(value: unknown, id: string): asserts value is Topic {
   if (typeof topic.title !== 'string') fail('title')
   if (topic.type !== 'research' && topic.type !== 'design') fail('type')
   if (!STATUSES.includes(topic.status)) fail('status')
+  // list() sorts on this field; a missing/non-string value used to throw from
+  // localeCompare and take down the whole /topics response. Older records can
+  // fall back to created instead of disappearing from the sidebar.
+  if (typeof topic.updated !== 'string' || topic.updated === '') {
+    const created = (topic as { created?: unknown }).created
+    if (typeof created === 'string' && created !== '') topic.updated = created
+    else fail('updated')
+  }
   if (!Number.isInteger(topic.roundsCap) || topic.roundsCap < 1) fail('roundsCap')
   if (!Array.isArray(topic.rounds)) fail('rounds')
   if (typeof topic.channel !== 'string') fail('channel')
@@ -258,30 +266,47 @@ export class ResearchStore {
     await this.appendJsonLine(join(dir, 'events.ndjson'), { at: new Date().toISOString(), ...event })
   }
 
-  private async uniqueDir(slug: string, id: string): Promise<string> {
-    const root = this.rootDir()
-    let candidate = slug
-    let attempt = 0
-    while (true) {
-      const dir = join(root, candidate)
-      if (!(await this.exists(join(dir, 'topic.json')))) return dir
-      attempt += 1
-      candidate = `${slug}-${shortHash(`${id}:${attempt}`)}`
+  /**
+   * The id is written into topic.json, the registry, raw-answer paths and
+   * session locators; a duplicate silently merges two topics. Ten hex chars
+   * make this rare, and the scan keeps it correct even if two creates race or
+   * an old record already occupies the value.
+   */
+  private async uniqueTopicId(title: string): Promise<string> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const id = newTopicId(title)
+      if (!(await this.topicIdExists(id))) return id
     }
+    return `topic-${randomUUID().replace(/-/g, '').slice(0, 12)}`
   }
 
-  private async exists(path: string): Promise<boolean> {
-    try {
-      await readFile(path)
-      return true
-    } catch {
-      return false
+  private async topicIdExists(id: string): Promise<boolean> {
+    if (this.dirs.has(id)) return true
+    await this.list().catch(() => [])
+    return this.dirs.has(id)
+  }
+
+  private async uniqueDir(slug: string, id: string): Promise<string> {
+    const root = this.rootDir()
+    await mkdir(root, { recursive: true })
+    // Reserve the directory atomically. The old read-then-write check let two
+    // concurrent creates with the same title pick one directory and overwrite
+    // each other's topic.json.
+    for (let attempt = 0; ; attempt += 1) {
+      const candidate = attempt === 0 ? slug : `${slug}-${shortHash(`${id}:${attempt}`)}`
+      const dir = join(root, candidate)
+      try {
+        await mkdir(dir)
+        return dir
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      }
     }
   }
 
   async create(card: ResearchCard, roundsCap: number, model: string, channel: string): Promise<{ topic: Topic; dir: string }> {
     const now = new Date().toISOString()
-    const id = newTopicId(card.title)
+    const id = await this.uniqueTopicId(card.title)
     const topic: Topic = {
       schema: 1,
       id,
@@ -315,6 +340,11 @@ export class ResearchStore {
    */
   private async stageMaterials(dir: string, refs: readonly MaterialRef[]): Promise<MaterialRef[]> {
     const staged: MaterialRef[] = []
+    const topicRoot = await realpath(dir)
+    const materialsDir = join(dir, 'materials')
+    await mkdir(materialsDir, { recursive: true })
+    const root = await realpath(materialsDir)
+    if (!root.startsWith(`${topicRoot}${sep}`)) throw new Error('material directory escapes the topic')
     for (const ref of refs) {
       if (ref.source === undefined || ref.source === '') {
         staged.push(ref)
@@ -325,7 +355,14 @@ export class ResearchStore {
         throw new Error(`material path escapes the topic: ${ref.path}`)
       }
       const target = join(dir, 'materials', safePath)
-      await mkdir(dirname(target), { recursive: true })
+      let parent = materialsDir
+      for (const part of safePath.split('/').slice(0, -1)) {
+        parent = join(parent, part)
+        await mkdir(parent, { recursive: true })
+        if (!(await realpath(parent)).startsWith(`${root}${sep}`)) throw new Error('material directory escapes the topic')
+      }
+      const existingTarget = await realpath(target).catch(error => { if (isMissing(error)) return undefined; throw error })
+      if (existingTarget !== undefined && !existingTarget.startsWith(`${root}${sep}`)) throw new Error('material file escapes the topic')
       await copyFile(ref.source, target)
       const copied = await readFile(target)
       const digest = createHash('sha256').update(copied).digest('hex')
@@ -401,6 +438,16 @@ export class ResearchStore {
     }
   }
 
+  /** Resolve one manifest path and refuse anything outside the staged tree. */
+  private stagedMaterialPath(materialsRoot: string, path: string): string {
+    const resolved = isAbsolute(path) ? resolve(path) : resolve(materialsRoot, path)
+    const rel = relative(materialsRoot, resolved)
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+      throw new Error(`material manifest path escapes the topic: ${path}`)
+    }
+    return resolved
+  }
+
   async readMaterialPaths(topic: Topic): Promise<string[]> {
     let raw: string
     try {
@@ -412,7 +459,7 @@ export class ResearchStore {
       return parsed.materials
         .map(item => item.path)
         .filter((path): path is string => typeof path === 'string' && path !== '')
-        .map(path => isAbsolute(path) ? path : join(materialsRoot, path))
+        .map(path => this.stagedMaterialPath(materialsRoot, path))
     } catch (error) {
       if (isMissing(error)) return []
       throw new Error(`cannot read material manifest: ${error instanceof Error ? error.message : String(error)}`)
@@ -458,7 +505,7 @@ export class ResearchStore {
       const materialsRoot = join(dir, 'materials')
       return parsed.materials.map(item => ({
         ...item,
-        path: isAbsolute(item.path) ? item.path : join(materialsRoot, item.path),
+        path: this.stagedMaterialPath(materialsRoot, item.path),
       }))
     } catch (error) {
       if (isMissing(error)) return undefined

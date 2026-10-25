@@ -1,17 +1,27 @@
 import { createHash, randomBytes } from 'node:crypto'
 
-/** Four hex chars; used for ids and collision suffixes. */
+/** Hex prefix; four chars are enough for a directory suffix, not for a topic id. */
 export function shortHash(value: string, length = 4): string {
   return createHash('sha256').update(value).digest('hex').slice(0, length)
 }
 
+/**
+ * Topic ids double as user-facing tool input, registry keys, raw-answer folder
+ * names and session-locator names. Four hex chars (65k space) collided in
+ * realistic topic counts and silently merged two topics; ten hex chars give a
+ * 2^40 space while staying short enough to copy by hand.
+ */
 export function newTopicId(seed: string): string {
-  return `topic-${shortHash(`${seed}:${Date.now()}:${randomBytes(4).toString('hex')}`)}`
+  return `topic-${shortHash(`${seed}:${Date.now()}:${randomBytes(8).toString('hex')}`, 10)}`
 }
 
 /**
  * Directory name for a topic. ASCII titles become kebab-case; anything else
  * falls back to `topic-<hash4>`. Callers append a hash on collision.
+ *
+ * A title that only has digits/version punctuation (`0.3.2`) or a stray short
+ * ASCII fragment (`DSH 插件对比` -> `dsh`) is not a readable directory name, so
+ * it falls back to the hash form instead of producing `0-3-2` / `dsh`.
  */
 export function slugifyTitle(title: string): string {
   const ascii = title
@@ -22,7 +32,9 @@ export function slugifyTitle(title: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 48)
     .replace(/-+$/g, '')
-  return ascii.length > 0 ? ascii : `topic-${shortHash(title)}`
+  const letters = ascii.replace(/[^a-z]/g, '')
+  const readable = ascii.length >= 5 && letters.length >= 3
+  return readable ? ascii : `topic-${shortHash(title)}`
 }
 
 export function sha256Text(value: string): string {

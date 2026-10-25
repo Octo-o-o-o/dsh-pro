@@ -2,14 +2,16 @@
 
 Status snapshot: 2026-10-23 (Asia/Shanghai). Release workflow: [RELEASING.md](RELEASING.md).
 
+> 2026-10-25：两个插件发布 `v0.3.2`；独立复核、干净安装、真实网页闭环和本机响应式验证见 [发布验收](validation/release-0.3.2-2026-10-25.md)。npm 按用户指示暂缓，仍为 0.2.6；市场本轮没有重新提交。以下市场审核记录保留 2026-10-23 的历史状态。
+
 ## Coordinates
 
 | Plugin | Public repo | Commit | Version |
 |---|---|---|---|
-| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `9e3853f1a64135b8c82eb098007a619057e5102e`（dsh.so 提交）/ `8a9d57e`（当前 HEAD） | `0.3.1` |
-| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `e29502c3350eb3ab0b69a7c3c66928ddbcf1faea`（dsh.so 提交）/ `25dcce3`（当前 HEAD） | `0.3.1` |
+| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `9e3853f1a64135b8c82eb098007a619057e5102e`（dsh.so 提交）/ `v0.3.2`（本次 Git 发布） | `0.3.2` |
+| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `e29502c3350eb3ab0b69a7c3c66928ddbcf1faea`（dsh.so 提交）/ `v0.3.2`（本次 Git 发布） | `0.3.2` |
 
-0.3.1 was released on 2026-10-23; the dsh.pub / dsh.so submissions below still point at 0.3.0 and need re-submission before they reflect this version.
+Git Release 0.3.2 is independent of marketplace acceptance. The submissions below still refer to 0.3.0; no new listing is claimed.
 
 Both public repos are generated from this monorepo by `node scripts/sync-dist.mjs`; `lib/` is committed there for dsh.pub and `github:` installs. The monorepo remains the source of truth.
 

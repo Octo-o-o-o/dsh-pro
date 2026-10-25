@@ -48,12 +48,14 @@ interface TopicRow {
   channel?: string
   model?: string
   judge_enabled?: boolean
+  image_edit_enabled?: boolean
   stall_reason: string | null
   rounds: number
   rounds_cap: number
   designs?: number | null
   stop_reason: string | null
   review_from?: string | null
+  accepted_at?: string | null
   artifacts: string[]
   updated: string
   root?: string
@@ -65,10 +67,13 @@ interface RoundRow {
   generation?: number
   verdict?: string
   files: number
+  designs?: number
   submittedAt?: string
   answeredAt?: string
   attempts?: number
   artifacts?: string[]
+  judgeError?: string
+  baseArtifact?: string
 }
 
 interface GenerationRow {
@@ -89,6 +94,8 @@ interface TopicDetail extends TopicRow {
   generations?: GenerationRow[]
   artifact_details?: ArtifactInfo[]
   path?: string
+  report?: string | null
+  report_info?: { revision: string; updated: string; status: 'current' | 'stale' | 'unknown'; generation?: number; throughRound?: number } | null
   rounds_detail?: RoundRow[]
 }
 
@@ -106,7 +113,7 @@ type Filter = 'all' | 'active' | 'attention' | 'done'
 type Tab = 'overview' | 'rounds' | 'artifacts'
 type DialogState =
   | { kind: 'regenerate' }
-  | { kind: 'continue' }
+  | { kind: 'continue'; base?: { topicId: string; path: string } }
   | { kind: 'check'; conclusion: 'submitted' | 'not_submitted' | 'reopen' }
 
 const FILTERS: Array<{ id: Filter; label: string }> = [
@@ -284,6 +291,7 @@ function generationLabel(generation: GenerationRow, rounds: RoundRow[]): string 
 }
 
 function outcomeOf(round: RoundRow): { label: string; tone: string } {
+  if (round.judgeError !== undefined) return { label: '裁决失败', tone: 'rejected' }
   if (round.verdict === 'accepted') return { label: '通过', tone: 'accepted' }
   if (round.verdict === 'partial') return { label: '部分通过', tone: 'partial' }
   if (round.verdict === 'rejected') return { label: '未通过', tone: 'rejected' }
@@ -291,17 +299,24 @@ function outcomeOf(round: RoundRow): { label: string; tone: string } {
   return { label: '进行中', tone: 'pending' }
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store' })
+async function getJson<T>(url: string, timeoutMs = 15_000): Promise<T> {
+  // A hung fetch used to leave listInFlight/detailInFlight set forever, which
+  // froze polling and disabled every action button with no error state.
+  const response = await fetch(url, {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(timeoutMs),
+  })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
   return await response.json() as T
 }
 
-async function postAction<T>(body: Record<string, unknown>): Promise<T> {
+async function postAction<T>(body: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
   const response = await fetch(`${config.routes}/action`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')
@@ -533,7 +548,7 @@ function EmptyDetail({ design }: { design: boolean }): ReactNode {
     <div className="dshpro-empty-detail">
       <div className="dshpro-empty-mark">{design ? 'D' : 'R'}</div>
       <strong>{design ? '选择左侧的设计主题' : '选择左侧的研究主题'}</strong>
-      <span>{design ? '列表里会显示状态、轮次和产物；点开后有图片、demo 和文件。' : '列表里会显示状态、轮次和产物；点开后有轮次、裁决和最终文档。'}</span>
+      <span>{design ? '列表里会显示状态、轮次和产物；点开后有图片、demo 和文件。' : '列表里会显示状态、轮次和产物；点开后有轮次、裁决、运行汇总和交付稿。'}</span>
     </div>
   )
 }
@@ -545,7 +560,7 @@ function FinalCard({ detail, path }: { detail: TopicDetail; path: string }): Rea
       <div className="dshpro-final-info">
         <div className="dshpro-final-title">{summaryLabel(detail, path)}</div>
         <div className="dshpro-final-path" title={path}>{artifactName(path)}</div>
-        <div className="dshpro-final-desc">已有总结 · 点击阅读全文</div>
+        <div className="dshpro-final-desc">{path === 'report.md' ? '宿主整理 · 点击阅读全文' : '自动生成 · 点击阅读全文'}</div>
       </div>
       <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, path) }}>查看</button>
     </div>
@@ -589,7 +604,9 @@ function ArtifactLink({ detail, path }: { detail: TopicDetail; path: string }): 
 
 function RoundTable({ detail, rounds, generation }: { detail: TopicDetail; rounds: RoundRow[]; generation: number }): ReactNode {
   return (
-    <div className="dshpro-table-wrap">
+    <div className="dshpro-table-region">
+      <div className="dshpro-table-hint">可横向滚动查看完整记录</div>
+      <div className="dshpro-table-wrap" tabIndex={0} role="region" aria-label="轮次记录，可横向滚动">
       <table className="dshpro-table">
         <thead>
           <tr>
@@ -621,10 +638,11 @@ function RoundTable({ detail, rounds, generation }: { detail: TopicDetail; round
                 <td>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     <button type="button" className="dshpro-btn small" onClick={() => { void openAnswer(detail.topic_id, round.n) }}>查看回答</button>
-                    {round.verdict !== undefined && (
+                    {round.verdict !== undefined || round.judgeError !== undefined ? (
                       <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, `rounds/${String(round.n).padStart(2, '0')}-verdict.md`) }}>裁决</button>
-                    )}
+                    ) : null}
                     {artifacts.length > 0 && <a className="dshpro-btn small" href={bundleUrl(detail.topic_id, round.n)} download={`round-${String(round.n).padStart(2, '0')}.zip`}>下载 ZIP</a>}
+                    {round.baseArtifact !== undefined && <button type="button" className="dshpro-btn small" onClick={() => openViewerImage(detail.topic_id, round.baseArtifact as string)}>查看底图</button>}
                   </div>
                 </td>
               </tr>,
@@ -652,6 +670,7 @@ function RoundTable({ detail, rounds, generation }: { detail: TopicDetail; round
           })}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }
@@ -673,7 +692,7 @@ function RoundsView({ detail }: { detail: TopicDetail }): ReactNode {
                 </div>
               </div>
               {generation.final !== undefined && generation.final !== '' && (
-                <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, generation.final as string) }}>本版总结</button>
+                <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, generation.final as string) }}>本版运行汇总</button>
               )}
             </div>
             {rounds.length > 0 ? <RoundTable detail={detail} rounds={rounds} generation={generation.n} /> : <div className="dshpro-empty-inline">等待提交…</div>}
@@ -686,13 +705,17 @@ function RoundsView({ detail }: { detail: TopicDetail }): ReactNode {
 }
 
 function summaryLabel(detail: TopicDetail, path: string): string {
+  if (path === 'report.md') return '宿主交付稿'
   const source = generationList(detail).find(item => item.final === path)
   return source !== undefined ? `第 ${source.n} 版总结` : '已有总结 · 版本未确认'
 }
 
 function ResearchOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab: Tab) => void }): ReactNode {
-  const path = latestFinal(detail)
-  const source = `${detail.topic_id}:${path ?? ''}`
+  const report = detail.report ?? undefined
+  const generated = latestFinal(detail)
+  const path = report ?? generated
+  const isReport = report !== undefined
+  const source = `${detail.topic_id}:${path ?? ''}:${isReport ? detail.report_info?.revision ?? '' : ''}`
   const [document, setDocument] = useState<{ source: string; text?: string; error?: string }>()
   const [retry, setRetry] = useState(0)
   useEffect(() => {
@@ -700,7 +723,7 @@ function ResearchOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab:
     const abort = new AbortController()
     setDocument({ source })
     void fetchText(`${config.routes}/file?id=${encodeURIComponent(detail.topic_id)}&path=${encodeURIComponent(path)}`, abort.signal)
-      .then(text => { if (!abort.signal.aborted) setDocument({ source, text }) })
+      .then(text => { if (!abort.signal.aborted) setDocument({ source, text: text.replace(/^\s*<!--\s*dsh-pro-report:[\s\S]*?-->\s*/, '') }) })
       .catch((error: unknown) => {
         if (!abort.signal.aborted) setDocument({ source, error: error instanceof Error ? error.message : String(error) })
       })
@@ -709,18 +732,33 @@ function ResearchOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab:
   const current = document?.source === source ? document : undefined
   const generations = generationList(detail)
   const latest = generations.at(-1)
-  const previous = path !== undefined && latest !== undefined && latest.final !== path
+  const previous = !isReport && path !== undefined && latest !== undefined && latest.final !== path
+  const title = path === undefined ? '运行汇总尚未生成' : isReport ? '宿主交付稿' : '运行汇总（自动生成）'
   return (
     <section className="dshpro-document-card">
       <div className="dshpro-section-heading">
-        <div><span className="dshpro-eyebrow">研究文档</span><h3>{path === undefined ? '总结尚未生成' : summaryLabel(detail, path)}</h3></div>
+        <div><span className="dshpro-eyebrow">{isReport ? '交付稿' : '运行汇总'}</span><h3>{title}</h3></div>
         {path !== undefined && <button type="button" className="dshpro-btn" onClick={() => { void openTopicFile(detail.topic_id, path) }}>阅读全文 <Glyph name="arrow" /></button>}
       </div>
-      {path === undefined ? <div className="dshpro-content-empty"><Glyph name="file" size={28} /><strong>这里将呈现研究总结</strong><span>已有轮次的回答可在运行记录中查看。</span><button className="dshpro-btn" type="button" onClick={() => onTab('rounds')}>查看运行记录</button></div> : <>
-        <div className="dshpro-document-context">{previous ? '当前版本尚无已关联总结，以下为已有文档。' : '预览已保存的总结。'}{detail.status === 'cancelled' || detail.status === 'failed' || detail.status === 'stalled' ? '任务未正常完成，请核对内容与完整性。' : '任务状态不代表人工验收。'}</div>
-        {current?.error !== undefined ? <div className="dshpro-content-empty" role="alert"><strong>暂时无法读取总结</strong><span>{current.error}</span><button type="button" className="dshpro-btn" onClick={() => setRetry(value => value + 1)}>重新加载</button></div>
-          : current?.text === undefined ? <div className="dshpro-document-loading" role="status" aria-label="正在读取总结"><div className="dshpro-skeleton" /><div className="dshpro-skeleton" /><div className="dshpro-skeleton" /></div>
-            : current.text.trim() === '' ? <div className="dshpro-content-empty">此总结文件暂无内容。</div>
+      {isReport && <div className="dshpro-report-source" data-state={detail.report_info?.status ?? 'unknown'}>
+        <strong>{detail.report_info?.status === 'current' ? '已覆盖当前轮次' : detail.report_info?.status === 'stale' ? '交付稿待更新' : '覆盖范围未确认'}</strong>
+        <span>{detail.report_info?.throughRound !== undefined ? `第 ${detail.report_info.generation} 版 · 覆盖至第 ${detail.report_info.throughRound} 轮` : '旧稿未记录来源，请对照运行记录核实。'}{detail.report_info?.updated !== undefined ? ` · 文稿更新 ${formatTime(detail.report_info.updated)}` : ''}</span>
+        {detail.report_info?.throughRound !== undefined && <div className="dshpro-source-actions">
+          <button type="button" className="dshpro-btn small" onClick={() => { void openAnswer(detail.topic_id, detail.report_info?.throughRound as number) }}>来源回答</button>
+          <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, `rounds/${String(detail.report_info?.throughRound).padStart(2, '0')}-verdict.md`) }}>来源裁决</button>
+        </div>}
+      </div>}
+      {path === undefined ? <div className="dshpro-content-empty"><Glyph name="file" size={28} /><strong>这里将呈现运行汇总</strong><span>已有轮次的回答可在运行记录中查看；宿主整理后会生成交付稿 report.md，并优先显示在这里。</span><button className="dshpro-btn" type="button" onClick={() => onTab('rounds')}>查看运行记录</button></div> : <>
+        <div className="dshpro-document-context">
+          {isReport
+            ? '宿主按判据整理的交付稿；结论和证据仍应回到轮次与原始答复核对。'
+            : '自动生成的运行汇总，不是交付稿；宿主交付稿 report.md 尚未生成。'}
+          {previous ? '当前版本尚无已关联总结，以下为已有文档。' : ''}
+          {detail.accepted_at ? '当前结果已人工接受。' : detail.status === 'cancelled' || detail.status === 'failed' || detail.status === 'stalled' || detail.status === 'reviewing' ? '任务未正常结束，请核对内容与完整性。' : '任务状态不代表人工验收。'}
+        </div>
+        {current?.error !== undefined ? <div className="dshpro-content-empty" role="alert"><strong>暂时无法读取文档</strong><span>{current.error}</span><button type="button" className="dshpro-btn" onClick={() => setRetry(value => value + 1)}>重新加载</button></div>
+          : current?.text === undefined ? <div className="dshpro-document-loading" role="status" aria-label="正在读取文档"><div className="dshpro-skeleton" /><div className="dshpro-skeleton" /><div className="dshpro-skeleton" /></div>
+            : current.text.trim() === '' ? <div className="dshpro-content-empty">此文件暂无内容。</div>
               : <DocumentContent text={current.text.slice(0, 18000)} />}
         {current?.text !== undefined && current.text.length > 18000 && <button type="button" className="dshpro-btn" onClick={() => { void openTopicFile(detail.topic_id, path) }}>继续阅读全文</button>}
       </>}
@@ -728,7 +766,7 @@ function ResearchOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab:
   )
 }
 
-function ArtifactImage({ detail, path }: { detail: TopicDetail; path: string }): ReactNode {
+function ArtifactImage({ detail, path, onRefine }: { detail: TopicDetail; path: string; onRefine?: (path: string) => void }): ReactNode {
   const [failed, setFailed] = useState(false)
   const [retry, setRetry] = useState(0)
   const source = assetUrl(detail.topic_id, path)
@@ -737,6 +775,7 @@ function ArtifactImage({ detail, path }: { detail: TopicDetail; path: string }):
     {failed ? <div className="dshpro-image-error"><Glyph name="image" size={24} /><span>图片加载失败</span><button type="button" className="dshpro-btn small" onClick={() => { setFailed(false); setRetry(value => value + 1) }}>重新加载</button></div>
       : <button type="button" className="dshpro-art" title={`查看 ${artifactDisplayName(path)}`} onClick={() => openViewerImage(detail.topic_id, path)}><img src={`${source}&v=${retry}`} alt={artifactDisplayName(path)} loading="lazy" onError={() => setFailed(true)} /></button>}
     <div className="dshpro-art-caption"><Glyph name="image" /><span title={path}>{artifactDisplayName(path)}</span></div>
+    {onRefine !== undefined && /\.(png|jpe?g|webp)$/i.test(path) && detail.rounds_detail?.some(round => round.artifacts?.includes(path)) && <div className="dshpro-art-actions"><button type="button" className="dshpro-btn small" disabled={failed || detail.image_edit_enabled === false} title={detail.image_edit_enabled === false ? 'imageEdit=off：参考图编辑已关闭' : '以所选图片为底图，只修改本轮要求的内容'} onClick={() => onRefine(path)}>以这张继续改</button></div>}
   </div>
 }
 
@@ -758,31 +797,40 @@ function DemoCard({ detail, path }: { detail: TopicDetail; path: string }): Reac
   )
 }
 
-function DesignOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab: Tab) => void }): ReactNode {
+function DesignOverview({ detail, onTab, onRefine }: { detail: TopicDetail; onTab: (tab: Tab) => void; onRefine?: (path: string) => void }): ReactNode {
   const generation = generationList(detail).at(-1)
   const round = generation === undefined ? undefined : generationRounds(detail, generation.n).at(-1)
   const artifacts = round === undefined ? [] : roundArtifacts(detail, round)
   const images = artifacts.filter(path => artifactKind(detail, path) === 'image')
   const demos = artifacts.filter(path => artifactKind(detail, path) === 'demo')
+  const expected = round?.designs ?? detail.designs ?? 3
+  const visualStatus = detail.accepted_at ? '当前结果已人工接受' : '视觉待人工确认'
+  const pipeline = round === undefined
+    ? '等待本轮结果。'
+    : detail.channel === 'api'
+      ? `图片通道：本轮取回 ${images.length}/${expected} 张；只产出图片，不产出 HTML demo；${visualStatus}。`
+      : `本轮取回 ${images.length}/${expected} 张图；${demos.length > 0 ? `HTML demo ${demos.length} 个` : 'HTML 未取回'}；${visualStatus}。`
   return <div>
     <section className="dshpro-design-sheet">
       <div className="dshpro-section-heading">
         <div><span className="dshpro-eyebrow">设计成果{generation !== undefined ? ` / 第 ${generation.n} 版` : ''}</span><h3>{round !== undefined ? `第 ${round.n} 轮图片` : '等待本版设计'} <span className="dshpro-muted">{images.length > 0 ? `· ${images.length} 张` : ''}</span></h3></div>
         <button type="button" className="dshpro-btn ghost" onClick={() => onTab('artifacts')}>全部产物 <Glyph name="arrow" /></button>
       </div>
-      {images.length > 0 ? <div className="dshpro-gallery">{images.map(path => <ArtifactImage key={path} detail={detail} path={path} />)}</div>
+      <div className="dshpro-document-context">{pipeline}</div>
+      {images.length > 0 ? <div className="dshpro-gallery">{images.map(path => <ArtifactImage key={path} detail={detail} path={path} onRefine={onRefine} />)}</div>
         : <div className="dshpro-content-empty"><Glyph name="image" size={32} /><strong>本轮还没有图片</strong><span>生成的设计图将在这里完整呈现。</span>{imageArtifacts(detail).length > 0 && <button type="button" className="dshpro-btn" onClick={() => onTab('artifacts')}>查看历史图片（{imageArtifacts(detail).length}）</button>}</div>}
     </section>
     {demos.length > 0 && <section className="dshpro-card"><div className="dshpro-card-head"><h3 className="dshpro-card-title">本轮交互演示</h3></div>{demos.map(path => <DemoCard key={path} detail={detail} path={path} />)}</section>}
   </div>
 }
 
-function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
+function ArtifactsView({ detail, onRefine }: { detail: TopicDetail; onRefine?: (path: string) => void }): ReactNode {
   const final = latestFinal(detail)
+  const report = detail.report ?? undefined
   if (!config.designMode) {
     const groups = new Map<string, string[]>()
     for (const path of detail.artifacts) {
-      if (path === final || (final !== undefined && path === 'final.md')) continue
+      if (path === final || path === 'report.md' || (final !== undefined && path === 'final.md')) continue
       const match = path.match(/round-(\d+)/i)
       const key = match !== null ? `第 ${Number(match[1])} 轮` : '主题文件'
       const list = groups.get(key) ?? []
@@ -796,9 +844,15 @@ function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
     })
     return (
       <div>
+        {report !== undefined && (
+          <section className="dshpro-card">
+            <div className="dshpro-card-head"><div className="dshpro-card-title">宿主交付稿</div></div>
+            <FinalCard detail={detail} path={report} />
+          </section>
+        )}
         {final !== undefined && (
           <section className="dshpro-card">
-            <div className="dshpro-card-head"><div className="dshpro-card-title">总结文档</div></div>
+            <div className="dshpro-card-head"><div className="dshpro-card-title">运行汇总（自动生成）</div></div>
             <FinalCard detail={detail} path={final} />
           </section>
         )}
@@ -829,7 +883,7 @@ function ArtifactsView({ detail }: { detail: TopicDetail }): ReactNode {
           </div>
           <div className="dshpro-gallery">
             {images.map(path => (
-              <ArtifactImage key={path} detail={detail} path={path} />
+              <ArtifactImage key={path} detail={detail} path={path} onRefine={onRefine} />
             ))}
           </div>
         </section>
@@ -956,10 +1010,12 @@ function ActionDialog({
   regenNote,
   continueNote,
   continueDesigns,
+  materialsNote,
   checkNote,
   onRegenNote,
   onContinueNote,
   onContinueDesigns,
+  onMaterialsNote,
   onCheckNote,
   onClose,
   onSubmit,
@@ -972,16 +1028,19 @@ function ActionDialog({
   regenNote: string
   continueNote: string
   continueDesigns: string
+  materialsNote: string
   checkNote: string
   onRegenNote: (value: string) => void
   onContinueNote: (value: string) => void
   onContinueDesigns: (value: string) => void
+  onMaterialsNote: (value: string) => void
   onCheckNote: (value: string) => void
   onClose: () => void
   onSubmit: () => void
 }): ReactNode {
   const modal = useModal()
-  const title = dialog.kind === 'regenerate' ? '重新生成' : dialog.kind === 'continue' ? '继续一轮' : '人工核对'
+  const base = dialog.kind === 'continue' ? dialog.base : undefined
+  const title = dialog.kind === 'regenerate' ? '重新生成' : dialog.kind === 'continue' ? base !== undefined ? '以这张继续改' : '继续一轮' : '人工核对'
   return (
     <dialog ref={modal} className="dshpro-overlay" aria-label={title} onCancel={event => { event.preventDefault(); if (!busy) onClose() }} onClick={() => { if (!busy) onClose() }}>
       <div className="dshpro-modal-card is-dialog" onClick={event => event.stopPropagation()}>
@@ -999,16 +1058,24 @@ function ActionDialog({
           )}
           {dialog.kind === 'continue' && (
             <>
-              <label htmlFor="dshpro-continue">这一轮只补充什么</label>
-              <p>一次继续只追加一轮，不会顺带跑完剩余上限。</p>
-              <textarea id="dshpro-continue" value={continueNote} onChange={event => onContinueNote(event.target.value)} placeholder="例如：只查部署风险；只改配色，保留版式" />
-              {designMode && (
+              {base !== undefined && <div className="dshpro-edit-base"><img src={assetUrl(base.topicId, base.path)} alt="本轮修改底图" /><span>{artifactDisplayName(base.path)}<small>仅使用这张底图 · 一轮一个结果</small></span></div>}
+              <label htmlFor="dshpro-continue">{base !== undefined ? '保留什么，只改什么' : '这一轮只补充什么'}</label>
+              <p>{base !== undefined ? '原图保留，改稿另存；生成效果仍需你确认。' : '一次继续只追加一轮，不会顺带跑完剩余上限。'}</p>
+              <textarea id="dshpro-continue" value={continueNote} onChange={event => onContinueNote(event.target.value)} placeholder={base !== undefined ? '例如：保留文字和布局，只把背景改为米白色' : '例如：只查部署风险；只改配色，保留版式'} />
+              {designMode && base === undefined && (
                 <div className="dshpro-dialog-row">
                   <label htmlFor="dshpro-directions">本轮方向数</label>
                   <input id="dshpro-directions" type="number" min={1} max={6} value={continueDesigns} onChange={event => onContinueDesigns(event.target.value)} placeholder="3" />
                   <span>1–6</span>
                 </div>
               )}
+            </>
+          )}
+          {(dialog.kind === 'regenerate' || dialog.kind === 'continue') && base === undefined && (
+            <>
+              <label htmlFor="dshpro-materials">新增材料（可选）</label>
+              <p>每行一个相对项目根的路径，只发送本轮新增文件；超限、密钥命中或路径不存在会在提交前报错。</p>
+              <textarea id="dshpro-materials" value={materialsNote} onChange={event => onMaterialsNote(event.target.value)} placeholder={'docs/evidence.md\nassets/brand.png'} />
             </>
           )}
           {dialog.kind === 'check' && (
@@ -1022,7 +1089,7 @@ function ActionDialog({
         {feedback !== undefined && <div className="dshpro-dialog-feedback" data-kind={feedback.kind} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.text}</div>}
         <div className="dshpro-dialog-foot">
           <button type="button" className="dshpro-btn" onClick={onClose} disabled={busy}>取消</button>
-          <button type="button" className="dshpro-btn primary" onClick={onSubmit} disabled={busy}>{busy ? '处理中…' : dialog.kind === 'regenerate' ? '提交重新生成' : dialog.kind === 'continue' ? '提交继续' : '提交核对'}</button>
+          <button type="button" className="dshpro-btn primary" onClick={onSubmit} disabled={busy}>{busy ? '处理中…' : dialog.kind === 'regenerate' ? '提交重新生成' : dialog.kind === 'continue' ? base !== undefined ? '提交修改' : '提交继续' : '提交核对'}</button>
         </div>
       </div>
     </dialog>
@@ -1109,6 +1176,7 @@ function Panel(): ReactNode {
   const [regenNote, setRegenNote] = useState('')
   const [continueNote, setContinueNote] = useState('')
   const [continueDesigns, setContinueDesigns] = useState('')
+  const [materialsNote, setMaterialsNote] = useState('')
   const [checkNote, setCheckNote] = useState('')
   const [viewer, setViewer] = useState<Viewer | undefined>(undefined)
   showViewer = view => {
@@ -1233,7 +1301,12 @@ function Panel(): ReactNode {
       return false
     }
     try {
-      const result = await postAction<{ topic: TopicRow & { wake?: { ok: boolean; resumed?: boolean; reason?: string } } }>({ action, topic_id: target, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) })
+      if (action === 'cancel') setNotice({ kind: 'ok', text: '正在取消；若正在提交，会等当前提交结束后停止…' })
+      const result = await postAction<{ topic: TopicRow & { wake?: { ok: boolean; resumed?: boolean; reason?: string } } }>(
+        { action, topic_id: target, ...(conclusion !== undefined ? { conclusion } : {}), ...(note !== undefined ? { note } : {}) },
+        // Engine.cancel waits for an already-clicked submit (bounded to 90s).
+        action === 'cancel' ? 120_000 : 30_000,
+      )
       const wake = result.topic?.wake
       if (action === 'accept') {
         setDetail(current => current === undefined ? current : { ...current, status: 'completed' })
@@ -1262,6 +1335,13 @@ function Panel(): ReactNode {
         setNotice({ kind: 'ok', text: '已撤回判断请求，返回原状态' })
       } else if (action === 'human_check') {
         setNotice({ kind: 'ok', text: '人工核对已记录' })
+      } else if (action === 'cancel') {
+        setNotice({
+          kind: 'ok',
+          text: result.topic?.status === 'cancelled'
+            ? '已取消'
+            : '取消已发出；正在等当前提交结束后停止，状态会自动更新',
+        })
       } else {
         setNotice({ kind: 'ok', text: action === 'regenerate' ? '已提交重新生成' : `已执行：${action}` })
       }
@@ -1280,7 +1360,8 @@ function Panel(): ReactNode {
   const runPanelAction = async (action: 'probe' | 'login'): Promise<void> => {
     setNotice({ kind: 'ok', text: action === 'probe' ? '正在自检…' : '正在打开登录窗口…' })
     try {
-      const result = await postAction<Record<string, unknown>>({ action })
+      // Login can legitimately wait for a human (the host allows 5 minutes).
+      const result = await postAction<Record<string, unknown>>({ action }, action === 'login' ? 360_000 : 60_000)
       if (action === 'probe') {
         const probe = (result.probe ?? {}) as Record<string, unknown>
         const ok = probe.ok === true
@@ -1302,18 +1383,30 @@ function Panel(): ReactNode {
     }
   }
 
+  const dialogMaterials = (): string[] => materialsNote
+    .split(/\r?\n/)
+    .map(item => item.trim())
+    .filter(item => item !== '')
+
   const submitRegenerate = async (): Promise<void> => {
     const target = detail?.topic_id
     if (selected === undefined || target === undefined || target !== selected) {
       setNotice({ kind: 'error', text: '主题正在切换，请等详情加载完成后再操作' })
       return
     }
+    const materials = dialogMaterials()
     try {
-      await postAction<{ topic: TopicRow }>({ action: 'regenerate', topic_id: target, note: regenNote.trim() })
+      await postAction<{ topic: TopicRow }>({
+        action: 'regenerate',
+        topic_id: target,
+        note: regenNote.trim(),
+        ...(materials.length > 0 ? { materials } : {}),
+      })
       setNotice({ kind: 'ok', text: '已提交重新生成' })
       setDetail(current => current === undefined ? current : { ...current, status: 'queued' })
       setDialog(undefined)
       setRegenNote('')
+      setMaterialsNote('')
       await loadDetail(target)
       await loadList()
     } catch (cause) {
@@ -1342,18 +1435,22 @@ function Panel(): ReactNode {
         return
       }
     }
+    const materials = dialogMaterials()
     try {
       await postAction<{ topic: TopicRow }>({
         action: 'continue',
         topic_id: target,
         brief,
+        ...(dialog?.kind === 'continue' && dialog.base !== undefined ? { base_artifact: dialog.base.path } : {}),
         ...(designs !== undefined ? { designs } : {}),
+        ...(materials.length > 0 ? { materials } : {}),
       })
       setNotice({ kind: 'ok', text: '已追加一轮' })
       setDetail(current => current === undefined ? current : { ...current, status: 'queued' })
       setDialog(undefined)
       setContinueNote('')
       setContinueDesigns('')
+      setMaterialsNote('')
       await loadDetail(target)
       await loadList()
     } catch (cause) {
@@ -1390,15 +1487,17 @@ function Panel(): ReactNode {
     dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
     setNotice(undefined)
     setRegenNote('')
+    setMaterialsNote('')
     setDialog({ kind: 'regenerate' })
   }
 
-  const openContinue = (): void => {
+  const openContinue = (path?: string): void => {
     dialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
     setNotice(undefined)
     setContinueNote('')
-    setContinueDesigns('')
-    setDialog({ kind: 'continue' })
+    setMaterialsNote('')
+    setContinueDesigns(path === undefined ? '' : '1')
+    setDialog({ kind: 'continue', ...(path !== undefined && detail !== undefined ? { base: { topicId: detail.topic_id, path } } : {}) })
   }
 
   const openCheck = (conclusion: 'submitted' | 'not_submitted' | 'reopen'): void => {
@@ -1419,30 +1518,32 @@ function Panel(): ReactNode {
   const hasArtifacts = (current?.artifacts.length ?? 0) > 0
   const canAccept = current !== undefined && (
     current.status === 'capped'
-    || (current.status === 'reviewing' && (current.review_from === 'capped' || hasArtifacts))
+    || (current.status === 'completed' && !current.accepted_at)
+    || (current.status === 'reviewing' && (current.review_from === 'capped' || current.review_from === 'answered' || hasArtifacts))
     || ((current.status === 'failed' || current.status === 'stalled') && hasArtifacts)
   )
   const canRegenerate = current !== undefined && (current.status === 'completed' || current.status === 'capped' || current.status === 'reviewing' || current.status === 'failed' || current.status === 'stalled')
   const canContinue = current !== undefined && (current.status === 'completed' || current.status === 'capped' || current.status === 'reviewing' || current.status === 'failed' || current.status === 'stalled')
-  const canReview = current !== undefined && (current.status === 'capped' || current.status === 'reviewing' || ((current.status === 'failed' || current.status === 'stalled') && hasArtifacts))
-  const canReviewCancel = current !== undefined && current.status === 'reviewing'
+  const canReview = current !== undefined && (current.status === 'capped' || (current.status === 'reviewing' && current.review_from !== 'answered') || ((current.status === 'failed' || current.status === 'stalled') && hasArtifacts))
+  const canReviewCancel = current !== undefined && current.status === 'reviewing' && current.review_from !== 'answered'
   const canWake = current !== undefined && current.status === 'completed'
   const canCancel = current !== undefined && ACTIVE.has(current.status)
-  const canResume = current !== undefined && (current.status === 'stalled' || current.status === 'failed')
+  const retryJudge = current !== undefined && current.status === 'reviewing' && current.review_from === 'answered'
+  const canResume = current !== undefined && (current.status === 'stalled' || current.status === 'failed' || retryJudge)
   const canDelete = current !== undefined && (current.status === 'draft' || current.status === 'completed' || current.status === 'cancelled'
     || current.status === 'capped' || current.status === 'failed' || current.status === 'stalled')
-  const acceptLabel = current !== undefined && (current.status === 'capped' || current.status === 'reviewing') ? '接受结果' : '接受已有产物'
+  const acceptLabel = current !== undefined && (current.status === 'capped' || current.status === 'reviewing' || current.status === 'completed') ? '接受结果' : '接受已有产物'
 
   let primary: { label: string; run: () => void } | undefined
   if (current !== undefined) {
-    if (canResume) primary = { label: '恢复运行', run: () => { void runExclusive(() => act('resume')) } }
+    if (canResume) primary = { label: retryJudge ? '重试自动裁决' : '恢复运行', run: () => { void runExclusive(() => act('resume')) } }
     else if (canAccept) primary = { label: acceptLabel, run: () => { void runExclusive(() => act('accept')) } }
-    else if (current.status === 'completed' && canContinue) primary = { label: '继续一轮', run: openContinue }
+    else if (current.status === 'completed' && canContinue) primary = { label: '继续一轮', run: () => openContinue() }
   }
 
   const secondary: Array<{ label: string; run: () => void }> = []
   if (current !== undefined) {
-    if (canContinue && primary?.label !== '继续一轮') secondary.push({ label: '继续一轮', run: openContinue })
+    if (canContinue && primary?.label !== '继续一轮') secondary.push({ label: '继续一轮', run: () => openContinue() })
     if (canRegenerate && primary?.label !== '重新生成') secondary.push({ label: '重新生成', run: openRegenerate })
     if (canReview) secondary.push({ label: current.status === 'reviewing' ? '再次提醒原会话' : '请原会话判断', run: () => { void runExclusive(() => act('review')) } })
     if (canReviewCancel) secondary.push({ label: '撤回判断请求', run: () => { void runExclusive(() => act('review_cancel')) } })
@@ -1552,7 +1653,7 @@ function Panel(): ReactNode {
                 <div className="dshpro-list-empty">
                   <div className="dshpro-empty-icon"><Glyph name={config.designMode ? 'image' : 'file'} size={24} /></div>
                   <p>{listError !== undefined ? '任务列表暂不可用' : config.designMode ? '还没有设计任务' : '还没有研究任务'}</p>
-                  <span>{config.designMode ? '在会话里用 /gpt-image-design 开始。' : '在会话里用 /pro-research 开始。'}</span>
+                  <span>{config.designMode ? '在会话里用 /pro-design 开始；web 通道会同时产出图和 HTML demo。' : '在会话里用 /pro-research 开始；第一次可以不给材料，单轮就能看到结果。'}</span>
                 </div>
               )
               : filtered.length === 0
@@ -1599,7 +1700,7 @@ function Panel(): ReactNode {
                   <div className="dshpro-head-info">
                   <div className="dshpro-eyebrow">{current.type === 'design' ? '设计工作台' : '研究工作台'}<span> / 第 {generationList(current).at(-1)?.n ?? 1} 版</span></div>
                   <div className="dshpro-title-row">
-                    <h2 className="dshpro-title" tabIndex={-1}>{current.title}</h2>
+                    <h2 className="dshpro-title" tabIndex={-1} title={current.title}>{current.title}</h2>
                     <StatusPill status={current.status} />
                   </div>
                   <div className="dshpro-meta">
@@ -1637,8 +1738,10 @@ function Panel(): ReactNode {
                   }>
                     {current.status === 'stalled' && <><strong>卡住了</strong><span>{STALL_LABEL[current.stall_reason ?? ''] ?? '需要人工检查'}；检查共享 Chrome 现场后恢复，或做人工核对。</span></>}
                     {current.status === 'failed' && <><strong>运行失败</strong><span>{hasArtifacts ? '可恢复运行，或检查已有产物后接受。' : '检查原因后可恢复运行。'}</span></>}
-                    {current.status === 'capped' && <><strong>已达到轮次上限</strong><span>检查产物后接受结果，或继续一轮。</span></>}
-                    {current.status === 'reviewing' && <><strong>待原会话判断</strong><span>结果已交给发起会话；可以接受结果，或撤回判断请求。</span></>}
+                    {current.status === 'capped' && <><strong>结果待接受</strong><span>{current.type === 'design' ? '图片视觉效果待人工确认；可选一张继续修改。' : '本次运行已停止；检查产物后接受，或继续一轮。'}</span></>}
+                    {current.status === 'reviewing' && (current.review_from === 'answered'
+                      ? <><strong>自动裁决失败</strong><span>答复与产物已保留。可以接受结果、继续一轮，或修好 judgeProvider / judgeModel 后重试自动裁决。</span></>
+                      : <><strong>待原会话判断</strong><span>结果已交给发起会话；可以接受结果，或撤回判断请求。</span></>)}
                     {ACTIVE.has(current.status) && <><strong>正在运行</strong><span>{statusLabel(current.status)} · 自动更新</span></>}
                     {current.status === 'draft' && <><strong>草稿</strong><span>等待确认后开始。</span></>}
                     {current.status === 'stalled' && (
@@ -1666,10 +1769,10 @@ function Panel(): ReactNode {
                 <div className="dshpro-body" data-view={tab} role="tabpanel" id={`${config.panelId}-content`} aria-labelledby={`${config.panelId}-tab-${tab}`} tabIndex={0}>
                   <div className="dshpro-main">
                     {tab === 'overview' && (config.designMode
-                      ? <DesignOverview detail={current} onTab={setTab} />
+                      ? <DesignOverview detail={current} onTab={setTab} onRefine={canContinue && !busy ? openContinue : undefined} />
                       : <ResearchOverview detail={current} onTab={setTab} />)}
                     {tab === 'rounds' && <RoundsView detail={current} />}
-                    {tab === 'artifacts' && <ArtifactsView detail={current} />}
+                    {tab === 'artifacts' && <ArtifactsView detail={current} onRefine={canContinue && !busy ? openContinue : undefined} />}
                   </div>
                   {tab === 'overview' && <Rail detail={current} onTab={setTab} />}
                 </div>
@@ -1685,10 +1788,12 @@ function Panel(): ReactNode {
           regenNote={regenNote}
           continueNote={continueNote}
           continueDesigns={continueDesigns}
+          materialsNote={materialsNote}
           checkNote={checkNote}
           onRegenNote={setRegenNote}
           onContinueNote={setContinueNote}
           onContinueDesigns={setContinueDesigns}
+          onMaterialsNote={setMaterialsNote}
           onCheckNote={setCheckNote}
           onClose={() => { if (!actionLock.current) setDialog(undefined) }}
           onSubmit={submitDialog}

@@ -4,7 +4,7 @@
 
 | 插件 | 包名 | 做什么 | 发布仓库 |
 |---|---|---|---|
-| **ChatGPT Pro Research** | `chatgpt-pro-research` | 用 ChatGPT Pro 网页会话做无人值守多轮调研；按主题记录问题、轮次、裁决和最终文档。 | [chatgpt-pro-research](https://github.com/Octo-o-o-o/chatgpt-pro-research) |
+| **ChatGPT Pro Research** | `chatgpt-pro-research` | 用 ChatGPT Pro 网页会话做无人值守多轮调研；按主题记录问题、轮次、裁决、运行汇总与宿主交付稿。 | [chatgpt-pro-research](https://github.com/Octo-o-o-o/chatgpt-pro-research) |
 | **GPT-Image Design** | `gpt-image-design` | 用同一个网页会话，或 OpenAI 兼容生图 API，生成设计图与单文件 HTML demo；侧边栏画廊预览。 | [gpt-image-design](https://github.com/Octo-o-o-o/gpt-image-design) |
 
 > ⚠️ `web` 通道驱动的是 ChatGPT 网页（订阅额度），不是官方 API。自动化网页可能违反服务条款、触发风控或导致账号受限；页面改版也会让它失效。`api` 通道按服务商条款计费，只产出图片、不产出 HTML demo。请自行评估风险，不要把凭据写进仓库或日志。
@@ -17,26 +17,30 @@
 
 ## 安装
 
-发布仓库（Git/dsh.pub）：
+> `0.3.2` 通过独立复核、干净安装和本机 DSH 验收。使用两个公开仓库的 `v0.3.2`；npm 本次暂缓更新。
+
+| 渠道 | 当前版本 | 状态 |
+|---|---|---|
+| 本仓库源码 | `0.3.2` | 与本次验证构建一致 |
+| 公开 Git 仓库 | `0.3.2` | 两个仓库的 `v0.3.2` Release |
+| dsh.pub | `0.3.0` 提交 | 待收录；受上游格式问题阻塞 |
+| npm | `0.2.6` | 本次暂缓发布；不包含本版改进 |
+
+发布仓库（Git/dsh.pub）当前可用的安装方式：
 
 ```bash
 npx dshpub add Octo-o-o-o/chatgpt-pro-research
 npx dshpub add Octo-o-o-o/gpt-image-design
 ```
 
-或原生 DSH：
+或原生 DSH（把 `<40-char-commit>` 换成公开仓库 Release/提交记录里的完整 SHA）：
 
 ```bash
 dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#<40-char-commit>
 dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#<40-char-commit>
 ```
 
-npm 上现有 `0.2.x`；当前源码版本为 `0.3.2`，尚未同步到两个分发仓库或发布到市场。已发布的 Git 版本见 [发布记录](docs/RELEASING.md)：
-
-```bash
-dsh plugin --profile <profile> add chatgpt-pro-research
-dsh plugin --profile <profile> add gpt-image-design
-```
+已发布的 Git 版本见 [发布记录](docs/RELEASING.md)；版本变更见 [CHANGELOG](CHANGELOG.md)。
 
 安装后重启 DSH，在 **设置 → 插件** 里启用。首次使用先登录一次：
 
@@ -45,6 +49,16 @@ pro_research(action="login")        # 或 gpt_image_design(action="login")
 ```
 
 设计插件改用 API 时不需要登录：把 `channel` 设为 `api`，填 `imageBaseUrl` / `imageApiKey` / `imageModel`（key 也可来自 `GPT_IMAGE_API_KEY`），然后 `gpt_image_design(action="probe")` 自检。
+
+## 第一次用
+
+先跑一个不需要准备材料的单轮主题，确认登录、提交、取回和面板都正常：
+
+- Research：两个方案 + 一张取舍表 + 一个未决问题，`rounds=1`，不传 `materials`。
+- Design（web）：一张首屏图 + 一个带按钮交互的单文件 HTML，`rounds=1, designs=1`。
+- Design（api）：一张图，`rounds=1, designs=1`；此通道不产出 HTML。
+
+可复制的命令见两个包的 README；真实产物入口见 [examples](examples/README.md)。
 
 ## 结构
 
@@ -57,6 +71,7 @@ packages/
 docs/
   design.md    # 原始设计文档
   usage.md     # 研究插件的使用说明
+  product-review.md  # 0.3.2 之后的产品补强评审与实施顺序
 scripts/
   build.mjs          # 构建两个插件的 lib/
   make-icons.mjs     # 从 R/X 标记生成市场图标
@@ -86,14 +101,20 @@ node scripts/release-dist.mjs --apply    # build + smoke + sync + 本地提交
 node scripts/release-dist.mjs --push     # 推送两个发布仓库 + v<version> tag
 ```
 
-## 验证边界
+## 本版本验证（0.3.2）
 
-- 真实 ChatGPT 页面已验证：登录、单轮提交、附件、同会话两轮、图片生成抓取（1448×1086 PNG 抓回并解码）。
-- 当前源码版本为 `0.3.2`；本轮仅更新本机 `desktop` profile 的两个客户端文件并验证已加载，已安装 host bundle 保持原状。详见 [面板实施与验证记录](docs/design/dsh-pro-panel-ui-v2/refinement/result.md)。
-- 重启 DSH 后两个入口与路由已确认：`/chatgpt-pro-research/topics`、`/gpt-image-design/topics` 均 200 且返回空列表；侧边栏 R/X 图标经 16/32px 黑白底渲染核对。
-- 设计/调研面板已在 desktop GUI 实际点开验证（2026-10-23，1722/1100/900/390）：主题列表、搜索/筛选、详情 tabs、图片查看器、demo 查看器、继续一轮弹窗；Research 完成主题 2 版 4 轮、Design 完成主题 7 图 + demo + final.md。
-- API 生图通道已用本地假服务验证：请求体、b64/url 落盘、参考图 multipart、401/超时/部分失败映射、取消，以及插件→引擎→`artifacts/` 的整轮流程；**未对真实服务商**（OpenAI 等）出图与计费验证。
-- 未覆盖：页面改版、超长回答、真实网页断线恢复、账号风控/ToS；本地消息锚点/fixture 只证明代码路径，不等于 chatgpt.com DOM 已验收。
+完整证据与限制见 [独立复核与发布验收](docs/validation/release-0.3.2-2026-10-25.md)。
+
+| 项 | 结果 | 边界 |
+|---|---|---|
+| 回归测试 | 172 passed / 2 skipped；另启用浏览器 smoke 2/2 通过 | 假服务与浏览器 fixture 不代表真实服务商质量 |
+| 类型、构建、bundle | 通过 | 每个插件 1 工具、9 路由、2 前端槽位 |
+| 干净 profile | 两个 0.3.2 安装包加载通过 | 与源码 bundle 哈希一致 |
+| 本机 DSH 客户端 | 约 520–2560 像素窗口，含短窗、深浅主题、长标题、多轮、坏图和旧交付稿 | Windows，DSH 0.2.1-rc.3 |
+| 真实网页闭环 | 1 轮提交、回答取回、逐条自动裁决通过 | 重裁决复用保存答案，未重复网页提交 |
+| API 定向改图 | 本地假服务验证选定底图、请求、错误与恢复 | 未对真实生图服务商质量或计费验收 |
+
+本轮没有重跑真实网页图片 + HTML 生成，也未覆盖所有账号风控、页面改版和真实断线场景。设计图的视觉质量仍由用户确认。
 
 ## 许可证
 

@@ -4,23 +4,23 @@
 
 ## 1. 一次性配置
 
-安装后打开 DSH 设置 → 插件 → `dsh-pro-research`：
+安装后打开 DSH 设置 → 插件 → `chatgpt-pro-research`（显示名 **ChatGPT Pro Research**）：
 
 | 设置 | 默认 | 说明 |
 |---|---|---|
 | `rounds` | 3 | 每主题默认轮次上限，1–10 |
 | `model` | pro | 页面上的 Pro / Thinking |
-| `store` | project | 记录进仓库 `docs/research/`；`local` 进 `~/.dsh/pro-research/` |
+| `store` | project | 记录进仓库 `docs/research/`；`local` 进 `~/.dsh/chatgpt-pro-research/` |
 | `rawAnswers` | local | 原始答复默认只在本机；公开仓库保持 local |
-| `rawAnswersDir` | `~/.dsh/pro-research/raw` | 原文目录，可改绝对路径 |
+| `rawAnswersDir` | `~/.dsh/chatgpt-pro-research/raw` | 原文目录，可改绝对路径；设计插件默认 `~/.dsh/gpt-image-design/raw` |
 | `headless` | false | 首次登录必须有头 |
 | `stallMinutes` | 45 | 无进展判定；生成中不计时 |
 | `maxRoundMinutes` | 90 | 单轮墙钟上限 |
 | `maxFiles` / `maxTotalMB` | 12 / 24 | 单轮附件限制 |
 | `autoStart` | false | 跳过研究卡确认（不建议首次开启） |
-| `judgeProvider` / `judgeModel` | 空 | 自动裁决的 LLM 路由；留空则跑满轮次 |
+| `judgeProvider` / `judgeModel` | 空 | 自动裁决的 LLM 路由；留空使用 DSH 默认模型自动裁决，填 `off` 关闭。自动裁决失败时保留答复并停在「待判断」。 |
 
-设计插件（`dsh-pro-design`）另有生图通道设置：`channel=web|api`，`api` 时填 `imageBaseUrl` / `imageApiKey` / `imageModel`（以及可选的 `imageSize` / `imageQuality` / `imageFormat` / `imageEdit` / `imageTimeoutSeconds`）。key 也可用环境变量 `GPT_IMAGE_API_KEY`；不需要登录，`gpt_image_design(action="probe")` 自检地址、key 与模型名。API 通道只出图片，不产出 HTML demo；`designs` 是每轮请求数（按服务商计费），未配置自动裁决时默认只跑 1 轮。详见 [gpt-image-design README](../packages/design/README.md)。
+设计插件（`gpt-image-design`，显示名 **GPT-Image Design**）另有生图通道设置：`channel=web|api`，`api` 时填 `imageBaseUrl` / `imageApiKey` / `imageModel`（以及可选的 `imageSize` / `imageQuality` / `imageFormat` / `imageEdit` / `imageTimeoutSeconds`）。key 也可用环境变量 `GPT_IMAGE_API_KEY`；不需要登录，`gpt_image_design(action="probe")` 自检地址、key 与模型名。API 通道只出图片，不产出 HTML demo；`designs` 是每轮请求数（按服务商计费），未配置自动裁决时默认只跑 1 轮。详见 [gpt-image-design README](../packages/design/README.md)。
 
 设置页固定提示：运行期间 DSH 要开着（可最小化）；关掉后任务暂停、重开从回执恢复；锁屏尽力而为，不承诺关机跑完。
 
@@ -48,7 +48,7 @@ pro_research(action="probe")
 
 ### 2.1 写大方案前调研
 
-对话里说：「先让 Pro 调研一下 X 的社区现状和风险」。
+第一次使用先跑一个**不需要材料**的单轮主题，确认登录、提交、取回和面板都正常；确认后再带材料、加轮次。对话里说「先让 Pro 调研一下 X 的社区现状和风险」。
 
 Agent 会先给研究卡：
 
@@ -73,7 +73,7 @@ pro_research(action="start", confirmed=true, title=..., question=..., brief=...,
 
 ### 2.3 Pro 设计
 
-对话里说「让 Pro 给登录页改版出几个方向」，或直接 `/pro-design`。流程相同，`type=design`，裁决表变成「方向 / 取舍 / 反例 / 未采纳理由」，产物是 `design.md`。
+对话里说「让 Pro 给登录页改版出几个方向」，或直接 `/pro-design`。流程相同，改用 `gpt_image_design` 工具（主题类型由插件固定为 design），裁决表变成「方向 / 取舍 / 反例 / 未采纳理由」，产物是 `design.md`。
 
 ### 2.4 追问同一主题
 
@@ -103,11 +103,13 @@ pro_research(action="delete", topic_id="topic-xxxx", confirmed=true)
 
 ## 3. 侧边栏
 
-- 「Pro」面板按项目列出主题：状态点、标题、第几轮、记录路径。
-- 概览：Research 以总结正文为主，Design 以本版最新轮图片与 demo 为主；旧成果标注来源版本。
+- 「Pro Research」/「Image Design」面板按项目列出主题：状态点、标题、第几轮、记录路径。
+- 概览：Research 以宿主交付稿 `report.md` 为主；没有交付稿时显示「运行汇总（自动生成）」，不会把机械汇总当交付物。Design 以本版最新轮图片与 demo 为主，并显示「取回 X/Y 张、HTML 是否取回、视觉待人工确认」；旧成果标注来源版本。
 - 轮次 / 产物标签：查看完整轮次、裁决、文件和原始回答；主题路径收在可折叠的主题信息中。
 - 窄屏时在列表与详情间切换，可用“返回任务列表”回到原搜索和筛选。
 - 操作：取消、恢复、删除、人工核对（已提交 / 未提交 / 需重开）；每轮可看裁决全文与原始回答，产物可打包下载 ZIP。
+- 自动裁决失败时主题停在「待判断」：答复与产物保留，可以接受结果、继续一轮、重新生成，或修好裁决模型后「重试自动裁决」。
+- 「继续一轮」/「重新生成」弹窗可以填本轮新增材料的路径（每行一个，相对项目根）；提交前会做路径、限额和密钥检查。
 - 每 3 秒刷新；没有任务时提示用 `/pro-research` 开始。
 
 ## 4. 卡住与恢复
@@ -132,10 +134,11 @@ pro_research(action="delete", topic_id="topic-xxxx", confirmed=true)
   - `topic.json`、`materials/manifest.json`
   - `rounds/NN-question.md`、`rounds/NN-verdict.md`
   - `receipts/NN.json`（哈希与时间）
-  - `final.md`（机械汇总，不是交付物）
-- `store=local`：`~/.dsh/pro-research/projects/<project>/<slug>/`
-- 原始答复：`rawAnswersDir/<topic-id>/NN-answer.md`；`rawAnswers=repo` 时才复制进项目。
-- 会话 URL、消息指纹只写本机 `~/.dsh/pro-research/sessions/`，不进仓库。
+  - `final.md`（运行汇总，自动生成）
+  - `report.md`（宿主交付稿：结论、判据逐条、未决项、产物入口）
+- `store=local`：`~/.dsh/chatgpt-pro-research/projects/<project>-<hash>/<slug>/`
+- 原始答复：`rawAnswersDir/<topic-id>/NN-answer.md`；默认 `~/.dsh/chatgpt-pro-research/raw`，`rawAnswers=repo` 时才复制进项目。
+- 会话 URL、消息指纹只写本机 `~/.dsh/chatgpt-pro-research/sessions/`，不进仓库。
 
 公开仓库默认拒绝 `rawAnswers=repo`；研究记录会提示「答复将进入公开记录」。
 
@@ -147,8 +150,8 @@ pro_research(action="delete", topic_id="topic-xxxx", confirmed=true)
 | 附件卡片缺失 | 确认 ChatGPT 页面上传成功；不要清空附件或用正文摘要替代 |
 | 页面结构变了 | 记录 snapshot 与时间，报 issue；不要手改回执 |
 | 轮次到顶没结论 | 状态是 `capped` 不是失败；确认后可显式加一轮 |
-| 面板空白 | 先看 DSH 插件页是否加载成功；再看 `/pro-research/topics` 是否 200 |
-| 启动报 `Cannot use import statement outside a module`，指向 `dsh-pro-research/client.js` | 插件前端产物格式错误；用修复后的源码运行 `npm run build` 和 `node scripts/smoke-bundle.mjs`，更新 profile 中的插件安装副本后重启。前端必须注册 DSH 的惰性模块 factory，不能直接分发 ESM |
+| 面板空白 | 先看 DSH 插件页是否加载成功；再看 `/chatgpt-pro-research/topics` 是否 200 |
+| 启动报 `Cannot use import statement outside a module`，指向 `chatgpt-pro-research/client.js` | 插件前端产物格式错误；用修复后的源码运行 `npm run build` 和 `node scripts/smoke-bundle.mjs`，更新 profile 中的插件安装副本后重启。前端必须注册 DSH 的惰性模块 factory，不能直接分发 ESM |
 | 启动报 `slot "main" is not declared` | 前端注册早于布局加载；更新到使用 `slots.inject()` 等待槽位声明的版本后重启 |
 
 ## 7. 边界

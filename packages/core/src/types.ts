@@ -56,6 +56,12 @@ export interface RoundRecord {
   designs?: number
   /** Topic-relative artifacts produced by this round. */
   artifacts?: string[]
+  /** Judge transport/format failure for an answer that is already on disk. */
+  judgeError?: string
+  /** User explicitly proceeded to a new round without retrying this verdict. */
+  judgeSkippedAt?: string
+  /** Explicit topic-relative base image for this edit round. */
+  baseArtifact?: string
 }
 
 export interface Topic {
@@ -74,6 +80,7 @@ export interface Topic {
   runThrough?: number
   /** Design count to apply to the next round created for this topic. */
   nextDesigns?: number
+  nextBaseArtifact?: string
   /** One entry per generation: the initial run and each explicit regeneration. */
   generations?: GenerationRecord[]
   rounds: RoundRecord[]
@@ -82,8 +89,10 @@ export interface Topic {
   successCriteria: string[]
   artifacts: string[]
   stopReason?: string
-  /** Status to restore if a review handoff is withdrawn. */
-  reviewFrom?: 'capped' | 'failed' | 'stalled'
+  /** Explicit acceptance of the current result; cleared when new work starts. */
+  acceptedAt?: string
+  /** Status to restore if a review handoff is withdrawn (`answered` = judge failed after an answer landed). */
+  reviewFrom?: 'capped' | 'failed' | 'stalled' | 'answered'
   /** Previous stop reason, restored when a review handoff is withdrawn. */
   reviewStopReason?: string
   /** Previous stall reason, restored when a stalled review handoff is withdrawn. */
@@ -157,10 +166,18 @@ export interface SubmitRequest {
   files: string[]
   /** Attachments to use when the stored conversation cannot be reused. */
   fallbackFiles?: string[]
+  /** Mandatory selected-image edit; never fall back to text-only generation. */
+  editBase?: { sha256: string }
   model: string
   /** Images one round should produce for the design plugin (1–6). */
   designs?: number
   session?: SessionLocator | null
+  /**
+   * Cancel request from the engine. A transport must stop before it clicks
+   * send when this is already aborted; after the click it should finish
+   * recording the submission so the caller can cancel it explicitly.
+   */
+  signal?: AbortSignal
 }
 
 export interface SubmitResult {
@@ -261,6 +278,14 @@ export interface JudgeResult {
   done: boolean
   summary: string
   nextBrief?: string
+  /** Per-criterion findings; the UI and verdict.md render this as a table. */
+  criteria?: JudgeCriterion[]
+}
+
+export interface JudgeCriterion {
+  criterion: string
+  status: 'met' | 'partial' | 'unmet' | 'unknown'
+  evidence?: string
 }
 
 export type Judge = (input: JudgeInput) => Promise<JudgeResult>
@@ -269,4 +294,5 @@ export type EngineEvent =
   | { type: 'status'; topicId: string; status: Status; reason?: StallReason }
   | { type: 'round'; topicId: string; round: number; verdict?: Verdict }
   | { type: 'answered'; topicId: string; round: number }
+  | { type: 'judge_failed'; topicId: string; round: number; message: string }
   | { type: 'finished'; topicId: string; status: 'completed' | 'capped' | 'cancelled' }

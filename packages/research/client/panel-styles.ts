@@ -146,7 +146,7 @@ body[data-ds-dark-theme] .dshpro-root[data-plugin="design"] { --dshpro-accent: #
 }
 .dshpro-head-info { min-width: 0; flex: 1; }
 .dshpro-title-row { display: flex; align-items: flex-start; gap: 9px; flex-wrap: wrap; }
-.dshpro-title { margin: 0; max-width: 900px; color: var(--dshpro-text); font-size: 22px; font-weight: 650; line-height: 1.4; letter-spacing: -.35px; overflow-wrap: anywhere; }
+.dshpro-title { margin: 0; max-width: min(100%, 900px); min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; color: var(--dshpro-text); font-size: 22px; font-weight: 650; line-height: 1.4; letter-spacing: -.35px; overflow-wrap: anywhere; }
 .dshpro-status { flex: none; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--tone-color) 50%, transparent); border-radius: 5px; color: var(--tone-color); font-size: 11px; font-weight: 700; line-height: 1.35; white-space: nowrap; }
 .dshpro-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 10px; color: var(--dshpro-muted); font-size: 12px; }
 .dshpro-meta > span:not(:first-child)::before { content: "·"; margin-right: 6px; color: var(--dshpro-faint); opacity: .7; }
@@ -218,14 +218,15 @@ body[data-ds-dark-theme] .dshpro-root[data-plugin="design"] { --dshpro-accent: #
 .dshpro-final-desc { margin-top: 2px; color: var(--dshpro-faint); font-size: 11px; }
 
 .dshpro-table-wrap { width: 100%; overflow-x: auto; }
-.dshpro-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.dshpro-table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 12px; }
+.dshpro-table-hint { display: none; padding: 0 0 8px; color: var(--dshpro-muted); font-size: 11px; }
 .dshpro-table th { padding: 6px 7px; border-bottom: 1px solid var(--dshpro-line); background: var(--dshpro-panel-2); color: var(--dshpro-muted); font-size: 11px; font-weight: 600; text-align: left; white-space: nowrap; }
 .dshpro-table td { padding: 7px; border-bottom: 1px solid color-mix(in srgb, var(--dshpro-line) 65%, transparent); vertical-align: top; }
 .dshpro-table tr:last-child td { border-bottom: 0; }
 .dshpro-table .dshpro-num { font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
 .dshpro-table .dshpro-nowrap { white-space: nowrap; }
 .dshpro-table .dshpro-dim { color: var(--dshpro-muted); }
-.dshpro-verdict { font-weight: 650; }
+.dshpro-verdict { font-weight: 650; white-space: nowrap; }
 .dshpro-verdict[data-verdict="accepted"] { color: var(--dshpro-success); }
 .dshpro-verdict[data-verdict="partial"] { color: #b58a2b; }
 .dshpro-verdict[data-verdict="rejected"] { color: var(--dshpro-error); }
@@ -292,7 +293,7 @@ body[data-ds-dark-theme] .dshpro-root[data-plugin="design"] { --dshpro-accent: #
 .dshpro-modal-body pre { margin: 0; padding: 14px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.55; }
 .dshpro-modal-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px; border-top: 1px solid var(--dshpro-line); background: var(--dshpro-panel-2); }
 .dshpro-modal-note { margin-left: auto; color: var(--dshpro-muted); font-size: 11px; }
-.dshpro-dialog-body { padding: 20px; margin: 0; min-width: 0; border: 0; }
+.dshpro-dialog-body { padding: 20px; margin: 0; min-width: 0; min-height: 0; overflow-y: auto; border: 0; }
 .dshpro-dialog-body label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 650; }
 .dshpro-dialog-body p { margin: 0 0 8px; color: var(--dshpro-muted); font-size: 11px; line-height: 1.5; }
 .dshpro-dialog-body textarea { width: 100%; min-height: 82px; resize: vertical; padding: 7px 9px; border: 1px solid var(--dshpro-line); border-radius: 6px; outline: 0; background: var(--dshpro-bg); color: var(--dshpro-text); font-size: 12px; line-height: 1.5; }
@@ -332,6 +333,15 @@ body[data-ds-dark-theme] .dshpro-root[data-plugin="design"] { --dshpro-accent: #
   .dshpro-filter { font-size: 12px; }
   .dshpro-document-card { padding: 18px !important; }
   .dshpro-section-heading { gap: 12px; flex-wrap: wrap; }
+  .dshpro-optional { display: none; }
+  .dshpro-table-hint { display: block; }
+}
+@container dshpro (max-width: 399px) {
+  .dshpro-detail { padding: 14px 12px 24px; }
+  .dshpro-title { font-size: 18px; }
+  .dshpro-document-card { padding: 14px !important; }
+  .dshpro-list-head { padding-inline: 12px; }
+  .dshpro-meta { gap: 4px 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .dshpro-skeleton { animation: none; }
@@ -413,4 +423,17 @@ body[data-ds-dark-theme] .dshpro-root[data-plugin="design"] { --dshpro-accent: #
 .dshpro-modal-body pre { font-size: 13px; padding: 24px; line-height: 1.75; }
 .dshpro-dialog-feedback { margin: 0 20px 16px; color: var(--dshpro-muted); font-size: 12px; }
 .dshpro-dialog-feedback[data-kind="error"] { color: var(--dshpro-error); }
+.dshpro-modal-head, .dshpro-dialog-foot, .dshpro-dialog-feedback { flex-shrink: 0; }
+.dshpro-dialog-feedback { overflow-wrap: anywhere; max-height: 20vh; overflow: auto; }
+.dshpro-report-source { display: grid; gap: 8px; margin-bottom: 18px; padding: 12px 14px; border: 1px solid var(--dshpro-line); border-radius: 6px; background: var(--dshpro-panel-2); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.dshpro-report-source > span { color: var(--dshpro-muted); }
+.dshpro-report-source[data-state="stale"] strong { color: var(--dshpro-warn); }
+.dshpro-source-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.dshpro-art-actions { padding: 0 12px 12px; background: var(--dshpro-panel); }
+.dshpro-art-caption > svg { flex: none; }
+.dshpro-art-caption > span { min-width: 0; }
+.dshpro-edit-base { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--dshpro-line); }
+.dshpro-edit-base img { width: 96px; height: 80px; flex: none; object-fit: contain; background: var(--dshpro-panel-2); border-radius: 6px; }
+.dshpro-edit-base span { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.dshpro-edit-base small { display: block; margin-top: 8px; color: var(--dshpro-muted); }
 `

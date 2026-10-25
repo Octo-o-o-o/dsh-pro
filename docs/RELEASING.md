@@ -163,14 +163,15 @@ git -C C:\WorkSpace\dsh-plugins\chatgpt-pro-research push origin vX.Y.Z
 **npm 发布**  
 `npm whoami` 401 时先 `npm login`，然后在 `packages/research` / `packages/design` 分别 `npm publish --access public`。发布仓库的 Git 安装不依赖 npm。
 
-## 当前状态（2026-10-23）
+## 当前状态（2026-10-25）
 
-| 插件 | 版本 | 发布仓库 HEAD | 市场 |
-|---|---|---|---|
-| `chatgpt-pro-research` | `0.3.1` | `8a9d57e` | dsh.so 0.3.0 已提交待审；dsh.pub PR #152 等 #155 修复；0.3.1 待重新提交 |
-| `gpt-image-design` | `0.3.1` | `25dcce3` | dsh.so 0.3.0 已提交待审；dsh.pub #153 已合入，目录集成被 #155 卡住；0.3.1 待重新提交 |
+两个插件源码与 Git 发布版本均为 `0.3.2`；具体公开 commit 与 Release 见 [marketplace.md](marketplace.md)。npm 本次按用户指示暂缓，仍为 `0.2.6`；市场未重新提交。
 
-市场阻塞详情、PR/issue 链接见 [docs/marketplace.md](marketplace.md)。
+干净 profile 安装、真实网页闭环、两个独立评审、完整回归与本机响应式检查见 [发布验收记录](validation/release-0.3.2-2026-10-25.md)。
+
+### Windows link 安装切换
+
+切换已有 `link:` 插件前，先检查 `node_modules/<包>` 是否为 junction，并备份未提交源码和 profile 清单。此次 pnpm remove 曾误清理 junction 指向的源码目录；不要直接对仍链接源码的包执行 remove。先把完整源码与改动做可恢复快照，再移开并核对链接本身，最后让包管理器安装真实副本。安装后验证 LinkType、包版本和 bundle 哈希，再重启 DSH。
 
 ## 相关文件
 

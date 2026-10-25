@@ -117,6 +117,10 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
+function isAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted === true
+}
+
 function isAbortLike(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted')
 }
@@ -351,10 +355,25 @@ export class OpenAIImageTransport implements Transport {
 
   async submit(request: SubmitRequest): Promise<SubmitResult> {
     this.assertReady()
+    if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
     const count = clampCount(request.designs ?? this.options.count)
     const references = await this.referenceImages(request.files)
+    if (request.editBase !== undefined) {
+      if (this.options.editMode === 'off') throw new TransportError('图片编辑已关闭，停止底图修改', 'config')
+      if (request.files.length !== 1 || references.length !== 1 || count !== 1) {
+        throw new TransportError('底图修改需要一张有效的 PNG、JPEG 或 WebP（不超过 25MB），且只能生成一个方向；不会退回普通生图', 'upload')
+      }
+      if (createHash('sha256').update(references[0]!.bytes).digest('hex') !== request.editBase.sha256) {
+        throw new TransportError('底图材料已变化，停止发送', 'upload')
+      }
+    }
+    if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
     const prompt = this.basePrompt(request)
     const controller = new AbortController()
+    // A cancelled run must stop billable work even if nobody calls
+    // cancelSubmission: the engine's abort is the earliest cancellation signal.
+    request.signal?.addEventListener('abort', () => controller.abort(), { once: true })
+    if (isAborted(request.signal)) controller.abort()
     const id = randomUUID()
     const job = { request, count, controller, completed: 0, reported: 0 } as Job
     const generated = this.generate(job, prompt, references)
@@ -383,7 +402,7 @@ export class OpenAIImageTransport implements Transport {
   async poll(request: { submissionId: string; timeoutMs: number; signal?: AbortSignal }): Promise<PollResult> {
     const job = this.jobs.get(request.submissionId)
     if (job === undefined) return { state: 'unknown' }
-    if (request.signal?.aborted === true) throw new DOMException('aborted', 'AbortError')
+    if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
     const raced = abortable(job.settled, request.signal)
     let timer: NodeJS.Timeout | undefined
     try {

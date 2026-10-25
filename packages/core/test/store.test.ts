@@ -5,6 +5,7 @@ import { unzipSync, zipSync } from 'fflate'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ResearchStore } from '../src/store.ts'
 import { buildManifest, sha256File } from '../src/materials.ts'
+import { newTopicId } from '../src/slug.ts'
 import type { ResearchCard } from '../src/types.ts'
 
 const cleanups: string[] = []
@@ -59,6 +60,27 @@ describe('project store', () => {
 
     const manifest = await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')
     expect(manifest).toContain('materials')
+  })
+
+  it('generates collision-resistant topic ids and refuses to reuse one', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const ids = new Set(Array.from({ length: 500 }, (_, index) => newTopicId(`same title ${index}`)))
+    expect(ids.size).toBe(500)
+    for (const id of ids) expect(id).toMatch(/^topic-[0-9a-f]{10}$/)
+
+    const first = await store.create(card(), 3, 'pro', 'web')
+    const second = await store.create(card(), 3, 'pro', 'web')
+    expect(second.topic.id).not.toBe(first.topic.id)
+    expect(second.dir).not.toBe(first.dir)
+    expect((await store.list()).map(item => item.id).sort()).toEqual([first.topic.id, second.topic.id].sort())
   })
 
   it('preserves named multi-file code and extracts a downloaded zip', async () => {
@@ -249,6 +271,41 @@ describe('project store', () => {
     broken.rounds = 'not-an-array'
     await writeFile(join(dir, 'topic.json'), JSON.stringify(broken), 'utf8')
     await expect(store.load(topic.id)).rejects.toThrow(/corrupt topic/)
+  })
+
+  it('refuses a tampered material manifest that points outside the topic', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const { topic, dir } = await store.create(card(), 3, 'pro', 'web')
+    await writeFile(join(dir, 'materials', 'manifest.json'), JSON.stringify({
+      materials: [{ path: '../../outside.txt', bytes: 1, sha256: 'x' }],
+    }), 'utf8')
+    await expect(store.readMaterialPaths(topic)).rejects.toThrow(/escapes the topic/)
+  })
+
+  it('skips a structurally invalid topic instead of failing the whole list', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-'))
+    cleanups.push(root)
+    const store = new ResearchStore({
+      mode: 'project',
+      projectRoot: root,
+      localRoot: root,
+      rawDir: join(root, 'raw'),
+      rawAnswers: 'local',
+    })
+    const good = await store.create(card(), 3, 'pro', 'web')
+    const brokenDir = join(root, 'docs', 'research', 'broken')
+    await mkdir(brokenDir, { recursive: true })
+    await writeFile(join(brokenDir, 'topic.json'), JSON.stringify({ schema: 1, id: 'broken' }), 'utf8')
+    const listed = await store.list()
+    expect(listed.map(item => item.id)).toEqual([good.topic.id])
   })
 
   it('caps zip extraction by entry count and total bytes', async () => {

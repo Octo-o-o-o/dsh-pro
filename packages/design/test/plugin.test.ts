@@ -23,7 +23,15 @@ function fakeContext(captured: Captured) {
       return () => {}
     },
   }
-  const scoped = { effect: (fn: () => () => void) => fn(), get: () => undefined, webServer }
+  const scoped = {
+    effect: (fn: () => () => void) => fn(),
+    get: (name: string) => {
+      if (name === 'skills') return skills
+      if (name === 'connection') return { requestRejection: () => undefined }
+      return undefined
+    },
+    webServer,
+  }
   return {
     effect: (fn: () => () => void) => fn(),
     tools: {
@@ -34,7 +42,7 @@ function fakeContext(captured: Captured) {
     },
     get: (name: string) => (name === 'skills' ? skills : undefined),
     inject: (services: string[], callback: (scopedContext: unknown) => void) => {
-      if (services.includes('webServer')) callback(scoped)
+      if (services.includes('webServer') || services.includes('skills')) callback(scoped)
     },
   }
 }

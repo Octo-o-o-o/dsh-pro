@@ -16,10 +16,14 @@ afterEach(async () => {
 
 class FakeTransport implements Transport {
   submits: SubmitRequest[] = []
+  canceled: string[] = []
   fail?: Error
   submitFail?: Error
   hang = false
   polling = false
+  submitDelay = 0
+  imageFingerprint = false
+  fetchFail?: Error
   private seq = 0
 
   constructor(private readonly answers: string[]) {}
@@ -31,6 +35,7 @@ class FakeTransport implements Transport {
   async submit(request: SubmitRequest) {
     this.submits.push(request)
     this.seq += 1
+    if (this.submitDelay > 0) await new Promise(resolve => setTimeout(resolve, this.submitDelay))
     if (this.submitFail !== undefined) throw this.submitFail
     return {
       submissionId: `sub-${this.seq}`,
@@ -38,6 +43,10 @@ class FakeTransport implements Transport {
       attachments: request.files,
       conversationUrl: 'https://chatgpt.com/c/example',
     }
+  }
+
+  async cancelSubmission(submissionId: string) {
+    this.canceled.push(submissionId)
   }
 
   async poll(request: { submissionId: string; signal?: AbortSignal }): Promise<PollResult> {
@@ -48,11 +57,13 @@ class FakeTransport implements Transport {
       })
     }
     if (this.fail !== undefined) throw this.fail
+    if (this.imageFingerprint) return { state: 'answered' as const, answer: 'image:2:512x512,1024x1024' }
     const n = Number(request.submissionId.split('-')[1])
     return { state: 'answered' as const, answer: this.answers[n - 1] ?? `answer ${n}` }
   }
 
   async fetch() {
+    if (this.fetchFail !== undefined) throw this.fetchFail
     return { answer: 'fetched answer' }
   }
 
@@ -60,11 +71,12 @@ class FakeTransport implements Transport {
 }
 
 function judgeWith(doneAt: number): Judge {
-  return async ({ round }) => ({
+  return async ({ round, criteria }) => ({
     verdict: round === doneAt ? 'accepted' : 'partial',
     reason: `reason ${round}`,
     done: round === doneAt,
     summary: `summary ${round}`,
+    criteria: criteria.map(criterion => ({ criterion, status: 'met', evidence: 'answer' })),
   })
 }
 
@@ -116,6 +128,123 @@ async function harness(options: {
 }
 
 describe('engine', () => {
+  it.each(['continue', 'regenerate', 'continue-restart', 'regenerate-restart'])('honors %s after failed judging without retrying the old verdict', async action => {
+    const judged: number[] = []
+    const judge: Judge = async input => {
+      judged.push(input.round)
+      if (input.round === 1) throw new Error('judge unavailable')
+      return await judgeWith(2)(input)
+    }
+    const { engine, store, transport, config } = await harness({ doneAt: 2, judge })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await store.load(topic.id)).status).toBe('reviewing')
+    const restart = action.endsWith('-restart')
+    if (restart) await engine.dispose()
+    if (action.startsWith('continue')) await engine.continue(topic.id, 'explicit new question')
+    else await engine.regenerate(topic.id, 'explicit new question', 'new version')
+    let runner = engine
+    if (restart) {
+      runner = new ResearchEngine({ store, transport, config, judge, pollIntervalMs: 10 })
+      await runner.interrupt(topic.id, 'host restarted before dispatch')
+      await runner.resume(topic.id)
+    }
+    await runner.drain()
+    const final = await store.load(topic.id)
+    expect(final.status).toBe('completed')
+    expect(final.rounds).toHaveLength(2)
+    expect(final.rounds[0]).toMatchObject({ judgeError: 'judge unavailable', judgeSkippedAt: expect.any(String) })
+    expect(final.rounds[0]?.verdict).toBeUndefined()
+    expect(final.rounds[1]?.generation).toBe(action.startsWith('regenerate') ? 2 : 1)
+    expect(judged).toEqual([1, 1, 2])
+    expect(transport.submits).toHaveLength(2)
+    expect(transport.submits[1]?.brief).toBe('explicit new question')
+    await runner.dispose()
+  })
+
+  it.each(['missing', 'duplicate', 'mismatch', 'partial', 'unknown', 'no-evidence', 'contradiction'])('parks %s completion claims without sending another round', async invalid => {
+    let calls = 0
+    const judge: Judge = async () => {
+      calls += 1
+      let criteria = [
+        { criterion: 'A', status: 'met' as const, evidence: 'answer A' },
+        { criterion: 'B', status: 'met' as const, evidence: 'answer B' },
+      ] as NonNullable<Awaited<ReturnType<Judge>>['criteria']>
+      if (invalid === 'missing') criteria.pop()
+      if (invalid === 'duplicate') criteria[1] = { ...criteria[0]! }
+      if (invalid === 'mismatch') criteria[1]!.criterion = 'C'
+      if (invalid === 'partial' || invalid === 'unknown') criteria[1]!.status = invalid
+      if (invalid === 'no-evidence') criteria[1]!.evidence = ' '
+      return { verdict: invalid === 'contradiction' ? 'partial' : 'accepted', done: true, reason: 'claimed done', summary: 'answer kept', criteria }
+    }
+    const { engine, store, transport } = await harness({ doneAt: 1, judge })
+    const topic = await engine.start(card({ successCriteria: ['A', 'B'] }))
+    await engine.drain()
+    const result = await store.load(topic.id)
+    expect(result.status).toBe('reviewing')
+    expect(result.reviewFrom).toBe('answered')
+    expect(result.rounds[0]?.judgeError).toContain('完成声明')
+    expect(await store.readAnswer(result, 1)).toBe('fetched answer')
+    expect(calls).toBe(2)
+    expect(transport.submits).toHaveLength(1)
+    await engine.accept(topic.id)
+    expect((await engine.status(topic.id)).status).toBe('completed')
+  })
+
+  it('leaves visually unverified design output awaiting acceptance after a valid text verdict', async () => {
+    const { engine, transport } = await harness({ doneAt: 1 })
+    const topic = await engine.start(card({ type: 'design' }))
+    await engine.drain()
+    const result = await engine.status(topic.id)
+    expect(result.status).toBe('capped')
+    expect(result.stopReason).toContain('图片视觉效果待人工确认')
+    expect(transport.submits).toHaveLength(1)
+    expect(result.rounds[0]?.done).toBe(false)
+  })
+
+  it('keeps an explicit base-image retry to one image and one round', async () => {
+    const { engine, store, root, transport } = await harness({ doneAt: 99 })
+    const { topic } = await store.create(card({ type: 'design', designs: 3 }), 3, 'pro', 'web')
+    topic.status = 'failed'
+    topic.rounds = [
+      { n: 1, files: 0, generation: 1, answeredAt: new Date().toISOString(), verdict: 'partial' },
+      { n: 2, files: 0, generation: 1, designs: 3 },
+    ]
+    await store.save(topic)
+    await writeFile(join(root, 'selected.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]))
+    const refs = (await buildManifest(root, ['selected.png'])).map(ref => ({ ...ref, source: join(root, ref.path) }))
+    await engine.continue(topic.id, 'change background only', refs, 1, 'artifacts/round-01/image-02.png')
+    await engine.drain()
+    const result = await store.load(topic.id)
+    expect(result.status).toBe('capped')
+    expect(result.rounds).toHaveLength(2)
+    expect(result.rounds[1]).toMatchObject({ designs: 1, baseArtifact: 'artifacts/round-01/image-02.png' })
+    expect(transport.submits).toHaveLength(1)
+    expect(transport.submits[0]?.designs).toBe(1)
+    expect(transport.submits[0]?.files).toHaveLength(1)
+    expect(transport.submits[0]?.fallbackFiles).toEqual(transport.submits[0]?.files)
+  })
+
+  it('renders per-criterion findings in the verdict document', async () => {
+    const judge: Judge = async () => ({
+      verdict: 'partial',
+      reason: 'ok',
+      done: false,
+      summary: 'done',
+      criteria: [
+        { criterion: '覆盖两个市场', status: 'met', evidence: '答复第 2 节' },
+        { criterion: '给出可执行流程', status: 'partial', evidence: '缺回滚步骤' },
+      ],
+    })
+    const { engine, store } = await harness({ doneAt: 1, judge })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const dir = await store.dirOf(topic.id)
+    const verdict = await readFile(join(dir, 'rounds', '01-verdict.md'), 'utf8')
+    expect(verdict).toContain('| 覆盖两个市场 | 满足 | 答复第 2 节 |')
+    expect(verdict).toContain('| 给出可执行流程 | 部分满足 | 缺回滚步骤 |')
+  })
+
   it('runs rounds until the judge stops it', async () => {
     const { engine, store, transport } = await harness({ doneAt: 2 })
     const topic = await engine.start(card())
@@ -252,17 +381,27 @@ describe('engine', () => {
     expect(transport.submits).toHaveLength(1)
   })
 
-  it('resumes adjudication without resubmitting when the judge fails', async () => {
+  it('parks a judge failure for review and resumes without resubmitting', async () => {
     let calls = 0
     const judge: Judge = async () => {
       calls += 1
-      if (calls === 1) throw new Error('judge unavailable')
-      return { verdict: 'accepted', reason: 'ok', done: true, summary: 'done' }
+      if (calls <= 2) throw new Error('judge unavailable')
+      return { verdict: 'accepted', reason: 'ok', done: true, summary: 'done', criteria: [{ criterion: 'one criterion', status: 'met', evidence: 'answer' }] }
     }
-    const { engine, transport } = await harness({ doneAt: 1, judge })
+    const { engine, store, transport } = await harness({ doneAt: 1, judge })
     const topic = await engine.start(card())
     await engine.drain()
-    expect((await engine.status(topic.id)).status).toBe('failed')
+    const parked = await engine.status(topic.id)
+    expect(parked.status).toBe('reviewing')
+    expect(parked.reviewFrom).toBe('answered')
+    expect(parked.stopReason).toContain('judge unavailable')
+    expect(parked.rounds[0]?.judgeError).toBe('judge unavailable')
+
+    const dir = await store.dirOf(topic.id)
+    const verdict = await readFile(join(dir, 'rounds', '01-verdict.md'), 'utf8')
+    expect(verdict).toContain('未完成自动裁决')
+    expect(verdict).toContain('| 判据 | 状态 | 依据 |')
+    expect(await store.readAnswer(topic, 1)).toBe('fetched answer')
 
     await engine.resume(topic.id)
     await engine.drain()
@@ -271,12 +410,27 @@ describe('engine', () => {
     expect(transport.submits).toHaveLength(1)
   })
 
+  it('accepts a judge-failed answer without treating it as a run failure', async () => {
+    const judge: Judge = async () => { throw new Error('model returned prose') }
+    const { engine, transport } = await harness({ doneAt: 1, judge })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const parked = await engine.status(topic.id)
+    expect(parked.status).toBe('reviewing')
+    expect(parked.reviewFrom).toBe('answered')
+
+    const accepted = await engine.accept(topic.id)
+    expect(accepted.status).toBe('completed')
+    expect(accepted.stopReason).toBe('人工接受结果')
+    expect(transport.submits).toHaveLength(1)
+  })
+
   it('adjudicates an on-disk answer without touching the transport', async () => {
     let calls = 0
     const judge: Judge = async () => {
       calls += 1
-      if (calls === 1) throw new Error('judge unavailable')
-      return { verdict: 'accepted', reason: 'ok', done: true, summary: 'done' }
+      if (calls <= 2) throw new Error('judge unavailable')
+      return { verdict: 'accepted', reason: 'ok', done: true, summary: 'done', criteria: [{ criterion: 'one criterion', status: 'met', evidence: 'answer' }] }
     }
     class ReattachTransport extends FakeTransport {
       reattachCalls = 0
@@ -289,7 +443,7 @@ describe('engine', () => {
     const { engine } = await harness({ doneAt: 1, judge, transport })
     const topic = await engine.start(card())
     await engine.drain()
-    expect((await engine.status(topic.id)).status).toBe('failed')
+    expect((await engine.status(topic.id)).status).toBe('reviewing')
 
     await engine.resume(topic.id)
     await engine.drain()
@@ -366,7 +520,7 @@ describe('engine', () => {
     cleanups.push(root)
     const config = { ...defaultConfig(root), channel: 'api' as const, maxRoundMinutes: 1, stallMinutes: 1 }
     const store = new ResearchStore({ mode: 'project', projectRoot: root, localRoot: root, rawDir: join(root, 'raw'), rawAnswers: 'local' })
-    const alwaysDone: Judge = async () => ({ verdict: 'accepted', reason: 'ok', done: true, summary: 'done' })
+    const alwaysDone: Judge = async () => ({ verdict: 'accepted', reason: 'ok', done: true, summary: 'done', criteria: [{ criterion: 'one criterion', status: 'met', evidence: 'answer' }] })
     const engine = new ResearchEngine({ store, transport, judge: alwaysDone, config, pollIntervalMs: 10 })
     const topic = await engine.start(card())
     await engine.drain()
@@ -395,7 +549,7 @@ describe('engine', () => {
 
 
   it('adds an explicit follow-up round to a completed topic', async () => {
-    const judge: Judge = async () => ({ verdict: 'accepted', reason: 'enough', done: true, summary: 'done' })
+    const judge: Judge = async () => ({ verdict: 'accepted', reason: 'enough', done: true, summary: 'done', criteria: [{ criterion: 'one criterion', status: 'met', evidence: 'answer' }] })
     const { engine, store, transport } = await harness({ doneAt: 1, judge })
     const topic = await engine.start(card({ materials: [{ path: 'base.md', bytes: 1, sha256: 'b' }] }))
     await engine.drain()
@@ -606,7 +760,7 @@ describe('engine', () => {
     const judge: Judge = async () => {
       calls += 1
       return calls === 1
-        ? { verdict: 'accepted', reason: 'enough', done: true, summary: 'done' }
+        ? { verdict: 'accepted', reason: 'enough', done: true, summary: 'done', criteria: [{ criterion: 'one criterion', status: 'met', evidence: 'answer' }] }
         : { verdict: 'partial', reason: 'more needed', done: false, summary: 'more' }
     }
     const { engine, transport } = await harness({ doneAt: 1, rounds: 3, judge })
@@ -650,6 +804,51 @@ describe('engine', () => {
     await engine.drain()
     const final = await engine.status(topic.id)
     expect(final.status).toBe('cancelled')
+  })
+
+  it('stops an active run when the engine is disposed', async () => {
+    const transport = new FakeTransport(['first answer'])
+    transport.hang = true
+    const { engine } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    const deadline = Date.now() + 2_000
+    while (!transport.polling && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    engine.dispose()
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('cancelled')
+  })
+
+  it('parks an image-only answer whose assets cannot be fetched instead of completing empty', async () => {
+    const transport = new FakeTransport(['ignored'])
+    transport.imageFingerprint = true
+    transport.fetchFail = new TransportError('page closed', 'ui')
+    const { engine, store } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const final = await engine.status(topic.id)
+    expect(final.status).toBe('stalled')
+    expect(final.stallReason).toBe('ui')
+    expect(final.rounds[0]?.answeredAt).toBeUndefined()
+    expect(await store.readAnswer(final, 1)).toBeUndefined()
+  })
+
+  it('waits out an already-clicked submit and cancels the submission it created', async () => {
+    const transport = new FakeTransport(['first answer'])
+    transport.submitDelay = 60
+    const { engine } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    const deadline = Date.now() + 2_000
+    while (transport.submits.length === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(transport.submits).toHaveLength(1)
+    const cancelled = await engine.cancel(topic.id)
+    expect(cancelled.status).toBe('cancelled')
+    expect(transport.canceled).toContain('sub-1')
+    await engine.drain()
+    expect((await engine.status(topic.id)).status).toBe('cancelled')
   })
 
   it('records the answer hash and append-only status/answer events', async () => {

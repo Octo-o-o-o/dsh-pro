@@ -15,6 +15,8 @@ import {
   assertImageApiConfig,
   assertMaterialLimits,
   buildManifest,
+  baseImageMaterial,
+  readReportInfo,
   defaultConfig,
   findSecret,
   isHtmlSource,
@@ -22,6 +24,7 @@ import {
   type ImageApiConfig,
   type ImageFormat,
   type Judge,
+  type JudgeCriterion,
   type JudgeResult,
   type MaterialRef,
   type ProConfig,
@@ -55,7 +58,7 @@ const baseFields = {
   maxFiles: z.number().step(1).min(1).default(12).description('单轮附件数量上限。'),
   maxTotalMB: z.number().default(24).description('单轮附件总大小（MB）。'),
   rawAnswers: z.string().default('local').description('原始答复保存位置：local（本机目录）或 repo（随项目）。公开仓库请用 local。'),
-  rawAnswersDir: z.string().default('').description('local 模式的原文目录；留空用 ~/.dsh/pro-research/raw。'),
+  rawAnswersDir: z.string().default('').description('local 模式的原文目录；留空用 ~/.dsh/<插件目录>/raw（研究为 chatgpt-pro-research，设计为 gpt-image-design）。'),
   headless: z.boolean().default(false).description('无头模式仅建议用于自检；首次登录必须有头。'),
   judgeProvider: z.string().default('').description('自动裁决的 LLM provider；留空自动使用当前 DSH 默认模型，填 off 可关闭。'),
   judgeModel: z.string().default('').description('自动裁决的 model；留空自动使用当前 DSH 默认模型；与 provider 同时填写可覆盖。'),
@@ -152,6 +155,32 @@ interface AgentDefaultModel {
 
 function homeDir(): string {
   return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+}
+
+/**
+ * OS opener for one validated file, without a shell. `cmd.exe /c start` was
+ * unsafe here: a file name containing `&` could split the command even though
+ * the path was lexically inside the topic directory.
+ */
+export function externalOpenCommand(
+  platform: NodeJS.Platform,
+  target: string,
+): { command: string; args: string[] } {
+  if (platform === 'win32') return { command: 'explorer.exe', args: [target] }
+  if (platform === 'darwin') return { command: 'open', args: [target] }
+  return { command: 'xdg-open', args: [target] }
+}
+
+/** Reveal (highlight) one file in the OS file manager. */
+export function externalRevealCommand(
+  platform: NodeJS.Platform,
+  target: string,
+): { command: string; args: string[] } {
+  // Explorer expects `/select,<path>` as a single argument; splitting it into
+  // two arguments is silently ignored on current Windows builds.
+  if (platform === 'win32') return { command: 'explorer.exe', args: [`/select,${target}`] }
+  if (platform === 'darwin') return { command: 'open', args: ['-R', target] }
+  return { command: 'xdg-open', args: [dirname(target)] }
 }
 
 function mimeFor(path: string): string {
@@ -274,7 +303,9 @@ export function resolvePluginConfig(spec: PluginSpec, config: ResearchConfig | u
 const JUDGE_SYSTEM = [
   '你是研究任务的验收裁判。只输出一个 JSON 对象，不要 Markdown 围栏。',
   '字段：verdict（accepted|partial|rejected）、reason（一句话）、done（是否已满足全部成功判据）、',
-  'summary（不超过 200 字的中文结论摘要）、nextBrief（未完成时下一轮要问什么，已完成可省略）。',
+  'summary（不超过 200 字的中文结论摘要）、nextBrief（未完成时下一轮要问什么，已完成可省略）、',
+  'criteria（数组：每个成功判据一项，字段 criterion、status=met|partial|unmet|unknown、evidence 一句话引用答复中的依据）。',
+  '必须逐条判断所有成功判据；done 只有在 verdict=accepted 且全部判据 status=met 时才为 true。',
   '判断依据只能是答复本身与给定判据；不要因为答复自信或一致就判 accepted。',
 ].join('\n')
 
@@ -286,11 +317,28 @@ function parseJudge(text: string): Omit<JudgeResult, 'nextBrief'> & { nextBrief?
   const verdict = parsed.verdict === 'accepted' || parsed.verdict === 'rejected' || parsed.verdict === 'partial'
     ? parsed.verdict
     : 'partial'
+  const criteria = Array.isArray(parsed.criteria)
+    ? parsed.criteria.flatMap(item => {
+      if (item === null || typeof item !== 'object') return []
+      const row = item as Record<string, unknown>
+      if (typeof row.criterion !== 'string' || row.criterion.trim() === '') return []
+      const status = row.status === 'met' || row.status === 'partial' || row.status === 'unmet' || row.status === 'unknown'
+        ? row.status
+        : 'unknown'
+      return [{
+        criterion: row.criterion,
+        status,
+        ...(typeof row.evidence === 'string' && row.evidence.trim() !== '' ? { evidence: row.evidence } : {}),
+      }] as JudgeCriterion[]
+    })
+    : undefined
   return {
     verdict,
     reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+    // The engine checks completion claims against the original criteria.
     done: parsed.done === true,
     summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+    ...(criteria !== undefined && criteria.length > 0 ? { criteria } : {}),
     ...(typeof parsed.nextBrief === 'string' ? { nextBrief: parsed.nextBrief } : {}),
   }
 }
@@ -387,19 +435,22 @@ class ProResearchService {
         `本轮问题：\n${input.question ?? '（未记录）'}`,
         `本轮答复：\n${input.answer.slice(0, 30_000)}`,
       ].join('\n\n')
+      const sessionId = this.topicSessions.get(input.topic.id) ?? (await this.entryFor(input.topic.id))?.sessionId ?? input.topic.id
       for await (const chunk of llm.stream({
         provider: route.provider,
         model: route.model,
+        sessionId,
         system: JUDGE_SYSTEM,
         messages: [createUserMessage({
           content: [{ type: 'text', text: user }],
           source: { kind: this.spec.name } as never,
         })],
-        maxTokens: 1_200,
+        maxTokens: 1_800,
         signal: AbortSignal.timeout(120_000),
       })) {
         assembler.push(chunk as never)
       }
+      if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') throw new Error(`裁决服务失败：${assembler.finish.failure.message}`)
       const text = assembler.blocks().map(block => (block.type === 'text' ? block.text : '')).join('')
       return parseJudge(text)
     }
@@ -447,6 +498,9 @@ class ProResearchService {
         if (event.type === 'finished' && event.status === 'capped' && this.config.autoReview) {
           void this.autoReviewRequest(event.topicId)
         }
+        if (event.type === 'judge_failed') {
+          void this.notifyJudgeFailed(event.topicId, event.round, event.message)
+        }
       },
     })
     this.engines.set(key, engine)
@@ -460,11 +514,12 @@ class ProResearchService {
   }
 
   /**
-   * Loud, one-line signal when the host provides no connection guard. The host
-   * always does in production; without it the HTTP routes would fail open.
+   * Loud, one-line signal when the host provides no connection guard. Routes
+   * are not registered in that case: an unauthenticated artifact/action
+   * surface is worse than a missing panel.
    */
   noteMissingConnectionGuard(): void {
-    this.log(`${this.spec.name}: connection service unavailable; HTTP routes have no host auth guard (dev/test only)`)
+    this.log(`${this.spec.name}: connection service unavailable; HTTP routes were not registered (no host auth guard)`)
   }
 
   private async find(cwd: string, topicId: string): Promise<{ store: ResearchStore; engine: ResearchEngine; topic: Topic }> {
@@ -542,7 +597,19 @@ class ProResearchService {
     await mkdir(dirname(this.registryFile), { recursive: true })
     const temp = `${this.registryFile}.${randomUUID()}.tmp`
     await writeFile(temp, `${JSON.stringify({ version: 1, topics: entries }, null, 2)}\n`, 'utf8')
-    await rename(temp, this.registryFile)
+    // Same Windows retry as store.atomic(): a reader holding the old file makes
+    // rename report EPERM/EACCES/EBUSY instead of waiting.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await rename(temp, this.registryFile)
+        return
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        const retriable = code === 'EPERM' || code === 'EACCES' || code === 'EBUSY'
+        if (!retriable || attempt >= 8) throw error
+        await new Promise(resolve => setTimeout(resolve, 10 * attempt))
+      }
+    }
   }
 
   private async record(topic: Topic, root: string, sessionId?: string): Promise<void> {
@@ -646,6 +713,36 @@ class ProResearchService {
     await this.engineFor(entry.root, entry.mode).markReviewing(id).catch(() => undefined)
   }
 
+  /** Ask the originating agent to inspect a response whose automatic verdict failed. */
+  private async notifyJudgeFailed(id: string, round: number, message: string): Promise<void> {
+    try {
+      const entry = await this.entryFor(id)
+      const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
+      if (entry === undefined || sessionId === undefined) return
+      const topic = entry === undefined ? undefined : await this.storeAt(entry.root, entry.mode).load(id).catch(() => undefined)
+      if (topic === undefined) return
+      const dir = await this.storeAt(entry.root, entry.mode).dirOf(id)
+      const agent = this.liveAgent(sessionId)
+      if (agent?.followup === undefined) return
+      agent.followup(createUserMessage({
+        content: [{
+          type: 'text',
+          text: `<system-reminder>Pro 主题「${topic.title}」已取回第 ${round} 轮答复，但自动裁决失败（${message}）。答复与产物已保留，主题停在“待判断”。
+请宿主按成功判据人工裁决：
+- 满足：${this.spec.tool} action=accept topic_id=${id} confirmed=true
+- 需要改进：${this.spec.tool} action=regenerate topic_id=${id} confirmed=true note="具体问题"
+- 只补充一轮：${this.spec.tool} action=continue topic_id=${id} confirmed=true brief="下一轮问题"
+- 修复 judgeProvider / judgeModel 后：${this.spec.tool} action=resume topic_id=${id}
+目录：${dir}
+裁决占位：${join(dir, 'rounds', `${String(round).padStart(2, '0')}-verdict.md`)}</system-reminder>`,
+        }],
+        source: { kind: this.spec.name } as never,
+      }))
+    } catch {
+      // Best-effort reminder; the sidebar and records remain the truth.
+    }
+  }
+
   /** Ask the originating agent to inspect a capped/failed result and decide. */
   private async notifyCappedReview(id: string, resumeCold = false): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
     try {
@@ -655,7 +752,7 @@ class ProResearchService {
       const topic = entry === undefined ? undefined : await this.storeAt(entry.root, entry.mode).load(id).catch(() => undefined)
       if (topic === undefined) return { ok: false, reason: '主题不存在' }
       const dir = await this.storeAt(entry?.root ?? this.rootFor(''), entry?.mode ?? this.config.store).dirOf(id)
-      const state = topic.status === 'capped' ? '已到轮次上限' : topic.status === 'failed' ? '失败' : '停下等待核对'
+      const state = topic.status === 'capped' ? '已结束本次运行' : topic.status === 'failed' ? '失败' : '停下等待核对'
       const message = `<system-reminder>Pro 主题「${topic.title}」${state}，结果等待确认。请先检查产物和判据：
 - 满足：调用 ${this.spec.tool} action=accept topic_id=${id} confirmed=true
 - 还需改进：调用 ${this.spec.tool} action=regenerate topic_id=${id} confirmed=true note="具体问题"
@@ -691,7 +788,7 @@ class ProResearchService {
       agent.inject(createUserMessage({
         content: [{
           type: 'text',
-          text: `<system-reminder>Pro 主题「${title}」已${status === 'completed' ? '完成' : status === 'capped' ? '到轮次上限' : '取消'}。产物与最终汇总在侧边栏对应面板里。</system-reminder>`,
+          text: `<system-reminder>Pro 主题「${title}」已${status === 'completed' ? '完成' : status === 'capped' ? '停止并等待确认' : '取消'}。产物与最终汇总在侧边栏对应面板里。</system-reminder>`,
         }],
         source: { kind: this.spec.name } as never,
       }))
@@ -731,13 +828,16 @@ class ProResearchService {
    * A human accepted a result. Wake the originating conversation so the agent
    * continues whatever it was doing before it handed this topic off.
    */
-  private async notifyAccepted(id: string, topic: Topic): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
+  private async notifyAccepted(id: string, topic: Topic, humanAccepted = true): Promise<{ ok: boolean; resumed?: boolean; reason?: string }> {
     try {
       const entry = await this.entryFor(id)
       const sessionId = entry?.sessionId ?? this.topicSessions.get(id)
       if (sessionId === undefined) return { ok: false, reason: '原会话 id 未记录' }
       const dir = await this.storeAt(entry?.root ?? this.rootFor(''), entry?.mode ?? this.config.store).dirOf(id)
-      return await this.wakeSession(sessionId, `<system-reminder>用户已接受「${topic.title}」的当前结果，视为验收通过。请继续这个主题之前被搁置的后续工作，不要重复已经完成的研究/设计轮次。产物目录：${dir}，最终汇总：${join(dir, 'final.md')}。</system-reminder>`)
+      const outcome = humanAccepted
+        ? `用户已接受「${topic.title}」的当前结果。`
+        : `「${topic.title}」已通过自动文本裁决，尚不代表人工验收。请先核对结论与证据。`
+      return await this.wakeSession(sessionId, `<system-reminder>${outcome}请在原有授权范围内继续后续工作，不要重复已经完成的研究/设计轮次。产物目录：${dir}，最终汇总：${join(dir, 'final.md')}。</system-reminder>`)
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) }
     }
@@ -767,11 +867,14 @@ class ProResearchService {
     const store = this.storeAt(entry.root, entry.mode)
     const topic = await store.load(id)
     const dir = await store.dirOf(id)
+    const reportInfo = await readReportInfo(dir, topic)
     return {
       ...this.view(topic),
       root: entry.root,
       store: entry.mode,
       path: dir,
+      report: reportInfo?.path ?? null,
+      report_info: reportInfo,
       artifact_details: await this.artifactDetails(dir, topic),
       rounds_detail: topic.rounds,
     }
@@ -879,11 +982,9 @@ class ProResearchService {
       throw new Error('path escapes the topic')
     }
     await access(target)
-    const child = process.platform === 'win32'
-      ? spawn('explorer.exe', ['/select,', target], { detached: true, stdio: 'ignore' })
-      : process.platform === 'darwin'
-        ? spawn('open', ['-R', target], { detached: true, stdio: 'ignore' })
-        : spawn('xdg-open', [dirname(target)], { detached: true, stdio: 'ignore' })
+    const reveal = externalRevealCommand(process.platform, target)
+    const child = spawn(reveal.command, reveal.args, { detached: true, stdio: 'ignore' })
+    child.on('error', () => undefined)
     child.unref()
   }
 
@@ -898,11 +999,13 @@ class ProResearchService {
       throw new Error('path escapes the topic')
     }
     await access(target)
-    const child = process.platform === 'win32'
-      ? spawn('cmd.exe', ['/c', 'start', '', target], { detached: true, stdio: 'ignore', windowsHide: true })
-      : process.platform === 'darwin'
-        ? spawn('open', [target], { detached: true, stdio: 'ignore' })
-        : spawn('xdg-open', [target], { detached: true, stdio: 'ignore' })
+    const opener = externalOpenCommand(process.platform, target)
+    const child = spawn(opener.command, opener.args, {
+      detached: true,
+      stdio: 'ignore',
+      ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+    })
+    child.on('error', () => undefined)
     child.unref()
   }
 
@@ -912,10 +1015,51 @@ class ProResearchService {
     conclusion?: 'submitted' | 'not_submitted' | 'reopen',
     note?: string,
     materialPaths?: string[],
+    extra?: { brief?: string; designs?: number; baseArtifact?: string },
   ): Promise<Record<string, unknown>> {
     const entry = await this.entryFor(id)
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
     const engine = this.engineFor(entry.root, entry.mode)
+    if (action === 'continue') {
+      // The panel's "continue one round" dialog posts here; the tool path has
+      // its own handler. Keep both on one engine call so the resulting record
+      // is identical no matter who started the follow-up.
+      const brief = (extra?.brief ?? '').trim()
+      if (brief === '') throw new Error('brief is required')
+      this.assertTextSafe('brief', brief)
+      const store = this.storeAt(entry.root, entry.mode)
+      const topic = await store.load(id)
+      let refs: MaterialRef[] | undefined
+      const base = extra?.baseArtifact
+      if (base !== undefined) {
+        if (topic.channel === 'api' && this.config.image.editMode === 'off') {
+          throw new Error('imageEdit=off：请启用参考图编辑后再以此图继续修改')
+        }
+        if ((materialPaths?.length ?? 0) > 0 || (extra?.designs !== undefined && extra.designs !== 1)) {
+          throw new Error('以这张继续改仅使用所选底图，且本轮只生成一个结果')
+        }
+        refs = [await baseImageMaterial(await store.dirOf(id), topic, base)]
+        assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
+      }
+      if (materialPaths !== undefined && materialPaths.length > 0) {
+        // Panel/route materials resolve against the topic's project root, not
+        // the requesting session cwd, so a follow-up cannot silently attach a
+        // different project's file with the same relative path.
+        refs = this.withSources(entry.root, await buildManifest(entry.root, materialPaths, undefined, this.config.secretGlobs))
+        assertMaterialLimits(refs, this.config.maxFiles, this.config.maxTotalMB)
+      }
+      const requestedDesigns = extra?.designs
+      if (requestedDesigns !== undefined
+        && (!Number.isInteger(requestedDesigns) || requestedDesigns < 1 || requestedDesigns > 6)) {
+        throw new Error('designs must be an integer between 1 and 6')
+      }
+      const designs = topic.type === 'design'
+        ? (base !== undefined ? 1 : requestedDesigns ?? topic.designs ?? this.config.designs)
+        : undefined
+      const editBrief = base === undefined ? brief : `以本轮附带的图片为唯一底图，保留用户未要求改变的部分。\n\n${brief}`
+      const followUp = designs === undefined ? editBrief : this.withDesignCount(editBrief, designs)
+      return this.view(await engine.continue(id, followUp, refs, designs, base))
+    }
     if (action === 'resume') {
       // The engine probes the transport before refusing an api-channel resume,
       // so a still-live job recovers instead of hitting a blanket error.
@@ -947,7 +1091,7 @@ class ProResearchService {
       if (topic.status !== 'completed') {
         throw new Error(`topic ${id} is ${topic.status}; only completed topics can be woken without a decision`)
       }
-      const wake = await this.notifyAccepted(id, topic)
+      const wake = await this.notifyAccepted(id, topic, topic.acceptedAt !== undefined)
       return { ...this.view(topic), wake }
     }
     if (action === 'review') {
@@ -1012,8 +1156,8 @@ class ProResearchService {
         return await this.start(args, cwd, exec.agent?.session.id)
       case 'status': {
         const id = this.requireId(args)
-        const { topic } = await this.find(cwd, id)
-        return this.view(topic)
+        const { topic, store } = await this.find(cwd, id)
+        return { ...this.view(topic), path: await store.dirOf(id) }
       }
       case 'list': {
         const store = this.storeFor(cwd)
@@ -1027,6 +1171,14 @@ class ProResearchService {
       }
       case 'continue': {
         const id = this.requireId(args)
+        if (args.base_artifact !== undefined) {
+          const baseArtifact = this.requireString(args, 'base_artifact')
+          const materials = Array.isArray(args.materials) && args.materials.length > 0 ? this.stringArray(args.materials, 'materials') : undefined
+          return await this.act(id, 'continue', undefined, undefined, materials, {
+            brief: this.requireString(args, 'brief'), baseArtifact,
+            ...(typeof args.designs === 'number' ? { designs: args.designs } : {}),
+          })
+        }
         const brief = this.requireString(args, 'brief')
         this.assertTextSafe('brief', brief)
         const paths = Array.isArray(args.materials) && args.materials.length > 0
@@ -1178,10 +1330,11 @@ class ProResearchService {
       model: this.config.channel === 'api' ? this.config.image.model : this.config.model,
       ...(typeof args.parent === 'string' && args.parent !== '' ? { parent: args.parent } : {}),
     }
+    const store = this.storeFor(cwd)
     const engine = this.engineFor(cwd)
     const topic = await engine.start(card)
     await this.record(topic, this.rootFor(cwd), sessionId)
-    return this.view(topic)
+    return { ...this.view(topic), path: await store.dirOf(topic.id) }
   }
 
   private requireString(args: Record<string, unknown>, key: string): string {
@@ -1212,6 +1365,7 @@ class ProResearchService {
       channel: topic.channel,
       model: topic.model,
       judge_enabled: this.judgeEnabled(),
+      image_edit_enabled: topic.type === 'design' && (topic.channel !== 'api' || this.config.image.editMode !== 'off'),
       created: topic.created,
       generations: topic.generations ?? [],
       stall_reason: topic.stallReason ?? null,
@@ -1220,6 +1374,7 @@ class ProResearchService {
       designs: topic.designs ?? null,
       stop_reason: topic.stopReason ?? null,
       review_from: topic.reviewFrom ?? null,
+      accepted_at: topic.acceptedAt ?? null,
       artifacts: topic.artifacts,
       updated: topic.updated,
     }
@@ -1243,6 +1398,8 @@ class ProResearchService {
         const store = this.storeAt(entry.root, entry.mode)
         const topic = await store.load(entry.id).catch(() => undefined)
         if (topic === undefined) continue
+        // Failed automatic judging is a deliberate stop, not a stale handoff.
+        if (topic.status === 'reviewing' && topic.reviewFrom === 'answered') continue
         const engine = this.engineFor(entry.root, entry.mode)
         const recordedChannel: Channel = topic.channel === 'api' ? 'api' : 'web'
         if (recordedChannel !== this.config.channel) {
@@ -1318,11 +1475,24 @@ class ProResearchService {
   }
 
   dispose(): void {
+    const engines = [...this.engines.values()]
+    for (const engine of engines) engine.dispose()
+    this.engines.clear()
+    this.stores.clear()
+    this.topicSessions.clear()
     this.imageTransport?.dispose()
     this.imageTransport = undefined
-    this.shared?.release()
+    const shared = this.shared
     this.shared = undefined
     this.transport = undefined
+    const release = (): void => shared?.release()
+    if (engines.length === 0) {
+      release()
+      return
+    }
+    // Let the aborted runs persist `cancelled` before Chrome closes under
+    // them; settle() is bounded, so a stuck transport cannot block HMR forever.
+    void Promise.allSettled(engines.map(engine => engine.settle())).then(release)
   }
 }
 
@@ -1331,7 +1501,7 @@ function registerSkill(ctx: ServiceContext, spec: PluginSpec): void {
   if (skills === undefined) return
   const root = fileURLToPath(new URL('../resources/skills', import.meta.url))
   const byName = new Map(spec.skills.map(skill => [skill.name, skill]))
-  skills.registerProvider(() => ({
+  ctx.effect(() => skills.registerProvider(() => ({
     name: spec.name,
     list: async () => spec.skills.map(skill => {
       const path = join(root, skill.dir, 'SKILL.md')
@@ -1363,7 +1533,7 @@ function registerSkill(ctx: ServiceContext, spec: PluginSpec): void {
         provider: spec.name,
       }
     },
-  }))
+  })), `${spec.name}: skills`)
 }
 
 interface HttpRequest {
@@ -1427,17 +1597,23 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
     webServer?: { register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: HttpRequest, res: HttpResponse) => void | Promise<void> }): () => void }
   }).webServer
   if (webServer === undefined) return
-  const connection = (scoped.get('connection') ?? undefined) as
+  const connection = scoped.get('connection') as
     | { requestRejection?(req: HttpRequest): 401 | 403 | undefined }
     | undefined
-  if (connection === undefined) service.noteMissingConnectionGuard()
+  if (connection === undefined) {
+    // The caller injects ['webServer', 'connection']; a missing guard here
+    // means the composition is not safe to expose. Do not register fail-open
+    // routes: the panel will report the missing host service instead.
+    service.noteMissingConnectionGuard()
+    return
+  }
   const reject = (req: HttpRequest): 401 | 403 | undefined => {
-    // Depth defense: a cross-site POST never reaches the action surface, even
-    // if the host connection guard is missing.
+    // Depth defense: a cross-site POST never reaches the action surface even
+    // if the host guard itself has a bug.
     const site = req.headers['sec-fetch-site']
     const value = Array.isArray(site) ? site[0] : site
     if (req.method === 'POST' && value === 'cross-site') return 403
-    return connection?.requestRejection?.(req)
+    return connection.requestRejection?.(req)
   }
 
   scoped.effect(() => webServer.register({
@@ -1487,6 +1663,9 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
           ? body.conclusion
           : undefined
         const note = typeof body.note === 'string' ? body.note : undefined
+        const brief = typeof body.brief === 'string' ? body.brief : undefined
+        const designs = typeof body.designs === 'number' ? body.designs : undefined
+        const baseArtifact = typeof body.base_artifact === 'string' ? body.base_artifact : undefined
         const materials = Array.isArray(body.materials)
           ? body.materials.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
           : undefined
@@ -1494,7 +1673,13 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
           sendJson(res, 200, await service.handle({ action }, { agent: undefined } as never))
           return
         }
-        sendJson(res, 200, { topic: await service.act(id, action, conclusion, note, materials) })
+        sendJson(res, 200, {
+          topic: await service.act(id, action, conclusion, note, materials, {
+            ...(brief !== undefined ? { brief } : {}),
+            ...(designs !== undefined ? { designs } : {}),
+            ...(baseArtifact !== undefined ? { baseArtifact } : {}),
+          }),
+        })
       } catch (error) {
         const status = error instanceof BodyTooLargeError ? 413 : 400
         sendJson(res, status, { error: error instanceof Error ? error.message : String(error) })
@@ -1664,7 +1849,11 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       timer.unref?.()
       return () => clearTimeout(timer)
     }, `${spec.name}: recover interrupted rounds`)
-    registerSkill(ctx as ServiceContext, spec)
+    // Register through inject, not a one-shot ctx.get(): the service can
+    // activate after this plugin and can be replaced by HMR. The effect inside
+    // registerSkill is scoped to the injected context, so a replacement
+    // registers a fresh provider instead of being blocked by a stale guard.
+    ;(ctx as ServiceContext).inject(['skills'], scoped => registerSkill(scoped as ServiceContext, spec))
     ;(ctx as ServiceContext).inject(['agents'], scoped => {
       const factory = scoped.get('agents') as AgentFactory | undefined
       if (factory !== undefined) service.useAgentFactory(factory)
@@ -1677,25 +1866,38 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       const model = scoped.get('agentDefaultModel') as AgentDefaultModel | undefined
       if (model !== undefined) service.useDefaultModel(model)
     })
-    ;(ctx as ServiceContext).inject(['webServer'], scoped => registerRoutes(scoped, service, spec))
-  ;(ctx as ServiceContext).tools.register(defineTool({
+    ;(ctx as ServiceContext).inject(['webServer', 'connection'], scoped => registerRoutes(scoped, service, spec))
+  // The registry disposer must belong to this plugin's fiber: a plain
+  // tools.register() call ignores cleanup on disable/HMR and a reload then
+  // trips the registry's duplicate-name guard.
+  ctx.effect(() => (ctx as ServiceContext).tools.register(defineTool({
     name: spec.tool,
     description: toolDescription(spec, resolved),
     parameters: {
-      action: { type: 'string', required: true, description: 'start|continue|status|list|resume|cancel|delete|human_check|accept|review|review_cancel|wake|regenerate|probe|login' },
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['start', 'continue', 'status', 'list', 'resume', 'cancel', 'delete', 'human_check', 'accept', 'review', 'review_cancel', 'wake', 'regenerate', 'probe', 'login'],
+        description: 'start|continue|status|list|resume|cancel|delete|human_check|accept|review|review_cancel|wake|regenerate|probe|login',
+      },
       title: { type: 'string', description: '主题标题（start 必填）' },
-      question: { type: 'string', description: '研究问题（start 必填）' },
-      brief: { type: 'string', description: '发给 Pro 的完整 brief（start 必填）' },
+      question: { type: 'string', description: '主题目标/研究问题（start 必填）' },
+      brief: { type: 'string', description: '发给 Pro 的完整 brief（start 与 continue 必填）' },
       criteria: { type: 'array', items: { type: 'string' }, description: '成功判据（start 必填）' },
-      materials: { type: 'array', items: { type: 'string' }, description: '材料路径（start/continue/regenerate 可选；regenerate 时相对主题项目根目录）' },
+      materials: { type: 'array', items: { type: 'string' }, description: '材料路径（start/continue/regenerate 可选）' },
+      base_artifact: { type: 'string', description: '仅 design 的 continue：当前主题已记录的 PNG/JPEG/WebP 产物路径；只以此图修改，一轮一个结果，不与 materials 合用' },
       materialReasons: { type: 'object', additionalProperties: true, description: '可选：材料路径 → 选择理由' },
-      rounds: { type: 'number', description: '本次轮次上限（1–10）' },
-      designs: { type: 'number', description: '设计插件本轮生成的方向/图片数（1–6，默认取设置）' },
-      topic_id: { type: 'string', description: 'status/continue/resume/cancel/delete/human_check/accept/review/wake/regenerate 的主题 id' },
-      parent: { type: 'string', description: '可选：父主题 id，用于把 follow-up 串成同一棵树' },
-      conclusion: { type: 'string', description: 'human_check 结论：submitted|not_submitted|reopen' },
+      rounds: { type: 'number', description: '本次轮次上限（1–10，仅 start；continue 固定加一轮）' },
+      designs: { type: 'number', description: '设计插件本轮方向/图片数（1–6，仅 design 主题的 start/continue）' },
+      topic_id: { type: 'string', description: 'status/continue/resume/cancel/delete/human_check/accept/review/review_cancel/wake/regenerate 的主题 id' },
+      parent: { type: 'string', description: '可选：父主题 id，仅 start 使用' },
+      conclusion: {
+        type: 'string',
+        enum: ['submitted', 'not_submitted', 'reopen'],
+        description: 'human_check 结论：submitted|not_submitted|reopen',
+      },
       note: { type: 'string', description: 'human_check 依据；regenerate 时作为不满意点/新要求' },
-      confirmed: { type: 'boolean', description: '用户已确认研究卡' },
+      confirmed: { type: 'boolean', description: '用户已确认研究卡/设计卡；start、continue、regenerate、accept、delete 需要 true' },
     },
     output: {
       schema: {
@@ -1716,6 +1918,6 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       }
       return (await service.handle(args, exec)) as never
     },
-  }))
+  })), `${spec.name}: tool`)
   }
 }
