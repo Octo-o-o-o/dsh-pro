@@ -34,7 +34,7 @@
 
 从旧 `link:` 安装切换到打包安装时，pnpm 在 Windows junction 上误清理了两个包的源码目录。随后从 Git 基线、独立评审保存的完整 diff、逐次编辑记录及已验证安装包恢复；共享源码未受影响。
 
-重建后的四个 host/client bundle 与事故前安装包 SHA-256 完全一致，前端主文件也与独立评审预先记录的哈希一致。测试文件另做恢复核对与完整复测。此后日常 profile 使用实际安装内容，不再指向源码目录；安装前 profile 清单、锁文件与恢复材料保留在本地 `.tmp`，不随发布提交。
+重建后的四个 host/client bundle 与事故前安装包 SHA-256 完全一致，前端主文件也与独立评审预先记录的哈希一致。最后缺失的连接守卫测试及两个测试 fixture 从原 DSH 成功编辑记录精确恢复，16:01 完整复测仍为 172 passed / 2 skipped，类型、构建、bundle smoke 通过。日常 profile 使用实际安装内容，不再指向源码目录；安装前 profile 清单、锁文件与恢复材料保留在本地 `.tmp`，不随发布提交。
 
 | bundle | SHA-256 |
 |---|---|
@@ -45,6 +45,12 @@
 
 ## 发布范围与限制
 
-发布目标是两个公开 Git 仓库的 `v0.3.2`，由 monorepo 脚本生成。npm 根据用户最新指示暂缓，仍为 0.2.6；市场本轮不重新提交，不宣称已收录。
+两个公开 Git 仓库的 `v0.3.2` 已由 monorepo 脚本生成并推送，GitHub Release 均已公开：
+
+- [ChatGPT Pro Research 0.3.2](https://github.com/Octo-o-o-o/chatgpt-pro-research/releases/tag/v0.3.2)：`8e72244664cd2f35b8d645da6acecba77088a842`
+- [GPT-Image Design 0.3.2](https://github.com/Octo-o-o-o/gpt-image-design/releases/tag/v0.3.2)：`9706c6e4af3c428a0875a66ef36b2c9b33bc021b`
+- 源码提交：`662361b0183d557a9ffda0a7d537e08ee3f8a2ec`。
+
+本机 desktop profile 已从以上固定 Git 提交安装两个 0.3.2；host、client、README 与发布源码一致，其他三个第三方插件版本和全部 bundles 配置保持不变。npm 根据用户最新指示暂缓，仍为 0.2.6；市场本轮不重新提交，不宣称已收录。
 
 本轮真实验收覆盖 Research 最小网页闭环；Design 底图发送和恢复使用本地假服务验证，没有新增真实生图 API 计费测试，也没有重新验证真实网页图片 + HTML 生成。图片视觉质量仍需人工确认。测试与面板验证不构成对全部页面改版、账号风控、网络中断或所有服务商兼容性的承诺。

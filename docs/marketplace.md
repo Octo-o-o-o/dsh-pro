@@ -8,8 +8,8 @@ Status snapshot: 2026-10-23 (Asia/Shanghai). Release workflow: [RELEASING.md](RE
 
 | Plugin | Public repo | Commit | Version |
 |---|---|---|---|
-| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `9e3853f1a64135b8c82eb098007a619057e5102e`（dsh.so 提交）/ `v0.3.2`（本次 Git 发布） | `0.3.2` |
-| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `e29502c3350eb3ab0b69a7c3c66928ddbcf1faea`（dsh.so 提交）/ `v0.3.2`（本次 Git 发布） | `0.3.2` |
+| `chatgpt-pro-research` | https://github.com/Octo-o-o-o/chatgpt-pro-research | `8e72244664cd2f35b8d645da6acecba77088a842`（`v0.3.2`） | `0.3.2` |
+| `gpt-image-design` | https://github.com/Octo-o-o-o/gpt-image-design | `9706c6e4af3c428a0875a66ef36b2c9b33bc021b`（`v0.3.2`） | `0.3.2` |
 
 Git Release 0.3.2 is independent of marketplace acceptance. The submissions below still refer to 0.3.0; no new listing is claimed.
 
