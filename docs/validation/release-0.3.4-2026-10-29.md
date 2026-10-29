@@ -29,6 +29,7 @@
 - 最终代码提交 `3dab081` 的 [GitHub CI](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40839558237) 通过（Windows / Ubuntu，Node 24）。
 - 后续文档提交触发的 CI 暴露 Design API 测试清理竞态：Ubuntu 在删除临时主题目录时遇到 `ENOTEMPTY`，Windows 全部通过。测试曾在看到终态后立即清理，但引擎仍可能追加最后的事件；现修正测试夹具，执行插件 disposer 并等待真实引擎 drain 后再删除目录。只修改测试生命周期，不改变已发布 0.3.4 运行时代码或 tag。
 - 下一轮 Ubuntu 单元测试全过，Chrome DOM 测试的 beforeAll 在冷启动时超过默认 10 秒；仅把该启动 hook 调整为 45 秒，以容纳 Playwright 默认 30 秒启动上限。功能断言、真实服务超时和发布 bundle 均未改变。
+- 随后 Ubuntu 的安装验收暴露图片解码等待缺失：弹窗出现后立即检查 `img.complete`，图片尚未完成加载会误报。验收脚本现先等待 `img.decode()`，仍严格检查原始宽度 600；不是跳过坏图或放宽功能条件。
 
 ## 真实设计闭环
 

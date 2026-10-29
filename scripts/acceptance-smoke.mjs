@@ -220,7 +220,10 @@ async function acceptance() {
       }
       await page.getByRole('button', { name: '以这张继续改', exact: true }).click()
       await page.getByRole('dialog').waitFor()
-      assert.equal(await page.getByRole('dialog').locator('img').evaluate(img => img.complete && img.naturalWidth === 600), true)
+      assert.equal(await page.getByRole('dialog').locator('img').evaluate(async img => {
+        await img.decode()
+        return img.complete && img.naturalWidth === 600
+      }), true)
       const box = await page.getByRole('button', { name: '提交修改', exact: true }).boundingBox(); assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= 600)
       await page.screenshot({ path: join(root, `design-edit-${width}.png`) })
       await page.keyboard.press('Escape')
