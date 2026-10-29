@@ -27,7 +27,7 @@ Read [docs/RELEASING.md](docs/RELEASING.md) completely.
 
 ## Marketplace state
 
-Current submission details, PRs, issue links and the dsh.pub formatting blocker
+Current submission details, PRs, issue links and external marketplace blockers
 are recorded in [docs/marketplace.md](docs/marketplace.md). Check it before
 re-submitting or claiming a listing.
 
@@ -35,8 +35,9 @@ re-submitting or claiming a listing.
   artifacts (`lib/index.js`, `lib/client.js`).
 - dsh.so accepts the public repository URL; compiled bundles are scanned and
   the listing is Declared until independently verified.
-- dsh.pub #155 is a registry-side formatting blocker on `main`; only a
-  maintainer commit can reformat the already-merged submission file.
+- dsh.pub #155 was fixed by #157. Both plugins are already in the source
+  catalog; #163 tracks the 0.3.4 refresh/public-page issue. Do not create a
+  duplicate submission when validation returns `already_listed`.
 
 ## Practical rules
 

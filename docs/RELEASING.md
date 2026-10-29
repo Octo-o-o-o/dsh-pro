@@ -1,6 +1,6 @@
 # 开发与发布指南
 
-更新：2026-10-23。适用于 `dsh-pro` monorepo，以及 `chatgpt-pro-research`、`gpt-image-design` 两个发布仓库。
+更新：2026-10-29。适用于 `dsh-pro` monorepo，以及 `chatgpt-pro-research`、`gpt-image-design` 两个发布仓库。
 
 ## 一句话原则
 
@@ -107,14 +107,16 @@ node scripts/release-dist.mjs --push --release
 
 ### 4. 提交市场
 
-发布仓库推送后，再到市场提交新 commit：
+发布仓库推送并发布 npm 后，先检查已有条目与投稿，再按各站规则更新：
 
 - **dsh.pub**：https://dsh.pub/zh/submit/  
-  粘贴仓库 URL；它会固定默认分支 commit，自动开 PR。根目录必须保持 bundle 形态。
+  新条目粘贴仓库 URL，固定默认分支 commit 并开 PR。已有条目走刷新；`already_listed` 不应重复投稿。根目录保持 bundle 形态。
 - **dsh.so**：https://www.dsh.so/zh/submit/  
   粘贴仓库 URL 或 npm 包名；检查通过后提交，等待审核/L4–L5。
 
-提交后更新 [docs/marketplace.md](marketplace.md) 里的 commit、PR/issue 和状态。
+DSH Plugin Hub 可通过 topic/npm 自动索引；开放插件市场通过 plugin-add issue 申请；DSHX 提供网页投稿。具体入口与现有回执见 [marketplace.md](marketplace.md)，避免重复提交。dsh.so 指向的官方 Discussions 可用于发布兼容性实测报告，但报告不等于市场收录或独立验证。
+
+提交后记录 commit、PR/issue、成功回执、待审核状态及外部阻塞，不把失败尝试写成发布成功。
 
 ## release-dist 模式
 
@@ -165,9 +167,9 @@ git -C C:\WorkSpace\dsh-plugins\chatgpt-pro-research push origin vX.Y.Z
 
 ## 当前状态（2026-10-29）
 
-两个插件当前候选为 `0.3.4`；真实自动裁决、local 交付与桌面恢复已经验证。本轮用户明确授权推送开发仓库与两个发布仓库，并发布 npm / GitHub Release、更新合适的社区市场。具体公开 commit、tag 与渠道回执见 [marketplace.md](marketplace.md)。
+两个插件 `0.3.4` 已发布到 GitHub Releases 与 npm；开发仓库和两个发布仓库 main 已同步推送。真实自动裁决、local 交付与桌面恢复已经验证。社区市场的刷新、收录申请和官方兼容性报告已提交；dsh.so 的本轮正式投稿受限流/超时和投稿仓库 404 阻塞。具体 commit、tag 与逐渠道回执见 [marketplace.md](marketplace.md)。
 
-本轮检查、真实证据与限制见 [0.3.4 验证记录](validation/release-0.3.4-2026-10-29.md)。[0.3.3 复核记录](validation/release-0.3.3-2026-10-29.md) 和 [0.3.2 验收记录](validation/release-0.3.2-2026-10-25.md) 保留为历史，不替代当前候选验证。
+本轮检查、真实证据与限制见 [0.3.4 验证记录](validation/release-0.3.4-2026-10-29.md)。[0.3.3 复核记录](validation/release-0.3.3-2026-10-29.md) 和 [0.3.2 验收记录](validation/release-0.3.2-2026-10-25.md) 保留为历史，不替代当前版本验证。
 
 ### Windows link 安装切换
 
