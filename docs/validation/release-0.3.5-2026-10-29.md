@@ -57,7 +57,22 @@
 
 ## 本机安装与运行状态
 
-待最终复审后，通过 `plugin_manager install_bundle` 安装两个实际 tarball；不手写 profile 清单，不安装源码链接。将记录 pack 文件清单、SHA256、安装应用结果和磁盘/运行验证，必要时明确 restart-required。
+最终复审通过后，从两个已生成发布仓库执行 `npm pack --ignore-scripts`，每包实际 11 个文件，均包含 Host/Client lib、两语言 locale、图标、根 bundle patch、README、MIT LICENSE、面板截图和技能资源；无 node_modules、git、环境文件或其他 tarball。
+
+| 包 | tarball 字节 | tarball SHA256 | 安装结果 |
+| --- | --- | --- | --- |
+| chatgpt-pro-research 0.3.5 | 255260 | `f022dcc79612afed167f233642f373899a094bcb56ebb2e8b809a6b295a1dd15` | `application: applied`，exitCode 0，warnings `[]` |
+| gpt-image-design 0.3.5 | 273386 | `3dfeab000e0c4f8f3931a7ea597ed971391311b8cba26448d760c7349eeebe93` | `application: applied`，exitCode 0，warnings `[]` |
+
+两包在 23:30/23:31 经 `plugin_manager install_bundle` 安装至当前 desktop profile，实体目录而非 link。未手写 profile 清单，未手动执行 profile 包管理器，未放宽版本范围/添加豁免。安装器明确返回 applied（不是 restart-required），据此记录运行应用状态，而非由磁盘版本或 Slot id 推断。
+
+安装后：
+
+- 两个安装 manifest 都回读为 0.3.5；Host/Client lib、locale、icon、patch 与已验证源码构建逐字节 SHA256 一致。
+- 两个 Config live entry 仍为 schema 状态；Client `main` 和 `sidebar.panellist` 中两个插件均有 active 注册。此处只证明注册，不据此证明浏览器已加载新字节或视觉结果。
+- 两个已存在 local 主题的 `status` 调用成功；进一步回读 local 交付稿。部署前后全部 12 个既有 topic.json 哈希未变，既有配置和登录态未手动修改，没有新发外部任务。
+- 安装日志有 Electron crashpad 管道提示及 pnpm peer-dependency 警告；两次包管理退出 0、管理器无应用 warnings，非激活失败。peer/engine 约束未变，不宣称整个 profile 的依赖诊断全无警告。
+- 图标/双语言元数据保留原有产品内容，实际 pack 与安装资源均核对；没有默认模板资源替换。实际桌面页的图标与主题视觉仍未目视验收。
 
 当前 Playwright 能访问 GUI URL，但未认证页面返回 401；不读取或搜寻认证凭据。隔离 acceptance 的 UI 证据不等同于当前 desktop 进程的真实页面视觉验收。
 

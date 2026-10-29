@@ -11,7 +11,14 @@
 
 ## 安装与兼容变化
 
-使用对应 GitHub Release 指向的完整 commit 安装；两个公开仓库的 `v0.3.5` 为全新 tag，不移动旧 tag。npm 仍为 0.3.4，社区市场状态独立，本次 Git 发版不代表这些渠道已更新。
+使用本版完整 commit 安装（`<profile>` 换成 `desktop` 或你的 profile）：
+
+```bash
+dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#78efa99002f7d4843fcf78b876f1c0aada6a7a0c
+dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#1c23f937cd66c0e90a217cb74e54e36fd0fa4f49
+```
+
+两个公开仓库的 `v0.3.5` 为全新 tag，不移动旧 tag。npm 仍为 0.3.4，社区市场状态独立，本次 Git 发版不代表这些渠道已更新。
 
 - DSH 实测 0.2.1-rc.3，兼容范围不变：`>=0.2.1-rc.3 <0.3.0`；Node 22+。
 - **所有重定向（包括同源）都失败关闭**，需配置最终直达 endpoint/图片 URL；跨源 CDN 直链下载不带 key。远程 API 必须 HTTPS，本机 loopback 可用 HTTP。
