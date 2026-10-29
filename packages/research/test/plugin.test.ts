@@ -78,6 +78,33 @@ function fakeContext(captured: Captured, options: { connection?: boolean } = {})
 }
 
 describe('plugin wiring', () => {
+  it('delivers a local report through the registered tool without arbitrary filesystem paths', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-report-tool-home-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-report-tool-work-'))
+    cleanups.push(home, cwd)
+    const store = new ResearchStore({ mode: 'local', projectRoot: cwd, localRoot: join(home, 'chatgpt-pro-research'), rawDir: join(home, 'raw'), rawAnswers: 'local' })
+    const { topic } = await store.create({ title: 'Delivery tool', type: 'research', question: 'Q', brief: 'Q', successCriteria: ['c'], materials: [], rounds: 1, store: 'local' }, 1, 'pro', 'web')
+    topic.status = 'completed'
+    topic.rounds = [{ n: 1, files: 0, generation: 1, answeredAt: '2020-01-01T00:00:00.000Z' }]
+    await store.writeAnswer(topic, 1, 'the evidence')
+    await store.save(topic)
+    await withEnv(home, async () => {
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      const ctx = fakeContext(captured)
+      apply(ctx as never, { store: 'local', rawAnswersDir: join(home, 'raw') })
+      const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<Record<string, unknown>> }
+      const exec = { agent: { session: { header: { cwd }, id: 'report-test' } } }
+      const args = { action: 'write_report', topic_id: topic.id, generation: 1, through_round: 1, expected_revision: '', markdown: '# Based on the evidence' }
+      try {
+        await expect(tool.execute(args, exec)).rejects.toThrow('confirmed=true')
+        await expect(tool.execute({ ...args, confirmed: true }, {})).rejects.toThrow('workspace session')
+        expect(await tool.execute({ action: 'read_round', topic_id: topic.id, round: 1 }, exec)).toMatchObject({ answer: 'the evidence' })
+        expect(await tool.execute({ ...args, confirmed: true }, exec)).toMatchObject({ topic_id: topic.id, report: { path: 'report.md', status: 'current' } })
+        expect(await tool.execute({ action: 'read_report', topic_id: topic.id }, exec)).toMatchObject({ report: { status: 'current' }, markdown: expect.stringContaining('# Based on the evidence') })
+      } finally { ctx.dispose() }
+    })
+  })
+
   it.each(['local', 'project'] as const)('honors the card store=%s and records the effective location', async mode => {
     const home = await mkdtemp(join(tmpdir(), 'dsh-pro-home-'))
     const cwd = await mkdtemp(join(tmpdir(), 'dsh-pro-project-'))
@@ -106,6 +133,8 @@ describe('plugin wiring', () => {
             await new Promise(resolve => setTimeout(resolve, 20))
           } while (Date.now() < deadline)
           expect(status.status).toBe('stalled')
+          expect(status.last_round).toMatchObject({ n: 1, submissionState: 'not_sent' })
+          expect(status.last_round).not.toHaveProperty('submissionId')
           if (mode === 'local') await expect(readFile(join(cwd, 'docs', 'research', 'index.json'))).rejects.toThrow()
         } finally { ctx.dispose() }
       })

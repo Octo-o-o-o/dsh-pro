@@ -306,7 +306,10 @@ const JUDGE_SYSTEM = [
   '字段：verdict（accepted|partial|rejected）、reason（一句话）、done（是否已满足全部成功判据）、',
   'summary（不超过 200 字的中文结论摘要）、nextBrief（未完成时下一轮要问什么，已完成可省略）、',
   'criteria（数组：每个成功判据一项，字段 criterion、status=met|partial|unmet|unknown、evidence 一句话引用答复中的依据）。',
+  '成功判据以 JSON 字符串数组提供。输出 criteria 必须与该数组长度、顺序相同，criterion 必须逐字复制对应原文；禁止拆分、合并、改写或新增判据。',
+  '一条复合判据即使包含多个要求也只输出一项；所有要求均有依据才能 met，否则 partial/unmet/unknown，并在 evidence 中说明已满足和缺失的部分。',
   '必须逐条判断所有成功判据；done 只有在 verdict=accepted 且全部判据 status=met 时才为 true。',
+  '文件存在或文本声称已验证不能替代实际图片视觉与 HTML 交互证据；没有此类证据时不能把相关要求判为 met。',
   '判断依据只能是答复本身与给定判据；不要因为答复自信或一致就判 accepted。',
 ].join('\n')
 
@@ -433,7 +436,7 @@ class ProResearchService {
       let finished = false
       const user = [
         `主题：${input.topic.title}`,
-        `成功判据：\n${input.criteria.map(item => `- ${item}`).join('\n')}`,
+        `成功判据（原文 JSON 数组，不可拆分）：\n${JSON.stringify(input.criteria)}`,
         `本轮问题：\n${input.question ?? '（未记录）'}`,
         `本轮答复：\n${input.answer.slice(0, 30_000)}`,
         `已保存产物（文件存在不代表视觉或交互验收通过；不要因答复无文字而否认已保存图片）：\n${input.topic.rounds.flatMap(round => (round.artifacts ?? []).map(path => `- 第 ${round.n} 轮：${path}`)).join('\n') || '（无）'}`,
@@ -448,8 +451,11 @@ class ProResearchService {
           content: [{ type: 'text', text: user }],
           source: { kind: this.spec.name } as never,
         })],
-        maxTokens: 1_800,
-        signal: AbortSignal.timeout(120_000),
+        // Reasoning and JSON share the output budget on supported providers.
+        // 1,800 tokens truncated real DeepSeek judgments before a complete JSON.
+        maxTokens: 8_192,
+        ...(route.reasoningEffort ? { reasoningEffort: route.reasoningEffort } : {}),
+        signal: AbortSignal.timeout(180_000),
       })) {
         assembler.push(chunk as never)
         if ((chunk as { type?: string }).type === 'finish') finished = true
@@ -471,7 +477,7 @@ class ProResearchService {
     }
   }
 
-  private judgeRoute(): { provider: string; model: string; source: 'configured' | 'default' } | undefined {
+  private judgeRoute(): { provider: string; model: string; reasoningEffort?: string; source: 'configured' | 'default' } | undefined {
     const provider = this.config.judgeProvider.trim()
     const model = this.config.judgeModel.trim()
     if (provider.toLowerCase() === 'off') return undefined
@@ -480,7 +486,7 @@ class ProResearchService {
       const model = this.defaultModel ?? this.ctx.get('agentDefaultModel') as AgentDefaultModel | undefined
       const selection = model?.currentSelection()
       if (selection?.provider !== undefined && selection.provider !== '' && selection.model !== undefined && selection.model !== '') {
-        return { provider: selection.provider, model: selection.model, source: 'default' }
+        return { provider: selection.provider, model: selection.model, reasoningEffort: selection.reasoningEffort, source: 'default' }
       }
     } catch {
       // No default selection is available in this composition.
@@ -1174,6 +1180,22 @@ class ProResearchService {
         const { topic, store } = await this.find(cwd, id)
         return { ...this.view(topic), path: await store.dirOf(id) }
       }
+      case 'read_round':
+      case 'read_report':
+      case 'write_report': {
+        if (!exec.agent?.session.header.cwd) throw new Error('report actions require a workspace session')
+        const id = this.requireId(args)
+        const { store } = await this.find(cwd, id)
+        if (action === 'read_round') return await store.readRound(id, cwd, args.round as number)
+        if (action === 'read_report') return await store.readReport(id, cwd)
+        const report = await store.writeReport(id, cwd, {
+          markdown: this.requireString(args, 'markdown'),
+          generation: args.generation as number,
+          throughRound: args.through_round as number,
+          expectedRevision: args.expected_revision as string,
+        })
+        return { topic_id: id, report, path: join(await store.dirOf(id), report.path) }
+      }
       case 'list': {
         const store = this.storeFor(cwd)
         const topics = await store.list()
@@ -1270,7 +1292,7 @@ class ProResearchService {
         }
         return { login: await (this.transportFor() as ChatGptWebTransport).login() }
       default:
-        throw new Error('action must be start, continue, status, list, resume, cancel, delete, human_check, accept, review, review_cancel, wake, regenerate, probe or login')
+        throw new Error('action must be start, continue, status, list, resume, cancel, delete, human_check, accept, review, review_cancel, wake, regenerate, probe, login, read_round, read_report or write_report')
     }
   }
 
@@ -1387,6 +1409,7 @@ class ProResearchService {
       generations: topic.generations ?? [],
       stall_reason: topic.stallReason ?? null,
       rounds: topic.rounds.length,
+      last_round: topic.rounds.at(-1) ?? null,
       rounds_cap: topic.roundsCap,
       designs: topic.designs ?? null,
       stop_reason: topic.stopReason ?? null,
@@ -1846,19 +1869,19 @@ function toolDescription(spec: PluginSpec, config: ProConfig): string {
         `用 OpenAI 兼容生图 API（${config.image.model}）按方向生成设计图，保存到本地并出现在设计面板；此通道只出图，不产出 HTML demo。`,
         'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径、模型）；用户确认后传 confirmed=true。',
         'key 只读插件设置或环境变量 GPT_IMAGE_API_KEY，不要在会话里回显；probe 检查 base URL / key / 模型名。',
-        'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
+        'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login | read_round | read_report | write_report。交付：read_round 核对证据，read_report 取 revision，再 write_report 写当前主题固定交付稿（local/project 均支持），不传文件路径。',
       ].join(' ')
     }
     return [
       '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
       'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
-      'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
+      'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login | read_round | read_report | write_report。交付：read_round 核对证据，read_report 取 revision，再 write_report 写当前主题固定交付稿（local/project 均支持），不传文件路径。',
     ].join(' ')
   }
   return [
     '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
     'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
-    'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login。',
+    'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login | read_round | read_report | write_report。交付：read_round 核对证据，read_report 取 revision，再 write_report 写当前主题固定交付稿（local/project 均支持），不传文件路径。',
   ].join(' ')
 }
 
@@ -1900,8 +1923,8 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       action: {
         type: 'string',
         required: true,
-        enum: ['start', 'continue', 'status', 'list', 'resume', 'cancel', 'delete', 'human_check', 'accept', 'review', 'review_cancel', 'wake', 'regenerate', 'probe', 'login'],
-        description: 'start|continue|status|list|resume|cancel|delete|human_check|accept|review|review_cancel|wake|regenerate|probe|login',
+        enum: ['start', 'continue', 'status', 'list', 'resume', 'cancel', 'delete', 'human_check', 'accept', 'review', 'review_cancel', 'wake', 'regenerate', 'probe', 'login', 'read_round', 'read_report', 'write_report'],
+        description: 'start|continue|status|list|resume|cancel|delete|human_check|accept|review|review_cancel|wake|regenerate|probe|login|read_round|read_report|write_report',
       },
       title: { type: 'string', description: '主题标题（start 必填）' },
       question: { type: 'string', description: '主题目标/研究问题（start 必填）' },
@@ -1921,7 +1944,12 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
         description: 'human_check 结论：submitted|not_submitted|reopen',
       },
       note: { type: 'string', description: 'human_check 依据；regenerate 时作为不满意点/新要求' },
-      confirmed: { type: 'boolean', description: '用户已确认研究卡/设计卡；start、continue、regenerate、accept、delete 需要 true' },
+      round: { type: 'number', description: 'read_round：主题内已回答的全局轮次序号，读取原答复与裁决' },
+      markdown: { type: 'string', description: 'write_report：已核对证据的交付稿正文（最多 256 KiB），不要包含覆盖范围文件头' },
+      generation: { type: 'number', description: 'write_report：实际覆盖的当前方案版本序号' },
+      through_round: { type: 'number', description: 'write_report：实际整合至最新已回答轮次的全局序号' },
+      expected_revision: { type: 'string', description: 'write_report：read_report 返回的 revision；没有旧稿时传空字符串，防止覆盖他人更新' },
+      confirmed: { type: 'boolean', description: '用户已授权任务/交付；start、continue、regenerate、accept、delete、write_report 需要 true' },
     },
     output: {
       schema: {
@@ -1936,9 +1964,10 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
         || args.action === 'regenerate'
         || args.action === 'accept'
         || args.action === 'delete'
+        || args.action === 'write_report'
       const autoStart = args.action === 'start' && service.autoStartEnabled()
       if (writeAction && args.confirmed !== true && !autoStart) {
-        throw new Error('start, continue, regenerate, accept and delete require confirmed=true after the user has seen the card')
+        throw new Error('start, continue, regenerate, accept, delete and write_report require confirmed=true after user authorization')
       }
       return (await service.handle(args, exec)) as never
     },

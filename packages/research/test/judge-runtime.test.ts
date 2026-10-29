@@ -58,6 +58,7 @@ it.each(['origin', 'fallback', 'provider-error', 'aborted-empty', 'aborted-after
     }
     expect(calls).toHaveLength(failed ? 2 : 1)
     expect(calls.every(call => call.sessionId === (scenario === 'origin' ? 'origin-session' : topic.id))).toBe(true)
+    expect(calls.every(call => call.maxTokens === 8192)).toBe(true)
     expect(actual.rounds).toHaveLength(1)
     expect(actual.rounds[0]?.attempts).toBe(1)
     if (failed) {

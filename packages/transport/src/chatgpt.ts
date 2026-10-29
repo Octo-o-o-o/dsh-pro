@@ -435,6 +435,7 @@ export class ChatGptWebTransport implements Transport {
         if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
         if (page.isClosed()) return { state: 'unknown' }
         const state = await readTurnState(page, submission.assistantBaseline, submission.userBaseline)
+        if (state.renderFailed) throw new TransportError('ChatGPT 无法加载此回复；原会话已保留，请检查网页后恢复，问题不会自动重发', 'ui')
         diagnostic = `assistantBlocks=${state.assistantCount - submission.assistantBaseline}; answerChars=${state.text.length}; streaming=${state.streaming}; terminal=${state.terminal}`
         const streaming = state.streaming
         if (streaming) progressed = true
@@ -471,6 +472,7 @@ export class ChatGptWebTransport implements Transport {
     if (submission.page.isClosed()) throw new TransportError('conversation page is closed', 'ui')
     const page = submission.page
     const state = await readTurnState(page, submission.assistantBaseline, submission.userBaseline)
+    if (state.renderFailed) throw new TransportError('ChatGPT 无法加载此回复；请检查原会话后恢复', 'ui')
     if (!state.terminal) throw new TransportError('answer completion is not confirmed; keep waiting for this turn to finish', 'ui', { answerIncomplete: true })
     const answer = state.text
     const images = await this.collectImages(page, submission.assistantBaseline, state.messageIndex)

@@ -80,4 +80,14 @@ describe.skipIf(process.env.DSH_PRO_TRANSPORT_SMOKE !== '1')('real DOM completio
     await page.setContent('<button data-testid="send-button" hidden>hidden</button><button aria-label="Send message">visible</button>')
     expect(await (await firstVisible(page, SELECTORS.sendButton, 500))?.innerText()).toBe('visible')
   })
+
+  it('detects a completed renderer failure without markdown only in the current turn', async () => {
+    await page.setContent(`<div data-talvt-turn-state="complete"><div data-user-message-bubble="true">old</div>
+      <div role="status" data-dil-render-failed>无法加载此回复</div></div>
+      <div data-talvt-turn-state="complete" id="current"><div data-user-message-bubble="true">current</div>
+      <div role="status" data-dil-render-failed hidden>无法加载此回复</div><button aria-label="复制"></button></div>`)
+    expect((await readTurnState(page, 0, 1)).renderFailed).toBeUndefined()
+    await page.locator('#current [data-dil-render-failed]').evaluate(node => node.removeAttribute('hidden'))
+    expect(await readTurnState(page, 0, 1)).toMatchObject({ renderFailed: true, terminal: false, text: '' })
+  })
 })

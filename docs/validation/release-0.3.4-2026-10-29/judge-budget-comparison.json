@@ -1,0 +1,36 @@
+[
+  {
+    "maxTokens": 1800,
+    "elapsedMs": 31533,
+    "finish": {
+      "kind": "max-tokens"
+    },
+    "usage": {
+      "inputTokens": 831,
+      "outputTokens": 1800,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "totalTokens": 2631
+    },
+    "textChars": 709,
+    "reasoningChars": 3340,
+    "validJson": false
+  },
+  {
+    "maxTokens": 8192,
+    "elapsedMs": 22010,
+    "finish": {
+      "kind": "stop"
+    },
+    "usage": {
+      "inputTokens": 63,
+      "outputTokens": 1294,
+      "cacheReadTokens": 768,
+      "cacheWriteTokens": 0,
+      "totalTokens": 2125
+    },
+    "textChars": 782,
+    "reasoningChars": 2226,
+    "validJson": true
+  }
+]

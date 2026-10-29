@@ -16,6 +16,7 @@ export interface TurnState {
   text: string
   streaming: boolean
   terminal: boolean
+  renderFailed?: boolean
   assistantCount: number
   /** Raw selector index of this answer's last segment, for artifact extraction. */
   messageIndex: number
@@ -48,6 +49,13 @@ export async function readTurnState(page: Page, baseline: number, userBaseline?:
     const messages = candidates.filter(node => !candidates.some(parent => parent !== node && parent.contains(node)))
     const last = messages.at(-1)
     const root = last?.closest(selectors.turn) ?? last
+    // A completed turn may have no markdown when ChatGPT's renderer fails.
+    // Scope this UI error to the requested prompt, never a previous answer.
+    const errorRoot = prompt?.closest(selectors.turn) ?? root
+    const renderFailed = errorRoot !== undefined && errorRoot !== null
+      && [...errorRoot.querySelectorAll('[data-dil-render-failed]')].some(node => visible(node)
+        && node.closest(`${selectors.userMessage}, pre, code`) === null
+        && (nextUser === undefined || (node.compareDocumentPosition(nextUser) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0))
     const streaming = [...document.querySelectorAll(selectors.stopButton)].some(visible)
       || (root !== undefined && [...root.querySelectorAll('[aria-busy="true"], [data-is-streaming="true"]')].some(visible))
       || root?.matches('[aria-busy="true"], [data-is-streaming="true"]') === true
@@ -67,6 +75,7 @@ export async function readTurnState(page: Page, baseline: number, userBaseline?:
       text: messages.filter(node => !node.matches('[data-testid="generated-image-gallery"]'))
         .map(node => node.innerText.trim()).filter(Boolean).join('\n\n'),
       streaming,
+      ...(renderFailed ? { renderFailed: true } : {}),
       terminal: !streaming && terminal
         && (!root?.hasAttribute('data-talvt-turn-state') || root.getAttribute('data-talvt-turn-state') === 'complete'),
       assistantCount: all.length,

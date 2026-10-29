@@ -1,0 +1,40 @@
+{
+  "ok": true,
+  "uiAcceptance": "passed",
+  "checks": [
+    {
+      "name": "first use: empty panels, logged-out probe, confirmation guard"
+    },
+    {
+      "name": "research: tool → submit → saved answer → criterion verdict → run summary",
+      "topic": "topic-535067e31a"
+    },
+    {
+      "name": "research UI: blank continue blocked; valid continue adds exactly one round"
+    },
+    {
+      "name": "design: generated PNG decoded and HTML demo button works in preview",
+      "topic": "topic-ab91a852fd"
+    },
+    {
+      "name": "design UI: 1280/520/360 × 600 modal fits; chosen base image continued once"
+    },
+    {
+      "name": "process restart: reattach waiting job, preserve judge/pre-send failures and design history; zero resubmits"
+    },
+    {
+      "name": "explicit recovery: pre-send retries same round; judge uses saved answer; unknown requires human check"
+    },
+    {
+      "name": "cancel in-flight task: cancelled state persisted, no resubmit"
+    },
+    {
+      "name": "reload, search empty, light/dark and 360/520/1280 layouts; no browser exceptions"
+    },
+    {
+      "name": "API: first image, selected-base edits, HTTP failure, process loss blocks resend, explicit regenerate succeeds"
+    }
+  ],
+  "errors": [],
+  "findings": []
+}

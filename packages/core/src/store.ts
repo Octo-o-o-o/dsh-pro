@@ -5,6 +5,7 @@ import { Unzip, UnzipInflate, UnzipPassThrough, zipSync } from 'fflate'
 import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
 import { STATUSES } from './state.ts'
+import { assertReportFiles, readReportInfo, writeReport, type ReportDraft } from './report.ts'
 
 export interface StoreOptions {
   mode: StoreMode
@@ -421,6 +422,44 @@ export class ResearchStore {
     const dir = this.dirs.get(id)
     if (dir === undefined) throw new Error(`topic directory missing: ${id}`)
     return dir
+  }
+
+  /** A delivery action is scoped to the caller's project and this known topic. */
+  private async reportDir(id: string, cwd: string): Promise<string> {
+    if (await realpath(cwd) !== await realpath(this.options.projectRoot ?? process.cwd())) throw new Error('report topic belongs to another workspace')
+    const root = await realpath(this.rootDir())
+    const original = await this.dirOf(id)
+    const dir = await realpath(original)
+    if (dirname(dir) !== root || relative(this.rootDir(), original) !== relative(root, dir)) throw new Error('report topic directory escapes its store')
+    await assertReportFiles(dir)
+    return dir
+  }
+
+  async readReport(id: string, cwd: string) {
+    const dir = await this.reportDir(id, cwd)
+    const report = await readReportInfo(dir, await this.load(id))
+    return { report, markdown: report === null ? null : await readFile(join(dir, report.path), 'utf8') }
+  }
+
+  async writeReport(id: string, cwd: string, draft: ReportDraft) {
+    const dir = await this.reportDir(id, cwd)
+    return await writeReport(dir, async () => {
+      if (await this.reportDir(id, cwd) !== dir) throw new Error('report directory changed')
+      return await this.load(id)
+    }, draft)
+  }
+
+  async readRound(id: string, cwd: string, round: number) {
+    const dir = await this.reportDir(id, cwd)
+    const topic = await this.load(id)
+    const record = topic.rounds.find(item => item.n === round)
+    if (!Number.isInteger(round) || record?.answeredAt === undefined) throw new Error('round must name an answered round of this topic')
+    return {
+      round: record,
+      question: await this.readQuestion(topic, round),
+      answer: await this.readAnswer(topic, round),
+      verdict: await readFile(join(dir, 'rounds', `${pad(round)}-verdict.md`), 'utf8').catch(error => { if (isMissing(error)) return null; throw error }),
+    }
   }
 
   async writeQuestion(topic: Topic, round: number, text: string): Promise<void> {

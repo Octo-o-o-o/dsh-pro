@@ -165,9 +165,9 @@ git -C C:\WorkSpace\dsh-plugins\chatgpt-pro-research push origin vX.Y.Z
 
 ## 当前状态（2026-10-29）
 
-两个插件源码与 Git 发布版本均为 `0.3.3`；具体公开 commit 与 tag 见 [marketplace.md](marketplace.md)。本轮用户明确授权推送开发仓库与两个发布仓库。npm 继续暂缓，本轮没有重新提交市场或创建 GitHub Release 页面。
+两个插件当前候选为 `0.3.4`；真实自动裁决、local 交付与桌面恢复已经验证。本轮用户明确授权推送开发仓库与两个发布仓库，并发布 npm / GitHub Release、更新合适的社区市场。具体公开 commit、tag 与渠道回执见 [marketplace.md](marketplace.md)。
 
-本轮检查与剩余缺口见 [0.3.3 复核记录](validation/release-0.3.3-2026-10-29.md)。历史干净 profile、真实网页闭环与独立评审见 [0.3.2 验收记录](validation/release-0.3.2-2026-10-25.md)；它们不替代当前候选验证。
+本轮检查、真实证据与限制见 [0.3.4 验证记录](validation/release-0.3.4-2026-10-29.md)。[0.3.3 复核记录](validation/release-0.3.3-2026-10-29.md) 和 [0.3.2 验收记录](validation/release-0.3.2-2026-10-25.md) 保留为历史，不替代当前候选验证。
 
 ### Windows link 安装切换
 

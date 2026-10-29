@@ -1,0 +1,112 @@
+{
+  "dsh": "0.2.1-rc.3",
+  "platform": "Windows",
+  "accessMode": "workspace-write",
+  "topics": [
+    {
+      "kind": "research",
+      "id": "topic-4b26026a3f",
+      "status": "completed",
+      "rounds": [
+        {
+          "n": 1,
+          "files": 0,
+          "attempts": 2,
+          "generation": 1,
+          "dispatch": {
+            "attemptId": "279ad199-c6b6-42bb-a5f9-461b1d915df2",
+            "at": "2026-10-29T07:12:44.356Z",
+            "requestHash": "862067315db00e76fe9faa1260d6501e2128e11663dd1df9f2fb38e0d90f89c6",
+            "observedAt": "2026-10-29T07:12:50.918Z"
+          },
+          "submissionId": "865f0387-dd19-48d1-bc58-064fc14aae10",
+          "fingerprint": "120dda2d64580dab9b64af24267c067dd59df04b275d33a7f59fe0b615d45f44",
+          "submittedAt": "2026-10-29T07:12:50.919Z",
+          "answeredAt": "2026-10-29T07:22:51.869Z",
+          "verdict": "accepted",
+          "done": true
+        }
+      ],
+      "criteria": [
+        "明确解释蒸发、凝结、降水三个步骤"
+      ],
+      "stopReason": "答复已明确解释蒸发、凝结、降水三个步骤，满足成功判据。",
+      "artifacts": [],
+      "report": {
+        "file": "report.md",
+        "revision": "2d3873c735eb533fe505ee44bd1f3b639ea64546710558dfa992292bf9071bfc"
+      }
+    },
+    {
+      "kind": "design",
+      "id": "topic-8aa600d87e",
+      "status": "completed",
+      "rounds": [
+        {
+          "n": 1,
+          "files": 0,
+          "attempts": 2,
+          "generation": 1,
+          "designs": 1,
+          "dispatch": {
+            "attemptId": "ef2fdc56-487d-46f9-96b5-dc76d4f63a42",
+            "at": "2026-10-29T07:33:09.552Z",
+            "requestHash": "692fda14596155e81fc7b43da1183e612ea7f9d14f78d95208acd824f7b089b7",
+            "observedAt": "2026-10-29T07:42:42.564Z"
+          },
+          "submissionId": "cf4617eb-809c-4c3b-99fa-69e4c6db7abd",
+          "fingerprint": "549ba3c7894408395bbaf5ea0226477f734047de79e00c4b0e1266fb6f14807f",
+          "submittedAt": "2026-10-29T07:33:13.783Z",
+          "artifacts": [
+            "artifacts/round-01/image-01.png"
+          ],
+          "answeredAt": "2026-10-29T07:42:49.304Z",
+          "verdict": "partial",
+          "done": false
+        },
+        {
+          "n": 2,
+          "files": 0,
+          "attempts": 1,
+          "generation": 1,
+          "designs": 1,
+          "dispatch": {
+            "attemptId": "7d6be5af-4390-4e38-9268-c6247e59d8c3",
+            "at": "2026-10-29T07:46:13.410Z",
+            "requestHash": "cc91489070933a6b978e3f68657bf0a58e8e4991f32581efb56212fb931c5683",
+            "observedAt": "2026-10-29T07:46:14.361Z"
+          },
+          "submissionId": "f9dfd722-d3d3-4c51-bffd-58917f1b32de",
+          "fingerprint": "a6da1af1c4fa892af0f0ddbe638fe4ad8aacb8313e20126d39ee6a8aadcab658",
+          "submittedAt": "2026-10-29T07:46:14.363Z",
+          "artifacts": [
+            "artifacts/round-02/code-01.html"
+          ],
+          "answeredAt": "2026-10-29T07:46:38.469Z",
+          "verdict": "partial",
+          "done": false
+        }
+      ],
+      "criteria": [
+        "生成一张云朵主题 PNG 图片，提供完整单文件 HTML，HTML 中有 Start 按钮点击后文案变为 Done"
+      ],
+      "stopReason": "人工接受结果",
+      "artifacts": [
+        {
+          "path": "artifacts/round-01/image-01.png",
+          "bytes": 1317498,
+          "sha256": "4d3beea677859bc152b37dc590ed4423e021de591b7e6a099e4fb426f194ef9e"
+        },
+        {
+          "path": "artifacts/round-02/code-01.html",
+          "bytes": 2660,
+          "sha256": "c0634c7a1fd13ea5aa4eca0064b68a6ce74c121bb76304cb930407c6a48edf07"
+        }
+      ],
+      "report": {
+        "file": "design.md",
+        "revision": "0170be8ccbca91d49633b6d5dbd18cf8f84c324a1ea37eae291db9a836a05cc2"
+      }
+    }
+  ]
+}
