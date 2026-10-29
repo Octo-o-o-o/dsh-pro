@@ -116,6 +116,8 @@ node scripts/release-dist.mjs --push --release
 
 DSH Plugin Hub 可通过 topic/npm 自动索引；开放插件市场通过 plugin-add issue 申请；DSHX 提供网页投稿。具体入口与现有回执见 [marketplace.md](marketplace.md)，避免重复提交。dsh.so 指向的官方 Discussions 可用于发布兼容性实测报告，但报告不等于市场收录或独立验证。
 
+dsh.so 检查器限流或投稿仓库无法访问时，可通过 https://www.dsh.so/zh/feedback/ 提交正常审核/更新请求并保存站内编号。先查询已有条目；旧版本的 L5 标签不覆盖新版本。反馈“已收到”仅证明材料送达，不能记作新版本已收录。
+
 提交后记录 commit、PR/issue、成功回执、待审核状态及外部阻塞，不把失败尝试写成发布成功。
 
 ## release-dist 模式
@@ -167,7 +169,7 @@ git -C C:\WorkSpace\dsh-plugins\chatgpt-pro-research push origin vX.Y.Z
 
 ## 当前状态（2026-10-29）
 
-两个插件 `0.3.4` 已发布到 GitHub Releases 与 npm；开发仓库和两个发布仓库 main 已同步推送。真实自动裁决、local 交付与桌面恢复已经验证。社区市场的刷新、收录申请和官方兼容性报告已提交；dsh.so 的本轮正式投稿受限流/超时和投稿仓库 404 阻塞。具体 commit、tag 与逐渠道回执见 [marketplace.md](marketplace.md)。
+两个插件 `0.3.4` 已发布到 GitHub Releases 与 npm；开发仓库和两个发布仓库 main 已同步推送。真实自动裁决、local 交付与桌面恢复已经验证。社区市场的刷新、收录申请和官方兼容性报告已提交；dsh.so 已有两个 0.3.2 条目，其 0.3.4 正式投稿仍受限流/超时和投稿仓库 404 阻塞，本轮通过站内反馈成功递交阻塞与版本刷新材料。具体 commit、tag 与逐渠道回执见 [marketplace.md](marketplace.md)。
 
 本轮检查、真实证据与限制见 [0.3.4 验证记录](validation/release-0.3.4-2026-10-29.md)。[0.3.3 复核记录](validation/release-0.3.3-2026-10-29.md) 和 [0.3.2 验收记录](validation/release-0.3.2-2026-10-25.md) 保留为历史，不替代当前版本验证。
 

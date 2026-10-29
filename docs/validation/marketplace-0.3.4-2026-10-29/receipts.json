@@ -1,0 +1,109 @@
+{
+  "checkedOn": "2026-10-29",
+  "timeZone": "Asia/Shanghai",
+  "release": "0.3.4",
+  "sourceBeforeFollowup": "046a13dfde37c08eee584dae271f01287f65e4ab",
+  "lastCodeCi": "https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40845440100",
+  "issues": [
+    {
+      "repository": "dsh-pub/dsh-pub",
+      "number": 163,
+      "url": "https://github.com/dsh-pub/dsh-pub/issues/163",
+      "state": "open",
+      "updatedAt": "2026-10-29T09:16:30Z",
+      "comments": 1,
+      "commentNote": "Author follow-up; no maintainer response at check time"
+    },
+    {
+      "repository": "dshplugin/dsh-plugin-hub",
+      "number": 526,
+      "url": "https://github.com/dshplugin/dsh-plugin-hub/issues/526",
+      "state": "open",
+      "updatedAt": "2026-10-29T08:27:56Z",
+      "comments": 0
+    },
+    {
+      "repository": "polang233/dsh-plugin-index",
+      "number": 132,
+      "url": "https://github.com/polang233/dsh-plugin-index/issues/132",
+      "state": "open",
+      "updatedAt": "2026-10-29T08:27:38Z",
+      "comments": 0
+    },
+    {
+      "repository": "polang233/dsh-plugin-index",
+      "number": 133,
+      "url": "https://github.com/polang233/dsh-plugin-index/issues/133",
+      "state": "open",
+      "updatedAt": "2026-10-29T08:27:41Z",
+      "comments": 0
+    },
+    {
+      "repository": "liyown/dshx",
+      "number": 10,
+      "url": "https://github.com/liyown/dshx/issues/10",
+      "state": "open",
+      "updatedAt": "2026-10-29T08:19:34Z",
+      "comments": 0
+    }
+  ],
+  "dshSo": {
+    "feedbackPage": "https://www.dsh.so/zh/feedback/",
+    "feedback": [
+      {
+        "id": "01a186eb-d8a8-7638-af3b-1e8fd96f714c",
+        "purpose": "checker rate limit/timeout and normal manual review request",
+        "status": "received",
+        "evidence": "dsh-so-feedback-received.jpg"
+      },
+      {
+        "id": "01a186f0-ae03-79d5-ba45-62194ad1bedf",
+        "purpose": "linked update request for existing entries, refresh to 0.3.4",
+        "status": "received",
+        "evidence": "dsh-so-refresh-received.jpg"
+      }
+    ],
+    "currentChecks": [
+      {
+        "plugin": "chatgpt-pro-research",
+        "input": "https://github.com/Octo-o-o-o/chatgpt-pro-research",
+        "result": "platform_api_rate_limit"
+      },
+      {
+        "plugin": "gpt-image-design",
+        "input": "https://github.com/Octo-o-o-o/gpt-image-design",
+        "result": "request_timeout"
+      }
+    ],
+    "listingVersion": "0.3.2",
+    "listingUrls": [
+      "https://www.dsh.so/zh/artifact/chatgpt-pro-research/",
+      "https://www.dsh.so/zh/artifact/gpt-image-design/"
+    ],
+    "siteBadgeScope": "L5 for v0.3.2 only; does not verify v0.3.4",
+    "publicSubmissionRepository": "https://github.com/ihuajiu/dsh-plugin-submissions",
+    "repositoryAccessResult": "404 from signed-in GitHub CLI",
+    "release034Intake": "not_confirmed",
+    "release034Listing": "not_confirmed"
+  },
+  "dshPub": {
+    "designUrl": "https://dsh.pub/en/plugins/gpt-image-design/",
+    "designVersion": "0.3.2",
+    "designCommit": "9706c6e4af3c428a0875a66ef36b2c9b33bc021b",
+    "researchSearchResults": 0,
+    "followupComment": "https://github.com/dsh-pub/dsh-pub/issues/163#issuecomment-6492758719"
+  },
+  "pluginHub": {
+    "researchVersion": "0.3.2",
+    "designVersion": "0.3.2",
+    "pageLastUpdated": "2026-10-26"
+  },
+  "dshx": {
+    "researchSearchResults": 0,
+    "designSearchResults": 0,
+    "freshModalStatus": "human verification failed; no usable challenge shown; submit disabled",
+    "evidence": "dshx-verification-blocked.jpg",
+    "manualIssue": "https://github.com/liyown/dshx/issues/10",
+    "status": "awaiting_review"
+  }
+}
