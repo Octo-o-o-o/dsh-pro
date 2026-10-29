@@ -2,7 +2,7 @@
 
 日期：2026-10-29，Asia/Shanghai。范围：两个插件及共享 core/transport。用户授权了审查、实施、复审、本机部署和三个 GitHub 仓库推送；未授权本轮真实付费生成、npm 或市场重提，因此没有进行这些操作。
 
-> 本机最终复审、实体安装和三个仓库/两个 Release 已完成；当前收尾为远端 CI。运行应用结论来自安装器明确的 applied，不由磁盘版本推断；当前桌面 GUI 视觉及本轮真实服务验证仍明确不覆盖。
+> 本轮审查、实施、独立复审、最终测试、本机实体部署、三个 GitHub 仓库/两个 Release 和 Windows/Ubuntu CI 均已完成。运行应用结论来自安装器明确的 applied，不由磁盘版本推断；当前桌面 GUI 视觉及本轮真实服务验证仍明确不覆盖。
 
 ## 基线与环境
 
@@ -84,9 +84,20 @@
 | [chatgpt-pro-research](https://github.com/Octo-o-o-o/chatgpt-pro-research) | `78efa99002f7d4843fcf78b876f1c0aada6a7a0c` | main / v0.3.5 同 SHA，[正式 Release](https://github.com/Octo-o-o-o/chatgpt-pro-research/releases/tag/v0.3.5) 已公开 |
 | [gpt-image-design](https://github.com/Octo-o-o-o/gpt-image-design) | `1c23f937cd66c0e90a217cb74e54e36fd0fa4f49` | main / v0.3.5 同 SHA，[正式 Release](https://github.com/Octo-o-o-o/gpt-image-design/releases/tag/v0.3.5) 已公开 |
 
-两个全新 tag 均未修改旧 tag。两个 Release 均非 draft、非 prerelease，并上传了实际安装的 tgz 和 SHA256SUMS；GitHub API 的 asset digest 与上表 tarball SHA256 完全相同。tgz 不进 Git；不提交浏览器/用户数据。npm 官方 registry 再查两包最新仍为 0.3.4，本轮没有 npm 发布或市场重提。
+两个全新 tag 均未修改旧 tag。两个 Release 均非 draft、非 prerelease，并上传了实际安装的 tgz 和 SHA256SUMS；GitHub API 的 asset digest 与上表 tarball SHA256 完全相同；随后从两个公开 Release 重新下载 tgz，再算 SHA256 也与实际安装包逐字节一致。远端旧 v0.3.4 tag 仍分别为基线的 4bd3282 / 8ef1168。tgz 不进 Git；不提交浏览器/用户数据。npm 官方 registry 再查两包最新仍为 0.3.4，本轮没有 npm 发布或市场重提。
 
-远端首轮 [CI 40903297873](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40903297873)：Ubuntu 的 npm ci、类型、常规测试、build、bundle smoke、Chrome 15 项和 acceptance 全部通过。Windows 273 passed / 1 failed：旧测试期望 `RUNNER~1` 短路径字符串，新安全接口正确返回规范长路径；失败是期望未 canonicalize，而非越界访问或附件缺失。将期望改为 `await realpath(具体预期文件)` 的精确比较，保留文件内容/manifest 断言；未改运行代码、未 skip、未放宽路径包含判断。后续完整 CI 重跑，结果待核实后补齐。
+远端首轮 [CI 40903297873](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40903297873)：Ubuntu 的 npm ci、类型、常规测试、build、bundle smoke、Chrome 15 项和 acceptance 全部通过。Windows 273 passed / 1 failed：旧测试期望 `RUNNER~1` 短路径字符串，新安全接口正确返回规范长路径；失败是期望未 canonicalize，而非越界访问或附件缺失。将期望改为 `await realpath(具体预期文件)` 的精确比较，保留文件内容/manifest 断言；未改运行代码、未 skip、未放宽路径包含判断。修正后本机再跑完整测试 274 passed / 15 conditional skipped、typecheck、build、双 bundle smoke 全通过，并重新比对发布/安装运行字节不变。
+
+最终 [CI 40904197249](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40904197249) 对应 `7ac10a5c696e9da5f5ed90e6121acfd84432aa0f`，**Windows 与 Ubuntu 两个 job 均 success**：
+
+| Node 24 CI | 完整常规测试 | 显式 Chrome | 构建后 acceptance | 总耗时 |
+| --- | --- | --- | --- | --- |
+| ubuntu-latest | 274 passed / 15 conditional skipped | 15 passed | 10 组 PASS | 2m12s |
+| windows-latest | 274 passed / 15 conditional skipped | 15 passed | 10 组 PASS | 3m00s |
+
+两平台 npm ci、typecheck、build、双 bundle smoke 也均通过；已核对完整日志中的实际测试数字与 10 组 PASS，不只依赖 workflow 的绿勾。此后仅提交最终验证文档和 Release 文案，运行代码/版本/两个发布仓库 commit 不变。
+
+CI 有 Actions v4 的 Node 20 弃用注释（runner 强制使用 Node 24）与 ubuntu-latest 系统迁移提示；不是失败或 plugin engine 不兼容。本轮不混入 CI action major 升级，也不把这些维护提示描述为已消失。
 
 ## 不覆盖与保留事项
 

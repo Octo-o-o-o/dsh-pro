@@ -62,4 +62,4 @@
 
 实施与两轮交叉复审已完成。确定性补漏包括终态落盘取消、新代首轮前失败归档、写侧目录链接，以及别名项目根兼容；每项均补回归。最终常规测试连续两遍各 274 passed / 15 conditional skipped，再显式 Chrome 15/15 通过；类型、构建、双 bundle smoke、10 组真实 Cordis/Chrome 替身 acceptance 全通过。
 
-两个 0.3.5 实体包已安装至本机 desktop，管理器均返回 applied，12 个既有 topic.json 哈希未变；三个仓库与两个新 tag/Release 已推送。远端 Windows CI 发现短路径期望未 canonicalize 的测试问题，修正精确预期再核验，不改运行 bundle、不移动已发布 tag。完整部署/发布/CI 回执见 [0.3.5 验证记录](validation/release-0.3.5-2026-10-29.md)；不把文件已安装等同于进程已切换，不把替身测试等同真实服务验收。
+两个 0.3.5 实体包已安装至本机 desktop，管理器均返回 applied，12 个既有 topic.json 哈希未变；三个仓库与两个新 tag/Release 已推送。远端 Windows CI 发现短路径期望未 canonicalize 的测试问题，修正精确预期后，[Windows / Ubuntu 完整 CI](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40904197249) 均通过；不改运行 bundle、不移动已发布 tag。完整部署/发布/CI 回执见 [0.3.5 验证记录](validation/release-0.3.5-2026-10-29.md)；不把文件已安装等同于进程已切换，不把替身测试等同真实服务验收。

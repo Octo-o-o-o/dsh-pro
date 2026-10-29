@@ -29,4 +29,6 @@ dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#1c23f937cd
 
 最终常规测试 **274 passed / 15 conditional skipped**，连续两遍；再显式启用 Chrome 条件测试 **15/15 passed**。类型检查、构建、两个 bundle smoke、真实 Cordis + Chrome + 替身服务的 10 组 acceptance 均通过。
 
-本轮未重新调用真实 ChatGPT 或付费生图 API，不把替身测试视为真实服务或图片视觉质量验收；macOS/Linux 未实机验证。当前桌面进程的应用结果与远端发布回执以 [完整验证记录](https://github.com/Octo-o-o-o/dsh-pro/blob/main/docs/validation/release-0.3.5-2026-10-29.md) 为准。
+[Windows / Ubuntu Node 24 完整 CI](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40904197249) 均通过，包括类型、常规测试、构建、smoke、显式 Chrome 及 acceptance。当前机器 desktop 两个实体包的安装器均返回 `applied`；公开 Release tgz 重下载哈希与实际安装包一致。
+
+本轮未重新调用真实 ChatGPT 或付费生图 API，不把替身测试视为真实服务或图片视觉质量验收；macOS/Linux 桌面未实机验收（Ubuntu 已有 headless CI）。当前桌面进程的应用结果与远端发布回执以 [完整验证记录](https://github.com/Octo-o-o-o/dsh-pro/blob/main/docs/validation/release-0.3.5-2026-10-29.md) 为准。
