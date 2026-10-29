@@ -1,0 +1,67 @@
+{
+  "materials": [
+    {
+      "path": "README.md",
+      "bytes": 5548,
+      "sha256": "3023ad194755a5d3827974ba033df8b5a14c1512148b32d439dbc60c7f5ac0d1",
+      "reason": "总览、安装方式、验证边界与风险声明",
+      "source": "README.md"
+    },
+    {
+      "path": "packages/research/README.md",
+      "bytes": 11739,
+      "sha256": "99876b4f82fee9324e978c16b1d716372929fe22f80631c49c190d8b6461fbb1",
+      "reason": "研究插件的能力、设置、产物与已知限制",
+      "source": "packages/research/README.md"
+    },
+    {
+      "path": "packages/design/README.md",
+      "bytes": 14414,
+      "sha256": "401ddf7285912d2e87472ff4019f22a3d653eb8755316b53488ffdef84d1f14d",
+      "reason": "设计插件双通道、API 契约、成本与限制",
+      "source": "packages/design/README.md"
+    },
+    {
+      "path": "docs/design.md",
+      "bytes": 22050,
+      "sha256": "fb7f2dff8867d2d5721a95365585af7fd50c5ef999cefd358b215348d4c126c0",
+      "reason": "原始设计意图、非目标、状态机与材料策略",
+      "source": "docs/design.md"
+    },
+    {
+      "path": "docs/usage.md",
+      "bytes": 8182,
+      "sha256": "f877dc1ed3a8b0bee75fcc45ab0bc8938e69a51a5681545e47263af9f7f16df6",
+      "reason": "日常四种用法、卡住处理与真实操作路径",
+      "source": "docs/usage.md"
+    },
+    {
+      "path": "docs/marketplace.md",
+      "bytes": 3733,
+      "sha256": "c66bdf4865b8600bb8ba1b2e81253be7eab3f387c84f83f34a9fa4c8f48a415a",
+      "reason": "市场提交状态、安装验证记录与分发阻塞",
+      "source": "docs/marketplace.md"
+    },
+    {
+      "path": "docs/research/dsh-pro-0-3-2/plan.md",
+      "bytes": 15786,
+      "sha256": "395d5b404e04da66871161e33f9ef61dadacd07af19e8c5c445f4adf39ec90b6",
+      "reason": "最近一轮自审发现的缺口、已修项与仍然未做的事",
+      "source": "docs/research/dsh-pro-0-3-2/plan.md"
+    },
+    {
+      "path": "docs/design/dsh-pro-panel-ui-v2/refinement/result.md",
+      "bytes": 5571,
+      "sha256": "b6ed60bd77a359a32f8c8c8b3d94aa88df1f8ebb2ced2d25d817140c1bddd9aa",
+      "reason": "面板精修的设计取舍、验证范围与未验收项",
+      "source": "docs/design/dsh-pro-panel-ui-v2/refinement/result.md"
+    },
+    {
+      "path": "packages/research/resources/skills/pro-research/SKILL.md",
+      "bytes": 3652,
+      "sha256": "1da4ddb27ddd5d5e0b978e6eb7391739e23705e45522983f99341be938c81a62",
+      "reason": "宿主与用户之间的交互协议（研究卡、轮次、裁决）",
+      "source": "packages/research/resources/skills/pro-research/SKILL.md"
+    }
+  ]
+}

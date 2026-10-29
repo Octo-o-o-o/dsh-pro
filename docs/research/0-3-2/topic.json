@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "id": "topic-0b5b55b095",
+  "title": "两个插件的小而美产品补强评审（0.3.2 之后）",
+  "type": "research",
+  "parent": null,
+  "created": "2026-10-25T01:50:15.603Z",
+  "updated": "2026-10-25T01:57:51.708Z",
+  "status": "failed",
+  "roundsCap": 3,
+  "generations": [
+    {
+      "n": 1,
+      "createdAt": "2026-10-25T01:50:15.603Z",
+      "rounds": 3,
+      "reason": "初始任务"
+    }
+  ],
+  "rounds": [
+    {
+      "n": 1,
+      "files": 9,
+      "attempts": 1,
+      "generation": 1,
+      "dispatch": {
+        "attemptId": "73047da8-d568-4d97-afa5-2d0157730a4b",
+        "at": "2026-10-25T01:50:15.699Z",
+        "requestHash": "b9fd47fac5b4288ae24fbf2c9df21da874633c69ab009ac579848e1c8c87e6c7",
+        "observedAt": "2026-10-25T01:50:30.717Z"
+      },
+      "submissionId": "6ebc496f-b4a7-4649-b56c-c0850b1ff4f7",
+      "fingerprint": "2cd8fcedce61455e3d5126c2f0331c7b3ce19941946f6f420a3d6439928a60a8",
+      "submittedAt": "2026-10-25T01:50:30.719Z",
+      "answeredAt": "2026-10-25T01:57:50.655Z"
+    }
+  ],
+  "channel": "web",
+  "model": "pro",
+  "successCriteria": [
+    "给出不超过 6 条改进建议，按用户价值/实现成本排序，每条指向现有能力或已知缺口，并标注「加深」还是「铺开」",
+    "专业度与吸引力两类各不少于 2 条，每条给出可验证的验收信号（指标、用户可见结果或测试方式）",
+    "指出最影响「安装→第一次成功」的 1–2 个摩擦点，并给出 1 天内可完成的最小改动",
+    "明确列出 2–3 项应当不做或砍掉的事，防止功能铺开",
+    "对两个插件分别给出结论，并回答共享核心该继续共享还是某项改进只落在一个插件上",
+    "给出一句差异化定位（对比 ChatGPT 官方 Deep Research 与 browser-use 类工具），且不建议多账号、多 provider、通用聊天 UI 等非目标"
+  ],
+  "artifacts": [],
+  "stopReason": "judge returned no JSON object"
+}

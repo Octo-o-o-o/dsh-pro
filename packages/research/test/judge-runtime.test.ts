@@ -5,8 +5,8 @@ import { expect, it } from 'vitest'
 import { ResearchStore } from '../../core/src/store.ts'
 import { apply } from '../src/index.ts'
 
-it.each(['origin', 'fallback', 'provider-error', 'aborted-empty', 'aborted-after-json'])('judges a saved answer with a routing session: %s', async scenario => {
-  const failed = scenario === 'provider-error' || scenario.startsWith('aborted-')
+it.each(['origin', 'fallback', 'provider-error', 'aborted-empty', 'aborted-after-json', 'max-tokens', 'missing-finish', 'non-json', 'reasoning-only'])('judges a saved answer with a routing session: %s', async scenario => {
+  const failed = scenario !== 'origin' && scenario !== 'fallback'
   const root = await mkdtemp(join(tmpdir(), 'dsh-judge-runtime-'))
   const store = new ResearchStore({ mode: 'local', projectRoot: root, localRoot: join(root, 'chatgpt-pro-research'), rawDir: join(root, 'raw'), rawAnswers: 'local' })
   const { topic } = await store.create({ title: 'Saved answer', type: 'research', question: 'q', brief: 'b', successCriteria: ['c'], materials: [], rounds: 1, store: 'local' }, 1, 'pro', 'web')
@@ -28,7 +28,14 @@ it.each(['origin', 'fallback', 'provider-error', 'aborted-empty', 'aborted-after
           yield { type: 'finish', reason: { kind: 'error', failure: { message: 'MissingSessionID from provider', code: 'INVALID_REQUEST' } } }
           return
         }
-        if (scenario !== 'aborted-empty') yield { type: 'text-delta', index: 0, text: JSON.stringify({ verdict: 'accepted', done: true, reason: 'met', summary: 'done', criteria: [{ criterion: 'c', status: 'met', evidence: 'evidence' }] }) }
+        if (scenario === 'reasoning-only') yield { type: 'reasoning-delta', index: 0, text: 'private reasoning fixture' }
+        else if (scenario === 'non-json') yield { type: 'text-delta', index: 0, text: 'private invalid output fixture' }
+        else if (scenario !== 'aborted-empty') yield { type: 'text-delta', index: 0, text: JSON.stringify({ verdict: 'accepted', done: true, reason: 'met', summary: 'done', criteria: [{ criterion: 'c', status: 'met', evidence: 'evidence' }] }) }
+        if (scenario === 'missing-finish') return
+        if (scenario === 'max-tokens') {
+          yield { type: 'finish', reason: { kind: 'max-tokens' } }
+          return
+        }
         if (scenario.startsWith('aborted-')) {
           yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'judge request timed out', code: 'ABORTED' } } }
           return
@@ -56,7 +63,16 @@ it.each(['origin', 'fallback', 'provider-error', 'aborted-empty', 'aborted-after
     if (failed) {
       expect(actual.status).toBe('reviewing')
       expect(actual.rounds[0]?.verdict).toBeUndefined()
-      expect(actual.rounds[0]?.judgeError).toBe(`裁决服务失败：${scenario === 'provider-error' ? 'MissingSessionID from provider' : 'judge request timed out'}`)
+      const error = actual.rounds[0]?.judgeError ?? ''
+      if (scenario === 'provider-error' || scenario.startsWith('aborted-')) {
+        expect(error).toBe(`裁决服务失败：${scenario === 'provider-error' ? 'MissingSessionID from provider' : 'judge request timed out'}`)
+      } else {
+        expect(error).toContain(`finish=${scenario === 'max-tokens' ? 'max-tokens' : scenario === 'missing-finish' ? 'missing' : 'stop'}`)
+        expect(error).toContain('textChars=')
+        expect(error).toContain('reasoningChars=')
+        expect(error).not.toContain('private')
+        if (scenario === 'reasoning-only') expect(error).toContain('textChars=0; reasoningChars=25')
+      }
     } else {
       expect(actual.status).toBe('completed')
       expect(actual.rounds[0]?.verdict).toBe('accepted')

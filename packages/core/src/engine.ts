@@ -20,7 +20,7 @@ import { cardRounds } from './config.ts'
 import { assertTransition } from './state.ts'
 import { assertCompletion } from './judge.ts'
 import { verifyStagedBaseImage } from './base-image.ts'
-import { TransportError } from './types.ts'
+import { isTransportError, TransportError } from './types.ts'
 
 export interface EngineOptions {
   store: ResearchStore
@@ -176,6 +176,13 @@ export class ResearchEngine {
       return topic
     }
     if (last?.answeredAt !== undefined && last.judgeSkippedAt !== undefined) {
+      await this.transition(topic, 'queued')
+      this.enqueue(id)
+      return topic
+    }
+    // A pre-send failure belongs to the pending round, not to an older sent
+    // round. Explicit resume retries this round without consuming another one.
+    if (last?.submissionState === 'not_sent' && last.submissionId === undefined && last.dispatch === undefined) {
       await this.transition(topic, 'queued')
       this.enqueue(id)
       return topic
@@ -506,7 +513,10 @@ export class ResearchEngine {
   ): Promise<Topic> {
     const topic = await this.options.store.load(id)
     this.assertChannel(topic)
-    if (topic.status !== 'stalled') throw new Error(`topic ${id} is ${topic.status}, not stalled`)
+    if (topic.status !== 'stalled' && topic.status !== 'failed') throw new Error(`topic ${id} is ${topic.status}, not stalled or failed`)
+    if (topic.status === 'failed') {
+      await this.transition(topic, 'stalled', { stallReason: 'unknown_submission', stopReason: topic.stopReason })
+    }
     const check = { at: new Date().toISOString(), conclusion, note }
     topic.humanCheck = check
     await this.options.store.writeHumanCheck(topic, check)
@@ -777,21 +787,38 @@ export class ResearchEngine {
       }),
     }
     round.dispatch = intent
+    delete round.submissionState
     // This is the line that makes a crash after the click conservative: the
     // intent is on disk before the transport can press send.
     await this.options.store.save(topic)
-    const result: SubmitResult = await this.options.transport.submit({
-      topicId: topic.id,
-      round: round.n,
-      brief,
-      files,
-      ...(fallbackFiles !== undefined ? { fallbackFiles } : {}),
-      ...(editBase !== undefined ? { editBase } : {}),
-      model: topic.model,
-      ...((round.designs ?? topic.designs) !== undefined ? { designs: round.designs ?? topic.designs } : {}),
-      session: locator ?? null,
-      signal,
-    })
+    let result: SubmitResult
+    try {
+      result = await this.options.transport.submit({
+        topicId: topic.id,
+        round: round.n,
+        brief,
+        files,
+        ...(fallbackFiles !== undefined ? { fallbackFiles } : {}),
+        ...(editBase !== undefined ? { editBase } : {}),
+        model: topic.model,
+        ...((round.designs ?? topic.designs) !== undefined ? { designs: round.designs ?? topic.designs } : {}),
+        session: locator ?? null,
+        signal,
+      })
+    } catch (error) {
+      round.submissionState = isTransportError(error) && error.submissionState === 'not_sent' ? 'not_sent' : 'unknown'
+      // Keep the original intent in the event log even when it is safe to
+      // clear the replay guard. An ambiguous click NEVER clears that guard.
+      await this.options.store.appendEvent(topic, {
+        type: 'submit_failed', round: round.n, dispatch: intent,
+        submissionState: round.submissionState,
+        failure: isTransportError(error) ? error.failure : 'unknown',
+        message: error instanceof Error ? error.message : String(error),
+      })
+      if (round.submissionState === 'not_sent') delete round.dispatch
+      await this.options.store.save(topic)
+      throw error
+    }
     round.dispatch = { ...intent, observedAt: new Date().toISOString() }
     round.files = result.attachments.length
     await this.options.store.writeLocator(topic.id, {
@@ -808,6 +835,7 @@ export class ResearchEngine {
       fingerprint: result.fingerprint,
       conversationUrl: result.conversationUrl,
       attachments: result.attachments,
+      ...(result.model !== undefined ? { model: result.model } : {}),
       submittedAt: round.submittedAt,
     })
     await this.transition(topic, 'submitted')
@@ -818,16 +846,18 @@ export class ResearchEngine {
     if (submissionId === undefined) throw new Error('round has no submission')
     const deadline = this.now() + this.options.config.maxRoundMinutes * 60_000
     let stallDeadline = this.now() + this.options.config.stallMinutes * 60_000
+    let diagnostic = ''
     while (this.now() < deadline) {
       if (signal.aborted) throw new DOMException('aborted', 'AbortError')
       if (this.now() > stallDeadline) {
-        throw new TransportError(`no progress for ${this.options.config.stallMinutes} minutes`, 'timeout')
+        throw new TransportError(`no progress for ${this.options.config.stallMinutes} minutes${diagnostic}`, 'timeout')
       }
       const polled: PollResult = await this.options.transport.poll({
         submissionId,
         timeoutMs: this.options.pollIntervalMs ?? 60_000,
         signal,
       })
+      if (polled.diagnostic !== undefined) diagnostic = ` (${polled.diagnostic})`
       if (polled.state === 'answered') {
         if (signal.aborted) throw new DOMException('aborted', 'AbortError')
         let lastError: unknown
@@ -840,6 +870,9 @@ export class ResearchEngine {
             if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 500))
           }
         }
+        // The page resumed generating between poll and fetch. A previous
+        // snapshot is not a fallback answer when completion has been revoked.
+        if (isTransportError(lastError) && lastError.answerIncomplete === true) continue
         // `image:…`/`code:…` is only a completion fingerprint, never answer
         // text. Saving it as an empty answer used to mark the round completed
         // while silently dropping every image and code block.
@@ -859,7 +892,7 @@ export class ResearchEngine {
       if (polled.state === 'unknown') throw new TransportError('page state is unknown', 'ui')
       if (polled.progress === true) stallDeadline = this.now() + this.options.config.stallMinutes * 60_000
     }
-    throw new TransportError('no progress before maxRoundMinutes', 'timeout')
+    throw new TransportError(`no completed answer before maxRoundMinutes${diagnostic}`, 'timeout')
   }
 
   private async adjudicate(topic: Topic, round: RoundRecord): Promise<void> {
@@ -1081,7 +1114,7 @@ export class ResearchEngine {
     }
     const topic = await this.options.store.load(id)
     if (topic.status === 'completed' || topic.status === 'cancelled') return
-    if (error instanceof TransportError) {
+    if (isTransportError(error)) {
       if (error.failure === 'worker') {
         await this.transition(topic, 'failed', { stopReason: error.message })
         return

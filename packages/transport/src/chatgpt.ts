@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile } from 'node:fs/promises'
-import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
+import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import type { ArchiveAsset, CodeBlock, FetchedAnswer, ImageAsset, PollResult, ReattachRequest, ReattachResult, SubmitRequest, SubmitResult, Transport } from 'dsh-pro-core'
-import { TransportError } from 'dsh-pro-core'
+import { isTransportError, TransportError } from 'dsh-pro-core'
 import { SELECTORS } from './selectors.ts'
 import { advanceCompletion } from './completion.ts'
 import { detectImageMime, MAX_IMAGE_ASSET_BYTES, parseDataUrlImage } from './assets.ts'
 import { SerialGate } from './serialize.ts'
+import { firstVisible, readTurnState, readUserTurns } from './page-state.ts'
 
 /**
  * The web channel drives the installed Google Chrome only. There is no Edge or
@@ -22,6 +23,8 @@ export interface ChatGptTransportOptions {
   loginTimeoutMs?: number
   /** Per-poll wait; the engine decides when the round as a whole is too old. */
   pollSliceMs?: number
+  /** Bounded wait for a prior response to finish before preparing a follow-up. */
+  readyTimeoutMs?: number
 }
 
 interface Submission {
@@ -34,20 +37,22 @@ interface Submission {
   assistantBaseline: number
   /** User turns already on the page before this submission was clicked. */
   userBaseline: number
-  /** Copy/terminal controls already present before this submission was clicked. */
-  copyBaseline: number
 }
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex')
 }
 
-function briefMarkers(brief: string): string[] {
-  const text = brief
+function normalizePrompt(text: string): string {
+  return text
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/[#>*_`|~]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function briefMarkers(brief: string): string[] {
+  const text = normalizePrompt(brief)
   if (text === '') return []
   const sentences = text
     .split(/[。！？!?；;\n]/)
@@ -68,16 +73,6 @@ function extensionFor(mime: string): string {  if (mime.includes('jpeg')) return
 
 function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true
-}
-
-async function firstVisible(page: Page, selector: string, timeoutMs: number): Promise<Locator | undefined> {
-  const locator = page.locator(selector).first()
-  try {
-    await locator.waitFor({ state: 'visible', timeout: timeoutMs })
-    return locator
-  } catch {
-    return undefined
-  }
 }
 
 /**
@@ -213,10 +208,10 @@ export class ChatGptWebTransport implements Transport {
     const markers = briefMarkers(brief)
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      const users = page.locator(SELECTORS.userMessage)
-      const userCount = await users.count().catch(() => 0)
+      const users = await readUserTurns(page)
+      const userCount = users.length
       if (userCount > userBaseline) {
-        const text = (await users.nth(userCount - 1).innerText().catch(() => '')).trim()
+        const text = normalizePrompt(users[userCount - 1] ?? '')
         if (markers.length === 0 || markers.some(marker => text.includes(marker))) return true
       }
       const assistantCount = await page.locator(SELECTORS.assistantMessage).count().catch(() => 0)
@@ -228,32 +223,36 @@ export class ChatGptWebTransport implements Transport {
 
   /**
    * For a cold reattach: locate the user turn that matches this round and count
-   * the assistant/copy controls that precede it. The after-turn assistant (if
-   * already present) is then included by poll/fetch with `count > baseline`,
-   * and only a copy control rendered AFTER the prompt counts as a terminal
-   * signal. An ambiguous prompt match (shared boilerplate across rounds) is
+   * the assistant nodes that precede it. The after-turn assistant (if already
+   * present) is included by poll/fetch, bounded by the next user turn.
+   * An ambiguous prompt match (shared boilerplate across rounds) is
    * refused rather than guessed.
    */
-  private async baselinesForPrompt(page: Page, brief: string): Promise<{ assistantBaseline: number; copyBaseline: number } | undefined> {
+  private async baselinesForPrompt(page: Page, brief: string): Promise<{ assistantBaseline: number; userBaseline: number } | undefined> {
     const markers = briefMarkers(brief)
     if (markers.length === 0) return undefined
-    const result = await page.evaluate(({ userSelector, assistantSelector, copySelector, markers }) => {
-      const users = [...document.querySelectorAll(userSelector)] as HTMLElement[]
-      const matches = users.filter(node =>
-        markers.some(marker => (node.textContent ?? '').includes(marker)))
+    const result = await page.evaluate(({ userSelector, assistantSelector, markers }) => {
+      const userNodes = [...document.querySelectorAll(userSelector)] as HTMLElement[]
+      const users = userNodes.filter(node => !userNodes.some(parent => parent !== node && parent.contains(node)))
+      const matches = users.filter(node => {
+        // The sent prompt is Markdown source, while markers ignore formatting
+        // and whitespace. Normalize both sides before matching a saved round.
+        const text = (node.textContent ?? '').replace(/```[\s\S]*?```/g, ' ')
+          .replace(/[#>*_`|~]/g, ' ').replace(/\s+/g, ' ').trim()
+        return markers.some(marker => text.includes(marker))
+      })
       if (matches.length !== 1) return undefined
       const target = matches[0] as HTMLElement
       // 4 = Node.DOCUMENT_POSITION_FOLLOWING: target follows the node.
       const assistants = [...document.querySelectorAll(assistantSelector)] as HTMLElement[]
-      const copies = [...document.querySelectorAll(copySelector)] as HTMLElement[]
       return {
         assistant: assistants.filter(node => (node.compareDocumentPosition(target) & 4) !== 0).length,
-        copy: copies.filter(node => (node.compareDocumentPosition(target) & 4) !== 0).length,
+        user: users.indexOf(target),
       }
-    }, { userSelector: SELECTORS.userMessage, assistantSelector: SELECTORS.assistantMessage, copySelector: SELECTORS.copyButton, markers })
+    }, { userSelector: SELECTORS.userMessage, assistantSelector: SELECTORS.assistantMessage, markers })
     return result === undefined
       ? undefined
-      : { assistantBaseline: result.assistant, copyBaseline: result.copy }
+      : { assistantBaseline: result.assistant, userBaseline: result.user }
   }
 
   async submit(request: SubmitRequest): Promise<SubmitResult> {
@@ -266,14 +265,18 @@ export class ChatGptWebTransport implements Transport {
     // click we deliberately finish the submission record instead, so the
     // engine can cancel the real submission instead of losing track of it.
     if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
-    const context = await this.ensureContext()
-    const existing = this.topicPages.get(request.topicId)
-    const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
-    this.topicPages.set(request.topicId, page)
+    let page: Page | undefined
+    let sendAttempted = false
     try {
+      const context = await this.ensureContext()
+      const existing = this.topicPages.get(request.topicId)
+      page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
+      this.topicPages.set(request.topicId, page)
       const target = request.session?.conversationUrl ?? this.appUrl
       let reused = request.session?.conversationUrl !== undefined
-      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      // Reopening the same live conversation can interrupt a still-running
+      // response and erase the very state we need to inspect.
+      if (page.url() !== target) await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       let composer = await firstVisible(page, SELECTORS.composer, 30_000)
       if (composer === undefined && reused) {
         // The stored conversation is gone (deleted/another account): start a
@@ -285,12 +288,12 @@ export class ChatGptWebTransport implements Transport {
       if (composer === undefined) throw new TransportError('composer not found; the session is probably logged out', 'login')
 
       await this.settleMessages(page)
+      await this.waitForReady(page, request.signal)
       const assistantBaseline = await page.locator(SELECTORS.assistantMessage).count().catch(() => 0)
-      const userBaseline = await page.locator(SELECTORS.userMessage).count().catch(() => 0)
-      const copyBaseline = await page.locator(SELECTORS.copyButton).count().catch(() => 0)
+      const userBaseline = (await readUserTurns(page)).length
 
       if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
-      await this.trySelectModel(page, request.model)
+      const model = await this.selectModel(page, request.model)
 
       const attachmentsToSend = reused ? request.files : (request.fallbackFiles ?? request.files)
       if (attachmentsToSend.length > 0) {
@@ -307,15 +310,30 @@ export class ChatGptWebTransport implements Transport {
       await composer.fill(request.brief)
       const send = await firstVisible(page, SELECTORS.sendButton, 15_000)
       if (send === undefined) {
-        const composerText = await composer.innerText().catch(() => '')
+        const composerText = await composer.inputValue().catch(() => composer!.innerText()).catch(() => '')
+        const state = await readTurnState(page, assistantBaseline)
         // Debug output is opt-in and carries sizes only — never the brief text.
         if (process.env.DSH_PRO_DEBUG === '1') {
-          console.error('dsh-pro: send button not found', JSON.stringify({ url: page.url(), composerChars: composerText.length }))
+          console.error('dsh-pro: send button not found', JSON.stringify({ composerChars: composerText.length, streaming: state.streaming }))
         }
-        throw new TransportError(`send button not found (composer ${composerText.length} chars)`, 'ui')
+        throw new TransportError(`send button not found (composer ${composerText.length} chars; streaming=${state.streaming}); message was not sent; browser kept open for inspection`, 'ui')
+      }
+      // File cards only prove selection. Wait for the site to permit sending
+      // before marking this as a potentially dispatched click.
+      const enabledDeadline = Date.now() + 120_000
+      while (!await send.isEnabled()) {
+        if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
+        if (Date.now() >= enabledDeadline) {
+          throw new TransportError('send button stayed disabled; attachments or the page may still be processing; message was not sent', attachmentsToSend.length > 0 ? 'upload' : 'ui')
+        }
+        await page.waitForTimeout(250)
+      }
+      if ((await readTurnState(page, assistantBaseline)).streaming) {
+        throw new TransportError('previous response is still generating; follow-up was not sent', 'ui')
       }
       // Last point where cancellation can prevent a send.
       if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
+      sendAttempted = true
       await send.click()
 
       // A new chat first gets a local id and only later the server-assigned
@@ -337,16 +355,21 @@ export class ChatGptWebTransport implements Transport {
         stable: 0,
         assistantBaseline,
         userBaseline,
-        copyBaseline,
       })
-      return { submissionId, fingerprint, attachments, conversationUrl }
+      return { submissionId, fingerprint, attachments, conversationUrl, model }
     } catch (error) {
-      await page.close().catch(() => undefined)
       // Keep the cancellation signal intact: wrapping an AbortError as a
       // network failure would park the topic as stalled instead of cancelled.
-      if (error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted')) throw error
-      if (error instanceof TransportError) throw error
-      throw new TransportError(`submit failed: ${error instanceof Error ? error.message : String(error)}`, 'network', { cause: error })
+      if (error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted')) {
+        await page?.close().catch(() => undefined)
+        throw error
+      }
+      // Preserve the tab/draft on failure so human verification remains possible.
+      throw new TransportError(
+        isTransportError(error) ? error.message : `submit failed: ${error instanceof Error ? error.message : String(error)}`,
+        isTransportError(error) ? error.failure : 'network',
+        { cause: error, submissionState: sendAttempted ? 'unknown' : 'not_sent' },
+      )
     }
   }
 
@@ -364,7 +387,7 @@ export class ChatGptWebTransport implements Transport {
     const page = existing !== undefined && !existing.isClosed() ? existing : await context.newPage()
     this.topicPages.set(request.topicId, page)
     try {
-      await page.goto(request.conversationUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      if (page.url() !== request.conversationUrl) await page.goto(request.conversationUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       const composer = await firstVisible(page, SELECTORS.composer, 30_000)
       if (composer === undefined) return { attached: false }
       await this.settleMessages(page)
@@ -385,8 +408,7 @@ export class ChatGptWebTransport implements Transport {
         lastText: '',
         stable: 0,
         assistantBaseline: baselines.assistantBaseline,
-        userBaseline: 0,
-        copyBaseline: baselines.copyBaseline,
+        userBaseline: baselines.userBaseline,
       })
       return { attached: true, submissionId }
     } catch (error) {
@@ -407,13 +429,16 @@ export class ChatGptWebTransport implements Transport {
 
     const deadline = Date.now() + Math.max(1_000, request.timeoutMs)
     let progressed = false
+    let diagnostic = ''
     try {
       while (Date.now() < deadline) {
         if (isAborted(request.signal)) throw new DOMException('aborted', 'AbortError')
         if (page.isClosed()) return { state: 'unknown' }
-        const streaming = await page.locator(SELECTORS.stopButton).first().isVisible().catch(() => false)
+        const state = await readTurnState(page, submission.assistantBaseline, submission.userBaseline)
+        diagnostic = `assistantBlocks=${state.assistantCount - submission.assistantBaseline}; answerChars=${state.text.length}; streaming=${state.streaming}; terminal=${state.terminal}`
+        const streaming = state.streaming
         if (streaming) progressed = true
-        const text = streaming ? '' : await this.richAnswerText(page, submission.assistantBaseline)
+        const text = streaming ? '' : state.text || await this.richAnswerText(page, submission.assistantBaseline, state.messageIndex)
         const next = advanceCompletion(
           { lastText: submission.lastText, stable: submission.stable },
           text,
@@ -422,16 +447,16 @@ export class ChatGptWebTransport implements Transport {
         if (next.lastText !== submission.lastText) progressed = true
         submission.lastText = next.lastText
         submission.stable = next.stable
-        if (next.answered && await this.terminalSignal(page, submission, next.lastText, next.stable)) {
+        if (next.answered && state.terminal) {
           return { state: 'answered', answer: next.lastText }
         }
         await page.waitForTimeout(3_000)
       }
-      return { state: 'waiting', ...(progressed ? { progress: true } : {}) }
+      return { state: 'waiting', diagnostic, ...(progressed ? { progress: true } : {}) }
     } catch (error) {
       if (isAborted(request.signal)) throw error
       if (page.isClosed()) return { state: 'unknown' }
-      if (error instanceof TransportError) throw error
+      if (isTransportError(error)) throw error
       throw new TransportError(
         `poll failed: ${error instanceof Error ? error.message : String(error)}`,
         'network',
@@ -440,42 +465,17 @@ export class ChatGptWebTransport implements Transport {
     }
   }
 
-  /**
-   * Text is considered finished only when the page exposes a terminal control
-   * (copy) for this turn, not merely because the text stopped changing. When
-   * the page has no copy control at all, require four stable polls as a
-   * conservative fallback for image/code-only variants.
-   */
-  private async terminalSignal(
-    page: Page,
-    submission: Submission,
-    text: string,
-    stable: number,
-  ): Promise<boolean> {
-    if (text.startsWith('image:') || text.startsWith('code:')) return true
-    const messages = page.locator(SELECTORS.assistantMessage)
-    const count = await messages.count().catch(() => 0)
-    if (count > submission.assistantBaseline) {
-      const copy = messages.nth(count - 1).locator(SELECTORS.copyButton).first()
-      if (await copy.isVisible().catch(() => false)) return true
-    }
-    const copies = page.locator(SELECTORS.copyButton)
-    const total = await copies.count().catch(() => 0)
-    if (total > submission.copyBaseline) {
-      return await copies.nth(total - 1).isVisible().catch(() => false)
-    }
-    return total === 0 && stable >= 4
-  }
-
   async fetch(request: { submissionId: string }): Promise<FetchedAnswer> {
     const submission = this.submissions.get(request.submissionId)
     if (submission === undefined) throw new TransportError('unknown submission', 'ui')
     if (submission.page.isClosed()) throw new TransportError('conversation page is closed', 'ui')
     const page = submission.page
-    const answer = await this.lastAssistantText(page, submission.assistantBaseline)
-    const images = await this.collectImages(page, submission.assistantBaseline)
-    const codeBlocks = await this.collectCodeBlocks(page, submission.assistantBaseline)
-    const archives = await this.collectArchives(page, submission.assistantBaseline)
+    const state = await readTurnState(page, submission.assistantBaseline, submission.userBaseline)
+    if (!state.terminal) throw new TransportError('answer completion is not confirmed; keep waiting for this turn to finish', 'ui', { answerIncomplete: true })
+    const answer = state.text
+    const images = await this.collectImages(page, submission.assistantBaseline, state.messageIndex)
+    const codeBlocks = await this.collectCodeBlocks(page, submission.assistantBaseline, state.messageIndex)
+    const archives = await this.collectArchives(page, submission.assistantBaseline, state.messageIndex)
     if (answer === '' && images.length === 0 && codeBlocks.length === 0 && archives.length === 0) {
       throw new TransportError('no new assistant answer for this round', 'ui')
     }
@@ -491,29 +491,26 @@ export class ChatGptWebTransport implements Transport {
   }
 
   /** Large images in the answer; blob URLs are read in-page, https through cookies. */
-  private async collectImages(page: Page, baseline = 0): Promise<ImageAsset[]> {
-    const sources: string[] = await page.evaluate(({ selector, baseline }) => {
+  private async collectImages(page: Page, baseline: number, messageIndex: number): Promise<ImageAsset[]> {
+    const sources: string[] = await page.evaluate(({ selector, turnSelector, userSelector, baseline, messageIndex }) => {
       const seen = new Set<string>()
       const out: string[] = []
       const messages = [...document.querySelectorAll(selector)]
       if (messages.length <= baseline) return out
-      const last = messages[messages.length - 1]
-      const root = last?.closest('[data-testid^="conversation-turn"]')
-        ?? last?.closest('article')
-        ?? last?.parentElement
-        ?? document.querySelector('main')
+      const last = messages[messageIndex]
+      const root = last?.closest(turnSelector) ?? last
       if (root === null || root === undefined) return out
       for (const image of root.querySelectorAll('img')) {
         const element = image as HTMLImageElement
         if (element.naturalWidth < 300 || element.naturalHeight < 300) continue
-        if (element.closest('form') !== null || element.closest('[data-message-author-role="user"]') !== null) continue
+        if (element.closest('form') !== null || element.closest(userSelector) !== null) continue
         if (element.src !== '' && !seen.has(element.src)) {
           seen.add(element.src)
           out.push(element.src)
         }
       }
       return out
-    }, { selector: SELECTORS.assistantMessage, baseline })
+    }, { selector: SELECTORS.assistantMessage, turnSelector: SELECTORS.turn, userSelector: SELECTORS.userMessage, baseline, messageIndex })
     const images: ImageAsset[] = []
     for (const [index, source] of sources.slice(0, 8).entries()) {
       try {
@@ -578,15 +575,12 @@ export class ChatGptWebTransport implements Transport {
     return images
   }
 
-  private async collectCodeBlocks(page: Page, baseline = 0): Promise<CodeBlock[]> {
-    return await page.evaluate(({ selector, baseline }) => {
+  private async collectCodeBlocks(page: Page, baseline: number, messageIndex: number): Promise<CodeBlock[]> {
+    return await page.evaluate(({ selector, turnSelector, userSelector, baseline, messageIndex }) => {
       const messages = [...document.querySelectorAll(selector)]
       if (messages.length <= baseline) return []
-      const last = messages[messages.length - 1]
-      const root = last?.closest('[data-testid^="conversation-turn"]')
-        ?? last?.closest('article')
-        ?? last?.parentElement
-        ?? document.querySelector('main')
+      const last = messages[messageIndex]
+      const root = last?.closest(turnSelector) ?? last
       if (root === null || root === undefined) return []
       const filePattern = /([\w.-]+\.(?:html?|css|jsx?|tsx?|json|md|py|vue|svelte|sh|ya?ml))/i
       const nameOf = (code: HTMLElement): string => {
@@ -610,7 +604,7 @@ export class ChatGptWebTransport implements Transport {
         return ''
       }
       return [...root.querySelectorAll('pre code')]
-        .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
+        .filter(code => code.closest('form') === null && code.closest(userSelector) === null)
         .slice(0, 20)
         .map(code => ({
           language: /language-([\w-]+)/.exec(code.className)?.[1] ?? '',
@@ -618,22 +612,19 @@ export class ChatGptWebTransport implements Transport {
           text: code.textContent ?? '',
         }))
         .filter(block => block.text.trim() !== '')
-    }, { selector: SELECTORS.assistantMessage, baseline })
+    }, { selector: SELECTORS.assistantMessage, turnSelector: SELECTORS.turn, userSelector: SELECTORS.userMessage, baseline, messageIndex })
   }
 
   /** Download zip links rendered in the assistant answer (code interpreter downloads). */
-  private async collectArchives(page: Page, baseline = 0): Promise<ArchiveAsset[]> {
-    const links = await page.evaluate(({ selector, baseline }) => {
+  private async collectArchives(page: Page, baseline: number, messageIndex: number): Promise<ArchiveAsset[]> {
+    const links = await page.evaluate(({ selector, turnSelector, userSelector, baseline, messageIndex }) => {
       const messages = [...document.querySelectorAll(selector)]
       if (messages.length <= baseline) return []
-      const last = messages[messages.length - 1]
-      const root = last?.closest('[data-testid^="conversation-turn"]')
-        ?? last?.closest('article')
-        ?? last?.parentElement
-        ?? document.querySelector('main')
+      const last = messages[messageIndex]
+      const root = last?.closest(turnSelector) ?? last
       if (root === null || root === undefined) return []
       const controls = [...root.querySelectorAll('a[href], button, [role="button"]')]
-        .filter(element => element.closest('form') === null && element.closest('[data-message-author-role="user"]') === null)
+        .filter(element => element.closest('form') === null && element.closest(userSelector) === null)
       const picked: Array<{ href: string; label: string; marker: string; local: boolean }> = []
       for (const control of controls) {
         const element = control as HTMLElement & { href?: string }
@@ -655,7 +646,7 @@ export class ChatGptWebTransport implements Transport {
         if (picked.length >= 3) break
       }
       return picked
-    }, { selector: SELECTORS.assistantMessage, baseline })
+    }, { selector: SELECTORS.assistantMessage, turnSelector: SELECTORS.turn, userSelector: SELECTORS.userMessage, baseline, messageIndex })
     const archives: ArchiveAsset[] = []
     for (const link of links) {
       try {
@@ -748,22 +739,40 @@ export class ChatGptWebTransport implements Transport {
     return (await picker.innerText().catch(() => '')).trim()
   }
 
-  private async trySelectModel(page: Page, model: string): Promise<void> {
+  private async selectModel(page: Page, model: string): Promise<string> {
     const picker = await firstVisible(page, SELECTORS.modelPicker, 2_000)
-    if (picker === undefined) return
     const wanted = model.trim()
-    if (wanted === '') return
+    if (wanted === '') return await this.readModel(page)
+    if (picker === undefined) throw new TransportError(`cannot verify requested ChatGPT model: ${wanted}`, 'ui')
     // The live picker lists menu items by display name (Pro, GPT-6, ...);
     // "thinking" is an effort on the same picker, so it accepts Pro.
     const pattern = /^thinking$/i.test(wanted) ? /pro|思考|thinking/i : new RegExp(wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    const current = (await picker.innerText()).trim()
+    if (pattern.test(current)) return current
     try {
       await picker.click()
-      const option = page.getByRole('menuitem').filter({ hasText: pattern }).first()
+      const option = page.locator('[role="menuitem"], [role="menuitemradio"]').filter({ hasText: pattern }).filter({ visible: true }).first()
       await option.waitFor({ state: 'visible', timeout: 3_000 })
       await option.click()
     } catch {
       await page.keyboard.press('Escape').catch(() => undefined)
     }
+    const selected = await this.readModel(page)
+    if (!pattern.test(selected)) throw new TransportError(`requested ChatGPT model ${wanted} was not selected (observed: ${selected || 'unknown'}); message was not sent`, 'ui')
+    return selected
+  }
+
+  private async waitForReady(page: Page, signal?: AbortSignal): Promise<void> {
+    const deadline = Date.now() + (this.options.readyTimeoutMs ?? 60_000)
+    do {
+      if (isAborted(signal)) throw new DOMException('aborted', 'AbortError')
+      const count = await page.locator(SELECTORS.assistantMessage).count()
+      const users = (await readUserTurns(page)).length
+      const state = await readTurnState(page, Math.max(0, count - 1), users - 1)
+      if (!state.streaming && ((count === 0 && users === 0) || state.terminal)) return
+      await page.waitForTimeout(500)
+    } while (Date.now() < deadline)
+    throw new TransportError('previous response is still generating or its completion cannot be verified; follow-up was not sent; wait for completion and resume', 'ui')
   }
 
   private async waitForAttachmentCards(page: Page, files: string[]): Promise<void> {
@@ -782,36 +791,25 @@ export class ChatGptWebTransport implements Transport {
     }
   }
 
-  private async richAnswerText(page: Page, baseline: number): Promise<string> {
-    const text = await this.lastAssistantText(page, baseline)
-    if (text !== '') return text
+  private async richAnswerText(page: Page, baseline: number, messageIndex: number): Promise<string> {
     // Image-only answers have no text; use a short count/dimension fingerprint
     // (never the base64 payload) so a gallery response still completes.
-    const fingerprint = await page.evaluate(({ selector, baseline }) => {
+    const fingerprint = await page.evaluate(({ selector, turnSelector, userSelector, baseline, messageIndex }) => {
       const messages = [...document.querySelectorAll(selector)]
       if (messages.length <= baseline) return { images: [] as string[], codeLength: 0 }
-      const last = messages[messages.length - 1]
-      const root = last?.closest('[data-testid^="conversation-turn"]')
-        ?? last?.closest('article')
-        ?? last?.parentElement
-        ?? document.querySelector('main')
+      const last = messages[messageIndex]
+      const root = last?.closest(turnSelector) ?? last
       if (root === null || root === undefined) return { images: [] as string[], codeLength: 0 }
       const images = [...root.querySelectorAll('img')]
-        .filter(image => (image as HTMLImageElement).naturalWidth >= 300)
+        .filter(image => (image as HTMLImageElement).naturalWidth >= 300 && image.closest(userSelector) === null)
         .map(image => `${(image as HTMLImageElement).naturalWidth}x${(image as HTMLImageElement).naturalHeight}`)
       const codeLength = [...root.querySelectorAll('pre code')]
-        .filter(code => code.closest('form') === null && code.closest('[data-message-author-role="user"]') === null)
+        .filter(code => code.closest('form') === null && code.closest(userSelector) === null)
         .reduce((sum, code) => sum + (code.textContent?.length ?? 0), 0)
       return { images, codeLength }
-    }, { selector: SELECTORS.assistantMessage, baseline })
+    }, { selector: SELECTORS.assistantMessage, turnSelector: SELECTORS.turn, userSelector: SELECTORS.userMessage, baseline, messageIndex })
     if (fingerprint.images.length > 0) return `image:${fingerprint.images.length}:${fingerprint.images.join(',')}`
     return fingerprint.codeLength > 0 ? `code:${fingerprint.codeLength}` : ''
   }
 
-  private async lastAssistantText(page: Page, baseline = 0): Promise<string> {
-    const messages = page.locator(SELECTORS.assistantMessage)
-    const count = await messages.count().catch(() => 0)
-    if (count <= baseline) return ''
-    return (await messages.nth(count - 1).innerText().catch(() => '')).trim()
-  }
 }

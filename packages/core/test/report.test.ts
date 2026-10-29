@@ -8,6 +8,21 @@ import { readReportInfo } from '../src/report.ts'
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
+it('shows design.md for design topics with legacy report.md fallback', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-design-report-')); roots.push(root)
+  const store = new ResearchStore({ mode: 'local', projectRoot: root, localRoot: root, rawDir: join(root, 'raw'), rawAnswers: 'local' })
+  const { topic, dir } = await store.create({ title: 'Design', type: 'design', question: 'Q', brief: 'Q', successCriteria: ['c'], materials: [], rounds: 1, store: 'local' }, 1, 'pro', 'web')
+  topic.status = 'capped'
+  topic.rounds = [{ n: 1, generation: 1, files: 0, answeredAt: '2020-01-01T00:00:00.000Z' }]
+  expect(await readReportInfo(dir, topic)).toBeNull()
+  await writeFile(join(dir, 'report.md'), '# Legacy design report')
+  expect(await readReportInfo(dir, topic)).toMatchObject({ path: 'report.md', status: 'unknown' })
+  await writeFile(join(dir, 'design.md'), '<!-- dsh-pro-report: {"generation":1,"throughRound":1} -->\n# Design decisions')
+  expect(await readReportInfo(dir, topic)).toMatchObject({ path: 'design.md', status: 'current' })
+  topic.type = 'research'
+  expect(await readReportInfo(dir, topic)).toMatchObject({ path: 'report.md', status: 'unknown' })
+})
+
 it('tracks coverage across follow-up, regeneration and file-only edits without guessing legacy provenance', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-report-')); roots.push(root)
   const store = new ResearchStore({ mode: 'local', projectRoot: root, localRoot: root, rawDir: join(root, 'raw'), rawAnswers: 'local' })

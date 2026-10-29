@@ -50,6 +50,8 @@ export interface RoundRecord {
    * a round that has a dispatch without an observed submission.
    */
   dispatch?: DispatchIntent
+  /** A failed submit either provably stopped before send or may have sent. */
+  submissionState?: 'not_sent' | 'unknown'
   /** How many submits this round has made; 1 means no retry yet. */
   attempts?: number
   /** Design directions requested for this round; falls back to the topic default. */
@@ -157,6 +159,7 @@ export interface Receipt {
   submittedAt: string
   answerSha256?: string
   answeredAt?: string
+  model?: string
 }
 
 export interface SubmitRequest {
@@ -185,6 +188,8 @@ export interface SubmitResult {
   fingerprint: string
   attachments: string[]
   conversationUrl: string
+  /** Model label actually observed in the web UI. */
+  model?: string
 }
 
 export interface ReattachRequest {
@@ -206,6 +211,8 @@ export interface PollResult {
   snapshotPath?: string
   /** The page/request visibly changed since the previous poll. */
   progress?: boolean
+  /** Content-free UI observations for timeout diagnosis. */
+  diagnostic?: string
 }
 
 /** One image produced by the answer (base64 payload, no filesystem assumptions). */
@@ -241,16 +248,28 @@ export type TransportFailure = 'login' | 'upload' | 'ui' | 'network' | 'worker' 
 
 export class TransportError extends Error {
   readonly failure: TransportFailure
+  readonly submissionState?: 'not_sent' | 'unknown'
+  readonly answerIncomplete?: boolean
 
   constructor(
     message: string,
     failure: TransportFailure,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; submissionState?: 'not_sent' | 'unknown'; answerIncomplete?: boolean },
   ) {
     super(message, options)
     this.name = 'TransportError'
     this.failure = failure
+    this.submissionState = options?.submissionState
+    this.answerIncomplete = options?.answerIncomplete
   }
+}
+
+/** Research and Design bundle their own classes but share one transport. */
+export function isTransportError(error: unknown): error is TransportError {
+  if (error === null || typeof error !== 'object') return false
+  const value = error as Partial<TransportError>
+  return value.name === 'TransportError' && typeof value.message === 'string'
+    && ['login', 'upload', 'ui', 'network', 'worker', 'timeout', 'config'].includes(value.failure ?? '')
 }
 
 export interface Transport {

@@ -1,0 +1,30 @@
+[
+  {
+    "attempt_id": "182dccb6-956c-41a3-ae4e-bf350e3aed61",
+    "accounted_at": "2026-10-25T05:40:01Z",
+    "round": 1,
+    "account": "a",
+    "slug": "dsh-pro-three-priorities-20261025-r1",
+    "project": null,
+    "app": null,
+    "started_at": "2026-10-25T05:40:01Z",
+    "model": "gpt-6-pro",
+    "profile_dir": "/mnt/c/Users/satan/AppData/Local/OctoWorkFlow/Oracle/browser-profile-a",
+    "oracle_home": "/home/octoooo/.oracle",
+    "log": "round-1.oracle.log",
+    "summary": "round-1.runner.json",
+    "submitted": false,
+    "max_rounds": 4,
+    "max_submissions": 4,
+    "input_files": {
+      "code-evidence.md": "19304efabb4fd296ab57ecf1b7e7627435b961aca33f17bf81cac755d8de4b6c",
+      "product-context.md": "a152014e394e709aaa3c9c87be786f101e56601c2e01084a9f3b46cdd824f6fe"
+    },
+    "transport_sha256": {
+      "pro_research.py": "a7d8d3974d21bd312b3beb369c572fd3e31ca28d2f23182aeda9f897dfb627e9",
+      "oracle_ui_compat.mjs": "240ba17ef85534071ea55b75732ef7c2548d099789563cd2d17f32cb1a612721",
+      "oracle_transport.mjs": "1a39b0161aae50086fd5a9aa87fd46a77273086ae5d72aa479ed2d536d424fdc"
+    },
+    "prompt_sha256": "459e92611790992556391e83a5d8a90f04a5aa4322e5a7dc1f595a3223352dc6"
+  }
+]

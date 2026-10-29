@@ -1,6 +1,7 @@
 import { renderToString } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { apply } from '../client/index.tsx'
+import { outcomeOf } from '../client/panel.tsx'
 
 interface Registration {
   options: Record<string, unknown>
@@ -8,6 +9,12 @@ interface Registration {
 }
 
 describe('client panel', () => {
+  it('does not label a failed unsubmitted round as still running', () => {
+    expect(outcomeOf({ n: 2, files: 0, dispatch: {} }, 'failed').label).toBe('提交待核对')
+    expect(outcomeOf({ n: 2, files: 0, submissionState: 'not_sent' }, 'stalled').label).toBe('未发送')
+    expect(outcomeOf({ n: 2, files: 0, submittedAt: '2026-10-26T10:25:00Z' }, 'stalled').label).toBe('待恢复')
+    expect(outcomeOf({ n: 2, files: 0 }, 'uploading').label).toBe('进行中')
+  })
   it('registers the main page and the sidebar row under their declaration lifetimes', () => {
     const registrations: Registration[] = []
     const effects: Array<() => void> = []

@@ -1,0 +1,9 @@
+
+ RUN  v5.0.5 C:/WorkSpace/dsh-plugins/dsh-pro
+
+
+ Test Files  4 passed (4)
+      Tests  56 passed (56)
+   Start at  13:40:59
+   Duration  6.41s (tests 75%, import 18%, transform 6%, worker 1%)
+

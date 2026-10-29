@@ -1,0 +1,427 @@
+{
+  "date": "2026-10-28",
+  "candidate": "0.3.3 local web3",
+  "paidImageApiCalls": 0,
+  "topics": {
+    "research": {
+      "id": "topic-5d6a123458",
+      "status": "completed",
+      "stopReason": "答复准确说明了蒸发、凝结、降水三个阶段，包含雨后积水的日常例子，并在末尾包含结束标记。",
+      "rounds": [
+        {
+          "n": 1,
+          "files": 0,
+          "attempts": 1,
+          "generation": 1,
+          "dispatch": {
+            "attemptId": "b3b88689-9492-4744-a9c0-d7eddb22bce9",
+            "at": "2026-10-28T08:03:30.427Z",
+            "requestHash": "a368e98f4265d2fff2c0736ec5da48b28c8f531883db62600be2035b2d478098",
+            "observedAt": "2026-10-28T11:22:07.033Z"
+          },
+          "submissionId": "6420afdd-4c59-494a-b22d-eb878f743859",
+          "fingerprint": "e6ffb79527324801915a948695bbe57026048e5f7e07daea9169a27ded57a6bf",
+          "submittedAt": "2026-10-28T08:03:53.064Z",
+          "answeredAt": "2026-10-28T11:22:10.238Z",
+          "verdict": "accepted",
+          "done": true
+        }
+      ],
+      "channel": "web",
+      "criteria": [
+        "准确说明蒸发凝结降水三个阶段",
+        "包含一个日常例子",
+        "包含结束标记QA-RESEARCH-20261028"
+      ],
+      "events": [
+        {
+          "at": "2026-10-28T08:03:30.403Z",
+          "type": "status",
+          "status": "queued"
+        },
+        {
+          "at": "2026-10-28T08:03:30.422Z",
+          "type": "status",
+          "status": "uploading"
+        },
+        {
+          "at": "2026-10-28T08:03:53.068Z",
+          "type": "status",
+          "status": "submitted"
+        },
+        {
+          "at": "2026-10-28T08:03:53.071Z",
+          "type": "status",
+          "status": "waiting"
+        },
+        {
+          "at": "2026-10-28T08:49:56.106Z",
+          "type": "status",
+          "status": "stalled",
+          "reason": "timeout",
+          "stopReason": "no progress for 45 minutes (assistantBlocks=1; answerChars=229; streaming=false; terminal=false)"
+        },
+        {
+          "at": "2026-10-28T11:22:07.037Z",
+          "type": "status",
+          "status": "waiting"
+        },
+        {
+          "at": "2026-10-28T11:22:10.247Z",
+          "type": "status",
+          "status": "answered"
+        },
+        {
+          "at": "2026-10-28T11:22:10.259Z",
+          "type": "answered",
+          "round": 1,
+          "answerSha256": "92e6d5e874a776e2e41598f72ce738949db37be9b1e962433fb628aa9567ec35"
+        },
+        {
+          "at": "2026-10-28T11:22:10.262Z",
+          "type": "status",
+          "status": "adjudicating"
+        },
+        {
+          "at": "2026-10-28T11:22:17.520Z",
+          "type": "verdict",
+          "round": 1,
+          "verdict": "accepted",
+          "done": true
+        },
+        {
+          "at": "2026-10-28T11:22:17.525Z",
+          "type": "status",
+          "status": "completed",
+          "stopReason": "答复准确说明了蒸发、凝结、降水三个阶段，包含雨后积水的日常例子，并在末尾包含结束标记。"
+        }
+      ]
+    },
+    "design": {
+      "id": "topic-578d47e0f2",
+      "status": "completed",
+      "stopReason": "人工接受结果",
+      "rounds": [
+        {
+          "n": 1,
+          "files": 0,
+          "attempts": 1,
+          "generation": 1,
+          "designs": 1,
+          "dispatch": {
+            "attemptId": "bbce5270-11d4-449a-b1a6-446f092fceda",
+            "at": "2026-10-28T11:11:50.898Z",
+            "requestHash": "354696ece3e5d815bf308e5edc71e7decdeb4469f5345c1e01f531405a4a64dd",
+            "observedAt": "2026-10-28T11:16:48.463Z"
+          },
+          "submissionId": "00748e61-3a0c-4eb3-b808-852196d01922",
+          "fingerprint": "c14931b264f4be8fe79c90ca4b8e68a0988d84c48db9db5bb3c40415a83a5de3",
+          "submittedAt": "2026-10-28T11:11:59.652Z",
+          "artifacts": [
+            "artifacts/round-01/image-01.png"
+          ],
+          "answeredAt": "2026-10-28T11:16:51.569Z",
+          "verdict": "rejected",
+          "done": false
+        },
+        {
+          "n": 2,
+          "files": 0,
+          "attempts": 1,
+          "generation": 1,
+          "designs": 1,
+          "dispatch": {
+            "attemptId": "04f16e69-a949-41da-a023-85afaca4ca28",
+            "at": "2026-10-28T11:22:49.953Z",
+            "requestHash": "221bedf72cec1273e3628d2b79db618e1cf78f68b21e5dacdd74ddf3dfc49038",
+            "observedAt": "2026-10-28T11:23:15.788Z"
+          },
+          "submissionId": "a0f8ebf1-b313-4840-b554-52895598c467",
+          "fingerprint": "98accac6d0eb48c1a911686216f4e66e6f5697da4d8362a071c52079200a4fb1",
+          "submittedAt": "2026-10-28T11:22:54.840Z",
+          "artifacts": [
+            "artifacts/round-02/code-01.html"
+          ],
+          "answeredAt": "2026-10-28T11:23:22.623Z",
+          "judgeError": "judge returned no JSON object"
+        }
+      ],
+      "channel": "web",
+      "criteria": [
+        "取回1张实际生成的PNG图",
+        "取回含Water Cycle标题的单文件HTML",
+        "HTML按钮Start可变成Done"
+      ],
+      "events": [
+        {
+          "at": "2026-10-28T11:11:50.871Z",
+          "type": "status",
+          "status": "queued"
+        },
+        {
+          "at": "2026-10-28T11:11:50.893Z",
+          "type": "status",
+          "status": "uploading"
+        },
+        {
+          "at": "2026-10-28T11:11:59.658Z",
+          "type": "status",
+          "status": "submitted"
+        },
+        {
+          "at": "2026-10-28T11:11:59.661Z",
+          "type": "status",
+          "status": "waiting"
+        },
+        {
+          "at": "2026-10-28T11:16:51.571Z",
+          "type": "status",
+          "status": "answered"
+        },
+        {
+          "at": "2026-10-28T11:16:51.576Z",
+          "type": "answered",
+          "round": 1,
+          "answerSha256": "051836569928a9f91145a70e00b212b62a06c21a97d2d828cb75acd3fbe851b9"
+        },
+        {
+          "at": "2026-10-28T11:16:51.580Z",
+          "type": "status",
+          "status": "adjudicating"
+        },
+        {
+          "at": "2026-10-28T11:17:02.852Z",
+          "type": "verdict",
+          "round": 1,
+          "verdict": "rejected",
+          "done": false
+        },
+        {
+          "at": "2026-10-28T11:17:02.858Z",
+          "type": "status",
+          "status": "capped",
+          "stopReason": "本轮答复仅包含“编辑”二字，未提供任何PNG图或单文件HTML，完全未满足成功判据。"
+        },
+        {
+          "at": "2026-10-28T11:17:02.877Z",
+          "type": "status",
+          "status": "reviewing",
+          "stopReason": "等待原会话判断；接受、继续或重新生成后结束"
+        },
+        {
+          "at": "2026-10-28T11:20:41.913Z",
+          "type": "status",
+          "status": "capped",
+          "stopReason": "本轮答复仅包含“编辑”二字，未提供任何PNG图或单文件HTML，完全未满足成功判据。"
+        },
+        {
+          "at": "2026-10-28T11:22:49.934Z",
+          "type": "status",
+          "status": "queued"
+        },
+        {
+          "at": "2026-10-28T11:22:49.949Z",
+          "type": "status",
+          "status": "uploading"
+        },
+        {
+          "at": "2026-10-28T11:22:54.846Z",
+          "type": "status",
+          "status": "submitted"
+        },
+        {
+          "at": "2026-10-28T11:22:54.849Z",
+          "type": "status",
+          "status": "waiting"
+        },
+        {
+          "at": "2026-10-28T11:23:22.624Z",
+          "type": "status",
+          "status": "answered"
+        },
+        {
+          "at": "2026-10-28T11:23:22.629Z",
+          "type": "answered",
+          "round": 2,
+          "answerSha256": "490c22761dfd9fbd4647f1a81514520cae9fda870487cc476ea8d7851c5224d8"
+        },
+        {
+          "at": "2026-10-28T11:23:22.639Z",
+          "type": "status",
+          "status": "adjudicating"
+        },
+        {
+          "at": "2026-10-28T11:24:07.690Z",
+          "type": "judge_failed",
+          "round": 2,
+          "message": "judge returned no JSON object"
+        },
+        {
+          "at": "2026-10-28T11:24:07.691Z",
+          "type": "status",
+          "status": "reviewing",
+          "stopReason": "自动裁决失败：judge returned no JSON object"
+        },
+        {
+          "at": "2026-10-28T11:25:20.206Z",
+          "type": "status",
+          "status": "queued"
+        },
+        {
+          "at": "2026-10-28T11:25:20.222Z",
+          "type": "status",
+          "status": "adjudicating"
+        },
+        {
+          "at": "2026-10-28T11:26:06.601Z",
+          "type": "judge_failed",
+          "round": 2,
+          "message": "judge returned no JSON object"
+        },
+        {
+          "at": "2026-10-28T11:26:06.604Z",
+          "type": "status",
+          "status": "reviewing",
+          "stopReason": "自动裁决失败：judge returned no JSON object"
+        },
+        {
+          "at": "2026-10-28T11:29:39.763Z",
+          "type": "status",
+          "status": "completed",
+          "stopReason": "人工接受结果"
+        }
+      ]
+    }
+  },
+  "artifacts": [
+    {
+      "name": "water-cycle.png",
+      "bytes": 1848139,
+      "sha256": "4143098a2cc28f4656ce36d85a06c7476c48334f7ca5d18bfc61af1015ab8b40",
+      "width": 1254,
+      "height": 1254
+    },
+    {
+      "name": "water-cycle.html",
+      "bytes": 1515,
+      "sha256": "9039d485819408ad7a699ebf39ed482ddae60b7944721406b17032d4af48c356"
+    }
+  ],
+  "installedBundles": [
+    {
+      "profile": "desktop",
+      "pkg": "chatgpt-pro-research",
+      "file": "index.js",
+      "sha256": "f7c0217cbdaf6d75731a69a16dc9541b13814cc087063906d802ffcfad88c978",
+      "matchesBuild": true
+    },
+    {
+      "profile": "desktop",
+      "pkg": "chatgpt-pro-research",
+      "file": "client.js",
+      "sha256": "cf87070730c7a86620347ec45b2b3b140490dba1649e3935950dfd1491f3e0ea",
+      "matchesBuild": true
+    },
+    {
+      "profile": "desktop",
+      "pkg": "gpt-image-design",
+      "file": "index.js",
+      "sha256": "5b532332ecd257543fbac6475f6341741932ce428e632ebeb8a9bab6d3f95962",
+      "matchesBuild": true
+    },
+    {
+      "profile": "desktop",
+      "pkg": "gpt-image-design",
+      "file": "client.js",
+      "sha256": "015149b0054bc5b638edc388004687fd2adc98f98d54b39d1e151fd67a8d079e",
+      "matchesBuild": true
+    },
+    {
+      "profile": "web-acceptance-20261028",
+      "pkg": "chatgpt-pro-research",
+      "file": "index.js",
+      "sha256": "f7c0217cbdaf6d75731a69a16dc9541b13814cc087063906d802ffcfad88c978",
+      "matchesBuild": true
+    },
+    {
+      "profile": "web-acceptance-20261028",
+      "pkg": "chatgpt-pro-research",
+      "file": "client.js",
+      "sha256": "cf87070730c7a86620347ec45b2b3b140490dba1649e3935950dfd1491f3e0ea",
+      "matchesBuild": true
+    },
+    {
+      "profile": "web-acceptance-20261028",
+      "pkg": "gpt-image-design",
+      "file": "index.js",
+      "sha256": "5b532332ecd257543fbac6475f6341741932ce428e632ebeb8a9bab6d3f95962",
+      "matchesBuild": true
+    },
+    {
+      "profile": "web-acceptance-20261028",
+      "pkg": "gpt-image-design",
+      "file": "client.js",
+      "sha256": "015149b0054bc5b638edc388004687fd2adc98f98d54b39d1e151fd67a8d079e",
+      "matchesBuild": true
+    }
+  ],
+  "webDomObserved": {
+    "researchUserTurns": 1,
+    "designUserTurns": 2,
+    "designImageGalleries": 1
+  },
+  "firstUse": {
+    "home": "C:/Users/satan/.dsh/qa-web-first-use-20261028",
+    "steps": [
+      {
+        "at": "2026-10-28T11:22:06.460Z",
+        "step": "fresh-research-probe",
+        "result": {
+          "channel": "web",
+          "probe": {
+            "ok": false,
+            "loggedIn": false,
+            "model": "",
+            "available": [],
+            "reason": "composer not found; the page may still be loading or its UI changed"
+          }
+        }
+      },
+      {
+        "at": "2026-10-28T11:27:07.469Z",
+        "step": "error",
+        "result": "login was not completed before the timeout"
+      },
+      {
+        "at": "2026-10-28T11:34:16.984Z",
+        "step": "fresh-research-probe",
+        "result": {
+          "channel": "web",
+          "probe": {
+            "ok": false,
+            "loggedIn": false,
+            "model": "",
+            "available": [],
+            "reason": "composer not found; the page may still be loading or its UI changed"
+          }
+        }
+      },
+      {
+        "at": "2026-10-28T11:39:17.908Z",
+        "step": "error",
+        "result": "login was not completed before the timeout"
+      }
+    ],
+    "topics": {}
+  },
+  "cleanup": {
+    "qaWebHostStopped": true,
+    "nativeDesktopWindowRestored": true,
+    "firstUseChromeProcessRemaining": false
+  },
+  "nativePreview": {
+    "startToDone": true,
+    "escapeFromIframeCloses": true,
+    "screenshot": "desktop-html-done.png"
+  }
+}

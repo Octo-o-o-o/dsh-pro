@@ -65,7 +65,7 @@ node scripts/release-dist.mjs --check
 
 `--check` 会：
 
-- 校验两个发布仓库存在、是 git worktree、origin 正确、工作区干净、没有落后 origin/main；
+- 校验两个发布仓库存在、是 git worktree、当前分支为 main、origin 精确匹配（HTTPS/SSH）、工作区干净、没有落后 origin/main；
 - 校验 `--push` 时 `v<version>` tag 还不存在；
 - 跑 `npm test` + `npm run typecheck`（可用 `--skip-tests` 跳过）。
 
@@ -163,11 +163,11 @@ git -C C:\WorkSpace\dsh-plugins\chatgpt-pro-research push origin vX.Y.Z
 **npm 发布**  
 `npm whoami` 401 时先 `npm login`，然后在 `packages/research` / `packages/design` 分别 `npm publish --access public`。发布仓库的 Git 安装不依赖 npm。
 
-## 当前状态（2026-10-25）
+## 当前状态（2026-10-29）
 
-两个插件源码与 Git 发布版本均为 `0.3.2`；具体公开 commit 与 Release 见 [marketplace.md](marketplace.md)。npm 本次按用户指示暂缓，仍为 `0.2.6`；市场未重新提交。
+两个插件源码与 Git 发布版本均为 `0.3.3`；具体公开 commit 与 tag 见 [marketplace.md](marketplace.md)。本轮用户明确授权推送开发仓库与两个发布仓库。npm 继续暂缓，本轮没有重新提交市场或创建 GitHub Release 页面。
 
-干净 profile 安装、真实网页闭环、两个独立评审、完整回归与本机响应式检查见 [发布验收记录](validation/release-0.3.2-2026-10-25.md)。
+本轮检查与剩余缺口见 [0.3.3 复核记录](validation/release-0.3.3-2026-10-29.md)。历史干净 profile、真实网页闭环与独立评审见 [0.3.2 验收记录](validation/release-0.3.2-2026-10-25.md)；它们不替代当前候选验证。
 
 ### Windows link 安装切换
 

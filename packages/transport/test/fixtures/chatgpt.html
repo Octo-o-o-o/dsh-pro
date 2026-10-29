@@ -4,18 +4,37 @@
 <body>
   <div id="messages">
     <div data-message-author-role="user">OLD QUESTION</div>
-    <div data-message-author-role="assistant">OLD ANSWER</div>
+    <article><div data-message-author-role="assistant">OLD ANSWER</div><button data-testid="copy-turn-action-button">Copy</button></article>
   </div>
+  <button data-testid="model-switcher-dropdown-button">Pro</button>
+  <form onsubmit="return false">
   <div id="prompt-textarea" contenteditable="true" style="min-height:40px;border:1px solid #ccc"></div>
-  <input type="file" id="file">
+  <input type="file" id="file" multiple aria-label="附加文件">
+  <div id="attachments"></div>
+  <button data-testid="send-button" style="display:none">Hidden duplicate</button>
   <button id="send-button" data-testid="send-button">Send</button>
   <button data-testid="stop-button" style="display:none">Stop</button>
+  <button id="active-stop" aria-label="停止流式传输" style="display:none">Stop</button>
+  </form>
   <script>
+    const slow = new URLSearchParams(location.search).has('slow')
     const composer = document.getElementById('prompt-textarea')
     const send = document.getElementById('send-button')
     const messages = document.getElementById('messages')
+    document.getElementById('file').addEventListener('change', event => {
+      send.disabled = true
+      setTimeout(() => { send.disabled = false }, 700)
+      document.getElementById('attachments').replaceChildren(...[...event.target.files].map(file => {
+        const card = document.createElement('span')
+        card.textContent = file.name
+        return card
+      }))
+    })
     send.addEventListener('click', () => {
       const question = composer.innerText
+      composer.innerText = ''
+      send.style.display = 'none'
+      document.getElementById('active-stop').style.display = 'inline-block'
       const user = document.createElement('div')
       user.setAttribute('data-message-author-role', 'user')
       user.textContent = question
@@ -25,9 +44,24 @@
       messages.append(message)
       const copy = document.createElement('button')
       copy.setAttribute('aria-label', 'Copy')
+      copy.setAttribute('data-testid', 'copy-turn-action-button')
       copy.style.display = 'none'
       message.append(copy)
       const text = 'FAKE ANSWER to ' + question
+      if (slow) {
+        message.textContent = 'INTRO ONLY'
+        const code = document.createElement('pre')
+        code.innerHTML = '<code>partial code</code><button aria-label="Copy">Copy</button>'
+        message.append(code)
+        setTimeout(() => {
+          message.textContent = text + ' COMPLETE RESEARCH'
+          copy.style.display = 'inline-block'
+          message.append(copy)
+          document.getElementById('active-stop').style.display = 'none'
+          send.style.display = 'inline-block'
+        }, 15000)
+        return
+      }
       let index = 0
       const timer = setInterval(() => {
         index += 1
@@ -36,6 +70,8 @@
         if (index >= text.length) {
           clearInterval(timer)
           copy.style.display = 'inline-block'
+          document.getElementById('active-stop').style.display = 'none'
+          send.style.display = 'inline-block'
         }
       }, 40)
     })

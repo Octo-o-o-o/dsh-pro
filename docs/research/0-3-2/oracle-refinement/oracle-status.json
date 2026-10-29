@@ -1,0 +1,38 @@
+{
+  "research": "/home/octoooo/.octoworkflow/local/research/2026-10-25-dsh-pro-three-priorities",
+  "submissions": [
+    {
+      "round": 1,
+      "account": "a",
+      "requested_slug": "dsh-pro-three-priorities-20261025-r1",
+      "session_id": "dsh-pro-three-priorities-20261025",
+      "oracle_home": "/home/octoooo/.oracle",
+      "home_source": "ledger",
+      "runner": {
+        "status": "failed",
+        "exit_code": 1,
+        "finished_at": "2026-10-25T05:40:23.004039+00:00"
+      },
+      "oracle_status": "error",
+      "prompt_submitted": false,
+      "oracle_prompt_submitted": false,
+      "submission_phase": "prepared",
+      "retry_allowed": true,
+      "log_last_slot_event": "acquired",
+      "worker": "gone",
+      "conversation": null,
+      "transport_sha256": {
+        "pro_research.py": "a7d8d3974d21bd312b3beb369c572fd3e31ca28d2f23182aeda9f897dfb627e9",
+        "oracle_ui_compat.mjs": "240ba17ef85534071ea55b75732ef7c2548d099789563cd2d17f32cb1a612721",
+        "oracle_transport.mjs": "1a39b0161aae50086fd5a9aa87fd46a77273086ae5d72aa479ed2d536d424fdc"
+      },
+      "current_transport_sha256": {
+        "pro_research.py": "a7d8d3974d21bd312b3beb369c572fd3e31ca28d2f23182aeda9f897dfb627e9",
+        "oracle_ui_compat.mjs": "240ba17ef85534071ea55b75732ef7c2548d099789563cd2d17f32cb1a612721",
+        "oracle_transport.mjs": "1a39b0161aae50086fd5a9aa87fd46a77273086ae5d72aa479ed2d536d424fdc"
+      },
+      "transport_matches_current": true,
+      "resume": "/usr/bin/python3 /home/octoooo/.octoworkflow/pro_research.py recover /home/octoooo/.octoworkflow/local/research/2026-10-25-dsh-pro-three-priorities --round 1 --account a"
+    }
+  ]
+}

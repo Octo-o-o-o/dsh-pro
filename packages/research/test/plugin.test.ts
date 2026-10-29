@@ -1,8 +1,9 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { ResearchStore, type ResearchCard } from '@dsh-pro/core'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ResearchStore, TransportError, type ResearchCard } from '@dsh-pro/core'
+import { ChatGptWebTransport } from '@dsh-pro/transport'
 import { apply, resolveResearchConfig } from '../src/index.ts'
 import { externalOpenCommand, externalRevealCommand } from '../src/plugin.ts'
 
@@ -77,6 +78,50 @@ function fakeContext(captured: Captured, options: { connection?: boolean } = {})
 }
 
 describe('plugin wiring', () => {
+  it.each(['local', 'project'] as const)('honors the card store=%s and records the effective location', async mode => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-pro-home-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-pro-project-'))
+    cleanups.push(home, cwd)
+    const submit = vi.spyOn(ChatGptWebTransport.prototype, 'submit').mockRejectedValue(
+      new TransportError('fixture stopped before send', 'ui', { submissionState: 'not_sent' }),
+    )
+    try {
+      await withEnv(home, async () => {
+        const captured: Captured = { tools: [], routes: [], skills: [] }
+        const ctx = fakeContext(captured)
+        apply(ctx as never, { store: mode === 'local' ? 'project' : 'local' })
+        try {
+          const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<Record<string, unknown>> }
+          const exec = { agent: { session: { header: { cwd }, id: 'store-test' } } }
+          const result = await tool.execute({ action: 'start', confirmed: true, title: 'store test', question: 'q', brief: 'b', criteria: ['c'], store: mode }, exec)
+          expect(result.store).toBe(mode)
+          expect(String(result.path).startsWith(mode === 'local' ? home : cwd)).toBe(true)
+          const registry = JSON.parse(await readFile(join(home, 'chatgpt-pro-research', 'registry.json'), 'utf8'))
+          expect(registry.topics[0].mode).toBe(mode)
+          const deadline = Date.now() + 3_000
+          let status: Record<string, unknown> = {}
+          do {
+            status = await tool.execute({ action: 'status', topic_id: result.topic_id }, exec)
+            if (status.status === 'stalled') break
+            await new Promise(resolve => setTimeout(resolve, 20))
+          } while (Date.now() < deadline)
+          expect(status.status).toBe('stalled')
+          if (mode === 'local') await expect(readFile(join(cwd, 'docs', 'research', 'index.json'))).rejects.toThrow()
+        } finally { ctx.dispose() }
+      })
+    } finally { submit.mockRestore() }
+  })
+
+  it('rejects an invalid per-task store before creating a topic', async () => {
+    const captured: Captured = { tools: [], routes: [], skills: [] }
+    const ctx = fakeContext(captured)
+    apply(ctx as never, {})
+    try {
+      const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<unknown> }
+      await expect(tool.execute({ action: 'start', confirmed: true, store: 'elsewhere' }, {})).rejects.toThrow(/store.*project.*local/)
+    } finally { ctx.dispose() }
+  })
+
   it('registers one tool, nine routes and one skill', async () => {
     const captured: Captured = { tools: [], routes: [], skills: [] }
     apply(fakeContext(captured) as never, { rounds: 2 })
@@ -436,6 +481,21 @@ describe('route hardening', () => {
       expect(svg.status).toBe(200)
       expect(svg.headers['content-security-policy']).toBe('sandbox')
       expect(svg.headers['x-content-type-options']).toBe('nosniff')
+
+      const rawRoute = captured.routes.find(item => item.path === '/chatgpt-pro-research/raw') as Route
+      const demoPath = 'artifacts/round-01/demo.html'
+      const original = '<!doctype html><html><button>完成</button></html>'
+      await writeFile(join(seed.dir, demoPath), original, 'utf8')
+      const url = `/chatgpt-pro-research/raw/${seed.topicId}/${demoPath}`
+      const untouched = await call(rawRoute, { url, method: 'GET', headers: {} })
+      const preview = await call(rawRoute, { url: `${url}?preview=1`, method: 'GET', headers: {} })
+      expect(untouched.body).toBe(original)
+      expect(preview.status).toBe(200)
+      expect(preview.body).toMatch(/^<!doctype html><script>/)
+      expect(preview.body).toContain('dsh-pro:preview-escape')
+      expect(preview.body).toContain('<button>完成</button>')
+      expect(preview.headers['content-security-policy']).toBe('sandbox allow-scripts')
+      expect(await readFile(join(seed.dir, demoPath), 'utf8')).toBe(original)
     })
   })
 

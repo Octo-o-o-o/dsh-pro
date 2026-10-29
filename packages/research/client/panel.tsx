@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { DESIGN_ICON, RESEARCH_ICON } from './icons.ts'
 import { mountSidebarStatus } from './sidebar-status.ts'
 import { markTopicSeen } from './seen.ts'
+import { PREVIEW_ESCAPE_MESSAGE } from '../src/preview.ts'
 
 const POLL_MS = 3_000
 
@@ -74,6 +75,8 @@ interface RoundRow {
   artifacts?: string[]
   judgeError?: string
   baseArtifact?: string
+  dispatch?: { observedAt?: string }
+  submissionState?: 'not_sent' | 'unknown'
 }
 
 interface GenerationRow {
@@ -290,12 +293,18 @@ function generationLabel(generation: GenerationRow, rounds: RoundRow[]): string 
   return `${rounds.length}/${total} 轮`
 }
 
-function outcomeOf(round: RoundRow): { label: string; tone: string } {
+export function outcomeOf(round: RoundRow, status: string): { label: string; tone: string } {
   if (round.judgeError !== undefined) return { label: '裁决失败', tone: 'rejected' }
   if (round.verdict === 'accepted') return { label: '通过', tone: 'accepted' }
   if (round.verdict === 'partial') return { label: '部分通过', tone: 'partial' }
   if (round.verdict === 'rejected') return { label: '未通过', tone: 'rejected' }
   if (round.answeredAt !== undefined) return { label: '已答复', tone: 'answered' }
+  if (round.submissionState === 'not_sent') return { label: '未发送', tone: 'pending' }
+  if (!ACTIVE.has(status)) {
+    if (round.submittedAt !== undefined) return { label: '待恢复', tone: 'pending' }
+    if (round.dispatch !== undefined || round.submissionState === 'unknown') return { label: '提交待核对', tone: 'pending' }
+    return { label: '未提交', tone: 'pending' }
+  }
   return { label: '进行中', tone: 'pending' }
 }
 
@@ -560,7 +569,7 @@ function FinalCard({ detail, path }: { detail: TopicDetail; path: string }): Rea
       <div className="dshpro-final-info">
         <div className="dshpro-final-title">{summaryLabel(detail, path)}</div>
         <div className="dshpro-final-path" title={path}>{artifactName(path)}</div>
-        <div className="dshpro-final-desc">{path === 'report.md' ? '宿主整理 · 点击阅读全文' : '自动生成 · 点击阅读全文'}</div>
+        <div className="dshpro-final-desc">{path === detail.report ? '宿主整理 · 点击阅读全文' : '自动生成 · 点击阅读全文'}</div>
       </div>
       <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, path) }}>查看</button>
     </div>
@@ -625,7 +634,7 @@ function RoundTable({ detail, rounds, generation }: { detail: TopicDetail; round
             const artifacts = roundArtifacts(detail, round)
             const images = artifacts.filter(path => artifactKind(detail, path) === 'image')
             const files = artifacts.filter(path => artifactKind(detail, path) !== 'image')
-            const outcome = outcomeOf(round)
+            const outcome = outcomeOf(round, detail.status)
             const attempts = round.attempts ?? 1
             return [
               <tr key={`round-${round.n}`}>
@@ -637,7 +646,7 @@ function RoundTable({ detail, rounds, generation }: { detail: TopicDetail; round
                 <td className="dshpro-optional dshpro-dim">{attempts > 1 ? attempts - 1 : '—'}</td>
                 <td>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                    <button type="button" className="dshpro-btn small" onClick={() => { void openAnswer(detail.topic_id, round.n) }}>查看回答</button>
+                    <button type="button" className="dshpro-btn small" disabled={round.answeredAt === undefined} onClick={() => { void openAnswer(detail.topic_id, round.n) }}>查看回答</button>
                     {round.verdict !== undefined || round.judgeError !== undefined ? (
                       <button type="button" className="dshpro-btn small" onClick={() => { void openTopicFile(detail.topic_id, `rounds/${String(round.n).padStart(2, '0')}-verdict.md`) }}>裁决</button>
                     ) : null}
@@ -705,7 +714,7 @@ function RoundsView({ detail }: { detail: TopicDetail }): ReactNode {
 }
 
 function summaryLabel(detail: TopicDetail, path: string): string {
-  if (path === 'report.md') return '宿主交付稿'
+  if (path === detail.report) return '宿主交付稿'
   const source = generationList(detail).find(item => item.final === path)
   return source !== undefined ? `第 ${source.n} 版总结` : '已有总结 · 版本未确认'
 }
@@ -821,6 +830,8 @@ function DesignOverview({ detail, onTab, onRefine }: { detail: TopicDetail; onTa
         : <div className="dshpro-content-empty"><Glyph name="image" size={32} /><strong>本轮还没有图片</strong><span>生成的设计图将在这里完整呈现。</span>{imageArtifacts(detail).length > 0 && <button type="button" className="dshpro-btn" onClick={() => onTab('artifacts')}>查看历史图片（{imageArtifacts(detail).length}）</button>}</div>}
     </section>
     {demos.length > 0 && <section className="dshpro-card"><div className="dshpro-card-head"><h3 className="dshpro-card-title">本轮交互演示</h3></div>{demos.map(path => <DemoCard key={path} detail={detail} path={path} />)}</section>}
+    {detail.report != null ? <ResearchOverview detail={detail} onTab={onTab} />
+      : <section className="dshpro-card"><p className="dshpro-muted">宿主尚未整理交付稿 design.md；图片取回与任务完成不代表视觉验收通过。</p></section>}
   </div>
 }
 
@@ -830,7 +841,7 @@ function ArtifactsView({ detail, onRefine }: { detail: TopicDetail; onRefine?: (
   if (!config.designMode) {
     const groups = new Map<string, string[]>()
     for (const path of detail.artifacts) {
-      if (path === final || path === 'report.md' || (final !== undefined && path === 'final.md')) continue
+      if (path === final || path === report || (final !== undefined && path === 'final.md')) continue
       const match = path.match(/round-(\d+)/i)
       const key = match !== null ? `第 ${Number(match[1])} 轮` : '主题文件'
       const list = groups.get(key) ?? []
@@ -876,6 +887,10 @@ function ArtifactsView({ detail, onRefine }: { detail: TopicDetail; onRefine?: (
   const files = fileArtifacts(detail)
   return (
     <div>
+      {report !== undefined && <section className="dshpro-card">
+        <div className="dshpro-card-head"><div className="dshpro-card-title">宿主交付稿</div></div>
+        <FinalCard detail={detail} path={report} />
+      </section>}
       {images.length > 0 && (
         <section className="dshpro-card">
           <div className="dshpro-card-head">
@@ -933,8 +948,8 @@ function Rail({ detail, onTab }: { detail: TopicDetail; onTab: (tab: Tab) => voi
     <section className="dshpro-activity">
       <div className="dshpro-card-head"><h3 className="dshpro-card-title">最近活动</h3><button type="button" className="dshpro-card-link" onClick={() => onTab('rounds')}>全部记录</button></div>
       {rounds.length === 0 ? <p className="dshpro-muted">尚无提交记录</p> : <ol>{rounds.map(round => {
-        const outcome = outcomeOf(round)
-        return <li key={round.n}><span className="dshpro-activity-dot" /><div className="dshpro-activity-heading"><strong>第 {round.generation ?? 1} 版 · 第 {round.n} 轮</strong><span className="dshpro-verdict" data-verdict={outcome.tone}>{outcome.label}</span></div><time>{formatTime(round.answeredAt ?? round.submittedAt)}</time><div className="dshpro-activity-actions"><span>{round.files} 个附件</span><button type="button" className="dshpro-card-link" onClick={() => { void openAnswer(detail.topic_id, round.n) }}>查看回答 <Glyph name="arrow" size={12} /></button></div></li>
+        const outcome = outcomeOf(round, detail.status)
+        return <li key={round.n}><span className="dshpro-activity-dot" /><div className="dshpro-activity-heading"><strong>第 {round.generation ?? 1} 版 · 第 {round.n} 轮</strong><span className="dshpro-verdict" data-verdict={outcome.tone}>{outcome.label}</span></div><time>{formatTime(round.answeredAt ?? round.submittedAt)}</time><div className="dshpro-activity-actions"><span>{round.files} 个附件</span><button type="button" className="dshpro-card-link" disabled={round.answeredAt === undefined} onClick={() => { void openAnswer(detail.topic_id, round.n) }}>查看回答 <Glyph name="arrow" size={12} /></button></div></li>
       })}</ol>}
     </section>
     <button type="button" className="dshpro-artifact-index" onClick={() => onTab('artifacts')}><Glyph name="folder" size={17} /><span>产物索引<small>{detail.artifacts.length} 个已保存文件</small></span><Glyph name="chevron" /></button>
@@ -957,8 +972,20 @@ function useModal(): React.RefObject<HTMLDialogElement> {
 
 function ViewerModal({ view, basePath, onClose }: { view: Viewer; basePath?: string; onClose: () => void }): ReactNode {
   const modal = useModal()
+  const frame = useRef<HTMLIFrameElement>(null)
   const [notice, setNotice] = useState<string | undefined>(undefined)
   useEffect(() => { setNotice(undefined) }, [view])
+  useEffect(() => {
+    if (view.kind !== 'frame') return
+    const closeFromFrame = (event: MessageEvent): void => {
+      // Sandboxed HTML has an opaque origin. Bind the signal to this exact
+      // frame instead of trusting an origin string or arbitrary messages.
+      if (frame.current?.contentWindow != null && event.source === frame.current.contentWindow
+        && event.data?.type === PREVIEW_ESCAPE_MESSAGE) onClose()
+    }
+    window.addEventListener('message', closeFromFrame)
+    return () => window.removeEventListener('message', closeFromFrame)
+  }, [view.kind, onClose])
   const run = (task: () => Promise<void>, success: string): void => {
     setNotice('处理中…')
     void task()
@@ -976,7 +1003,7 @@ function ViewerModal({ view, basePath, onClose }: { view: Viewer; basePath?: str
         </div>
         <div className="dshpro-modal-body">
           {view.kind === 'image' && view.src !== undefined && <img src={view.src} alt={view.title} />}
-          {view.kind === 'frame' && view.src !== undefined && <iframe src={view.src} sandbox="allow-scripts" title={view.title} />}
+          {view.kind === 'frame' && view.src !== undefined && <iframe ref={frame} src={`${view.src}${view.src.includes('?') ? '&' : '?'}preview=1`} sandbox="allow-scripts" title={view.title} />}
           {view.kind === 'text' && <pre>{view.text ?? ''}</pre>}
         </div>
         <div className="dshpro-modal-foot">
@@ -1744,7 +1771,13 @@ function Panel(): ReactNode {
                       : <><strong>待原会话判断</strong><span>结果已交给发起会话；可以接受结果，或撤回判断请求。</span></>)}
                     {ACTIVE.has(current.status) && <><strong>正在运行</strong><span>{statusLabel(current.status)} · 自动更新</span></>}
                     {current.status === 'draft' && <><strong>草稿</strong><span>等待确认后开始。</span></>}
-                    {current.status === 'stalled' && (
+                    {(current.status === 'stalled' || current.status === 'failed') && current.stop_reason && (
+                      <div style={{ flexBasis: '100%', overflowWrap: 'anywhere' }}>原因：{current.stop_reason}</div>
+                    )}
+                    {(current.status === 'stalled' || current.status === 'failed') && current.rounds_detail?.at(-1)?.submissionState === 'not_sent' && (
+                      <div style={{ flexBasis: '100%' }}>本轮在点击发送前停止，可恢复运行重试本轮，不增加轮次。</div>
+                    )}
+                    {(current.status === 'stalled' || current.status === 'failed') && current.rounds_detail?.at(-1)?.submissionState !== 'not_sent' && (
                       <div className="dshpro-check-actions">
                         <span>人工核对</span>
                         <button type="button" className="dshpro-btn small" disabled={busy} onClick={() => openCheck('submitted')}>已提交</button>

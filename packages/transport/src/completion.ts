@@ -1,8 +1,9 @@
 /**
  * Completion heuristic for a streaming answer.
  *
- * An answer counts as complete only when the page is no longer streaming and
- * the assistant text stayed byte-identical across two consecutive polls. The
+ * Text is stable when the page is no longer streaming and the assistant text
+ * stayed byte-identical across two consecutive polls. This is necessary but
+ * NOT sufficient: callers must also verify this turn's terminal control. The
  * caller chooses the poll interval, so the same rule works for a fast page and
  * a slow one; anything ambiguous stays incomplete and the engine keeps waiting.
  */

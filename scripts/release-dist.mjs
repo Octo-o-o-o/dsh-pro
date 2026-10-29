@@ -120,8 +120,12 @@ async function gather () {
       throw new Error(`${dir} is not a git worktree`)
     }
     const remote = git(dir, ['remote', 'get-url', 'origin'])
-    if (!remote.includes(`github.com/${owner}/${spec.repo}`)) {
+    const expected = `github.com/${owner}/${spec.repo}`
+    if (![ `https://${expected}`, `https://${expected}.git`, `git@github.com:${owner}/${spec.repo}`, `git@github.com:${owner}/${spec.repo}.git` ].includes(remote)) {
       throw new Error(`${dir} origin is not ${owner}/${spec.repo}: ${remote}`)
+    }
+    if (git(dir, ['branch', '--show-current']) !== 'main') {
+      throw new Error(`${dir} must be on main before releasing`)
     }
     if (gitStatus(dir) !== '') throw new Error(`${dir} has uncommitted changes`)
     rows.push({ ...spec, dir, version: manifest.version, remote })

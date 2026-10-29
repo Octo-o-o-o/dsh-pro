@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "topic-bee619eba1",
+  "title": "QA release 0.3.2 web smoke 20261025",
+  "type": "research",
+  "parent": null,
+  "created": "2026-10-25T07:21:07.953Z",
+  "updated": "2026-10-25T07:37:58.938Z",
+  "status": "completed",
+  "roundsCap": 1,
+  "generations": [
+    {
+      "n": 1,
+      "createdAt": "2026-10-25T07:21:07.953Z",
+      "rounds": 1,
+      "reason": "初始任务",
+      "final": "finals/attempt-01.md"
+    }
+  ],
+  "rounds": [
+    {
+      "n": 1,
+      "files": 0,
+      "attempts": 1,
+      "generation": 1,
+      "dispatch": {
+        "attemptId": "afa53c00-5cd5-49b6-a6b5-c9944773a0e9",
+        "at": "2026-10-25T07:21:07.986Z",
+        "requestHash": "d20986b2c81b7521d2cfe28380f9be5c2bfded85a8257a0ecedd12ebd84c51f3",
+        "observedAt": "2026-10-25T07:21:20.015Z"
+      },
+      "submissionId": "fe30227f-7652-43eb-81e5-9b948a8c42fc",
+      "fingerprint": "b1840e853e3aa22a45551741febf09e34501c7f93ae7049990ca560c72ce814b",
+      "submittedAt": "2026-10-25T07:21:20.017Z",
+      "answeredAt": "2026-10-25T07:21:35.188Z",
+      "verdict": "accepted",
+      "done": true
+    }
+  ],
+  "channel": "web",
+  "model": "pro",
+  "successCriteria": [
+    "答复含 DSH-PRO-032-OK",
+    "答复明确说明 2+2=4"
+  ],
+  "artifacts": [
+    "final.md"
+  ],
+  "stopReason": "答复同时包含指定字符串 DSH-PRO-032-OK，并用一句话明确说明 2+2=4。"
+}

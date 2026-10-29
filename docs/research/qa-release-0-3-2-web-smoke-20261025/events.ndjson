@@ -1,0 +1,23 @@
+{"at":"2026-10-25T07:21:07.966Z","type":"status","status":"queued"}
+{"at":"2026-10-25T07:21:07.981Z","type":"status","status":"uploading"}
+{"at":"2026-10-25T07:21:20.024Z","type":"status","status":"submitted"}
+{"at":"2026-10-25T07:21:20.029Z","type":"status","status":"waiting"}
+{"at":"2026-10-25T07:21:35.190Z","type":"status","status":"answered"}
+{"at":"2026-10-25T07:21:35.196Z","type":"answered","round":1,"answerSha256":"bfa17fd396f91934899419d6887b35289bc9c56cc82e6b0c8a68c5105d79d417"}
+{"at":"2026-10-25T07:21:35.201Z","type":"status","status":"adjudicating"}
+{"at":"2026-10-25T07:21:37.502Z","type":"judge_failed","round":1,"message":"judge returned no JSON object"}
+{"at":"2026-10-25T07:21:37.505Z","type":"status","status":"reviewing","stopReason":"自动裁决失败：judge returned no JSON object"}
+{"at":"2026-10-25T07:23:46.105Z","type":"status","status":"completed","stopReason":"人工接受结果"}
+{"at":"2026-10-25T07:24:57.088Z","type":"status","status":"queued"}
+{"at":"2026-10-25T07:24:57.098Z","type":"status","status":"adjudicating"}
+{"at":"2026-10-25T07:24:59.020Z","type":"judge_failed","round":1,"message":"judge returned no JSON object"}
+{"at":"2026-10-25T07:24:59.022Z","type":"status","status":"reviewing","stopReason":"自动裁决失败：judge returned no JSON object"}
+{"at":"2026-10-25T07:25:14.906Z","type":"status","status":"completed","stopReason":"人工接受结果"}
+{"at":"2026-10-25T07:28:00.975Z","type":"status","status":"queued"}
+{"at":"2026-10-25T07:28:00.985Z","type":"status","status":"adjudicating"}
+{"at":"2026-10-25T07:28:02.614Z","type":"judge_failed","round":1,"message":"judge returned no JSON object"}
+{"at":"2026-10-25T07:28:02.616Z","type":"status","status":"reviewing","stopReason":"自动裁决失败：judge returned no JSON object"}
+{"at":"2026-10-25T07:37:55.094Z","type":"status","status":"queued"}
+{"at":"2026-10-25T07:37:55.108Z","type":"status","status":"adjudicating"}
+{"at":"2026-10-25T07:37:58.933Z","type":"verdict","round":1,"verdict":"accepted","done":true}
+{"at":"2026-10-25T07:37:58.940Z","type":"status","status":"completed","stopReason":"答复同时包含指定字符串 DSH-PRO-032-OK，并用一句话明确说明 2+2=4。"}

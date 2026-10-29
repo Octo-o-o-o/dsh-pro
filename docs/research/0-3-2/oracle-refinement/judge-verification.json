@@ -1,0 +1,84 @@
+{
+  "method": "Extracted the unchanged current parseJudge function; transpiled in memory with installed TypeScript; invoked without plugin/browser/network.",
+  "source": "packages/research/src/plugin.ts",
+  "cases": [
+    {
+      "name": "accepted with partial criterion",
+      "input": {
+        "verdict": "accepted",
+        "done": true,
+        "criteria": [
+          {
+            "criterion": "must satisfy",
+            "status": "partial",
+            "evidence": "missing required evidence"
+          }
+        ]
+      },
+      "output": {
+        "verdict": "accepted",
+        "reason": "",
+        "done": true,
+        "summary": "",
+        "criteria": [
+          {
+            "criterion": "must satisfy",
+            "status": "partial",
+            "evidence": "missing required evidence"
+          }
+        ]
+      }
+    },
+    {
+      "name": "accepted without criterion list",
+      "input": {
+        "verdict": "accepted",
+        "done": true
+      },
+      "output": {
+        "verdict": "accepted",
+        "reason": "",
+        "done": true,
+        "summary": ""
+      }
+    },
+    {
+      "name": "accepted with unknown criterion",
+      "input": {
+        "verdict": "accepted",
+        "done": true,
+        "criteria": [
+          {
+            "criterion": "must satisfy",
+            "status": "unknown"
+          }
+        ]
+      },
+      "output": {
+        "verdict": "accepted",
+        "reason": "",
+        "done": true,
+        "summary": "",
+        "criteria": [
+          {
+            "criterion": "must satisfy",
+            "status": "unknown"
+          }
+        ]
+      }
+    },
+    {
+      "name": "partial verdict with done true",
+      "input": {
+        "verdict": "partial",
+        "done": true
+      },
+      "output": {
+        "verdict": "partial",
+        "reason": "",
+        "done": false,
+        "summary": ""
+      }
+    }
+  ]
+}

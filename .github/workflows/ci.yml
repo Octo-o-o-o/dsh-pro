@@ -23,3 +23,9 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node scripts/smoke-bundle.mjs
+      - name: Chrome transport regression
+        run: npx vitest run packages/transport/test/transport.smoke.test.ts packages/transport/test/page-state.test.ts
+        env:
+          DSH_PRO_TRANSPORT_SMOKE: '1'
+      - name: Built plugin acceptance
+        run: node scripts/acceptance-smoke.mjs

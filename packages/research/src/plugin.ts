@@ -34,6 +34,7 @@ import {
 } from '@dsh-pro/core'
 import { OpenAIImageTransport, acquireSharedTransport } from '@dsh-pro/transport'
 import type { ChatGptWebTransport, SharedTransport } from '@dsh-pro/transport'
+import { previewHtml } from './preview.ts'
 
 export interface PluginSpec {
   name: string
@@ -429,11 +430,13 @@ class ProResearchService {
         | undefined
       if (llm === undefined) throw new Error('the harness LLM service is unavailable')
       const assembler = new BlockAssembler()
+      let finished = false
       const user = [
         `主题：${input.topic.title}`,
         `成功判据：\n${input.criteria.map(item => `- ${item}`).join('\n')}`,
         `本轮问题：\n${input.question ?? '（未记录）'}`,
         `本轮答复：\n${input.answer.slice(0, 30_000)}`,
+        `已保存产物（文件存在不代表视觉或交互验收通过；不要因答复无文字而否认已保存图片）：\n${input.topic.rounds.flatMap(round => (round.artifacts ?? []).map(path => `- 第 ${round.n} 轮：${path}`)).join('\n') || '（无）'}`,
       ].join('\n\n')
       const sessionId = this.topicSessions.get(input.topic.id) ?? (await this.entryFor(input.topic.id))?.sessionId ?? input.topic.id
       for await (const chunk of llm.stream({
@@ -449,10 +452,22 @@ class ProResearchService {
         signal: AbortSignal.timeout(120_000),
       })) {
         assembler.push(chunk as never)
+        if ((chunk as { type?: string }).type === 'finish') finished = true
       }
       if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') throw new Error(`裁决服务失败：${assembler.finish.failure.message}`)
-      const text = assembler.blocks().map(block => (block.type === 'text' ? block.text : '')).join('')
-      return parseJudge(text)
+      const blocks = assembler.blocks()
+      const text = blocks.map(block => (block.type === 'text' ? block.text : '')).join('')
+      const reasoningChars = blocks.reduce((total, block) => total + (block.type === 'reasoning' ? block.text.length : 0), 0)
+      // Persist only counts and termination state, never raw reasoning/output.
+      const diagnostic = `finish=${finished ? assembler.finish.kind : 'missing'}; textChars=${text.length}; reasoningChars=${reasoningChars}`
+      if (!finished || assembler.finish.kind !== 'stop') {
+        throw new Error(`裁决未正常完成（${diagnostic}）；答复已保留，可检查裁决模型后重试`)
+      }
+      try {
+        return parseJudge(text)
+      } catch {
+        throw new Error(`裁决返回无效 JSON 或结构（${diagnostic}）；答复已保留，可检查裁决模型后重试`)
+      }
     }
   }
 
@@ -612,14 +627,14 @@ class ProResearchService {
     }
   }
 
-  private async record(topic: Topic, root: string, sessionId?: string): Promise<void> {
+  private async record(topic: Topic, root: string, sessionId?: string, mode = this.config.store): Promise<void> {
     if (sessionId !== undefined && sessionId !== '') this.topicSessions.set(topic.id, sessionId)
     const job = async (): Promise<void> => {
       const entries = (await this.readRegistry()).filter(entry => entry.id !== topic.id)
       entries.push({
         id: topic.id,
         root,
-        mode: this.config.store,
+        mode,
         title: topic.title,
         updated: topic.updated,
         ...(sessionId !== undefined && sessionId !== '' ? { sessionId } : {}),
@@ -1292,6 +1307,8 @@ class ProResearchService {
 
   private async start(args: Record<string, unknown>, cwd: string, sessionId?: string): Promise<Record<string, unknown>> {
     if (this.config.channel === 'api') assertImageApiConfig(this.config.image, { requireKey: true })
+    const mode = args.store ?? this.config.store
+    if (mode !== 'project' && mode !== 'local') throw new Error('store must be project or local')
     const title = this.requireString(args, 'title')
     const question = this.requireString(args, 'question')
     const brief = this.requireString(args, 'brief')
@@ -1326,15 +1343,15 @@ class ProResearchService {
       materials: refs,
       rounds: typeof args.rounds === 'number' ? args.rounds : defaultRounds,
       ...(this.spec.topicType === 'design' ? { designs } : {}),
-      store: this.config.store,
+      store: mode,
       model: this.config.channel === 'api' ? this.config.image.model : this.config.model,
       ...(typeof args.parent === 'string' && args.parent !== '' ? { parent: args.parent } : {}),
     }
-    const store = this.storeFor(cwd)
-    const engine = this.engineFor(cwd)
+    const store = this.storeAt(this.rootFor(cwd), mode)
+    const engine = this.engineFor(cwd, mode)
     const topic = await engine.start(card)
-    await this.record(topic, this.rootFor(cwd), sessionId)
-    return { ...this.view(topic), path: await store.dirOf(topic.id) }
+    await this.record(topic, this.rootFor(cwd), sessionId, mode)
+    return { ...this.view(topic), store: mode, path: await store.dirOf(topic.id) }
   }
 
   private requireString(args: Record<string, unknown>, key: string): string {
@@ -1459,7 +1476,11 @@ class ProResearchService {
           const pageClosed = /target page|browser has been closed|page.*closed/i.test(reason)
           const recoverable = pageClosed || topic.stallReason === 'ui' || topic.stallReason === 'unknown_submission'
           const fresh = Date.now() - Date.parse(topic.updated) < 24 * 60 * 60 * 1000
-          const hasSubmission = topic.rounds.some(round => round.submissionId !== undefined)
+          // Startup may observe an existing dispatch, but must not restart a
+          // known pre-send failure just because an earlier round was sent.
+          const last = topic.rounds.at(-1)
+          const hasSubmission = last?.answeredAt === undefined && last?.submissionState !== 'not_sent'
+            && (last?.submissionId !== undefined || last?.dispatch !== undefined)
           if (recoverable && fresh && hasSubmission) {
             try {
               await engine.resume(entry.id)
@@ -1721,7 +1742,9 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
         const relativePath = decodeURIComponent(rest.slice(slash + 1))
         const asset = await service.readArtifact(id, relativePath)
         res.writeHead(200, artifactHeaders(asset.mime))
-        res.end(asset.bytes)
+        res.end(url.searchParams.get('preview') === '1' && asset.mime.startsWith('text/html')
+          ? previewHtml(Buffer.from(asset.bytes).toString('utf8'))
+          : asset.bytes)
       } catch {
         sendJson(res, 404, { error: 'unknown artifact' })
       }
@@ -1888,6 +1911,7 @@ export function createPlugin(spec: PluginSpec): (ctx: Context, config?: Research
       base_artifact: { type: 'string', description: '仅 design 的 continue：当前主题已记录的 PNG/JPEG/WebP 产物路径；只以此图修改，一轮一个结果，不与 materials 合用' },
       materialReasons: { type: 'object', additionalProperties: true, description: '可选：材料路径 → 选择理由' },
       rounds: { type: 'number', description: '本次轮次上限（1–10，仅 start；continue 固定加一轮）' },
+      store: { type: 'string', enum: ['project', 'local'], description: '仅 start：研究卡确认的记录位置；project 写仓库，local 写 DSH 本机；省略时使用插件设置' },
       designs: { type: 'number', description: '设计插件本轮方向/图片数（1–6，仅 design 主题的 start/continue）' },
       topic_id: { type: 'string', description: 'status/continue/resume/cancel/delete/human_check/accept/review/review_cancel/wake/regenerate 的主题 id' },
       parent: { type: 'string', description: '可选：父主题 id，仅 start 使用' },

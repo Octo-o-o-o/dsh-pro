@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ResearchEngine } from '../src/engine.ts'
 import { ResearchStore } from '../src/store.ts'
@@ -128,6 +129,91 @@ async function harness(options: {
 }
 
 describe('engine', () => {
+  it('keeps waiting when fetch revokes completion instead of saving the poll snapshot', async () => {
+    class ResumedGeneration extends FakeTransport {
+      fetches = 0
+      async fetch() {
+        this.fetches += 1
+        if (this.fetches <= 3) throw new TransportError('still generating', 'ui', { answerIncomplete: true })
+        return { answer: 'complete answer after generation resumed' }
+      }
+    }
+    const transport = new ResumedGeneration(['partial poll snapshot'])
+    const judged: string[] = []
+    const { engine, store } = await harness({ doneAt: 1, transport, judge: async input => {
+      judged.push(input.answer)
+      return judgeWith(1)(input)
+    } })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await store.load(topic.id)).status).toBe('completed')
+    expect(judged).toEqual(['complete answer after generation resumed'])
+    expect(transport.submits).toHaveLength(1)
+    await engine.dispose()
+  })
+
+  it('recognizes transport failures from another plugin bundle', async () => {
+    const transport = new FakeTransport([])
+    transport.submitFail = runInNewContext(`Object.assign(new Error('foreign UI failure'), { name: 'TransportError', failure: 'ui' })`)
+    expect(transport.submitFail).not.toBeInstanceOf(TransportError)
+    const { engine, store } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const failed = await store.load(topic.id)
+    expect(failed).toMatchObject({ status: 'stalled', stallReason: 'ui', stopReason: 'foreign UI failure' })
+    expect(failed.rounds[0]).toMatchObject({ submissionState: 'unknown', dispatch: { attemptId: expect.any(String) } })
+    await expect(engine.resume(topic.id)).rejects.toThrow(/无法重新附着/)
+    expect(transport.submits).toHaveLength(1)
+    await engine.dispose()
+  })
+
+  it('retries a proven pre-send failure in round two without reattaching round one', async () => {
+    class PreSendFailure extends FakeTransport {
+      failSecond = true
+      async submit(request: SubmitRequest) {
+        this.submitFail = this.failSecond && request.round === 2
+          ? new TransportError('previous response is busy', 'ui', { submissionState: 'not_sent' })
+          : undefined
+        return super.submit(request)
+      }
+      async reattach(): Promise<never> { throw new Error('must not attach an earlier round') }
+    }
+    const transport = new PreSendFailure(['first', 'second', 'retry answer'])
+    const { engine, store, config } = await harness({ doneAt: 2, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    const stopped = await store.load(topic.id)
+    expect(stopped.status).toBe('stalled')
+    expect(stopped.rounds).toHaveLength(2)
+    expect(stopped.rounds[1]).toMatchObject({ attempts: 1, submissionState: 'not_sent' })
+    expect(stopped.rounds[1]?.dispatch).toBeUndefined()
+    const events = await readFile(join(await store.dirOf(topic.id), 'events.ndjson'), 'utf8')
+    expect(events).toContain('submit_failed')
+    expect(events).toContain('attemptId')
+    await engine.dispose()
+    transport.failSecond = false
+    const restarted = new ResearchEngine({ store, transport, config, judge: judgeWith(2), pollIntervalMs: 10 })
+    await restarted.resume(topic.id)
+    await restarted.drain()
+    const recovered = await store.load(topic.id)
+    expect(recovered.status).toBe('completed')
+    expect(recovered.rounds).toHaveLength(2)
+    expect(recovered.rounds[1]?.attempts).toBe(2)
+    expect(recovered.rounds[1]?.submissionState).toBeUndefined()
+    expect(transport.submits.map(request => request.round)).toEqual([1, 2, 2])
+    await restarted.dispose()
+  })
+
+  it('keeps human verification available for legacy failed submissions', async () => {
+    const transport = new FakeTransport([])
+    transport.submitFail = new Error('legacy failure')
+    const { engine, store } = await harness({ doneAt: 1, transport })
+    const topic = await engine.start(card())
+    await engine.drain()
+    expect((await store.load(topic.id)).status).toBe('failed')
+    await expect(engine.humanCheck(topic.id, 'reopen', 'manually checked original conversation')).resolves.toMatchObject({ status: 'failed' })
+    await engine.dispose()
+  })
   it.each(['continue', 'regenerate', 'continue-restart', 'regenerate-restart'])('honors %s after failed judging without retrying the old verdict', async action => {
     const judged: number[] = []
     const judge: Judge = async input => {

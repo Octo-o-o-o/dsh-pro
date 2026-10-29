@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { Topic } from './types.ts'
 
 export interface ReportInfo {
-  path: 'report.md'
+  path: 'report.md' | 'design.md'
   revision: string
   updated: string
   status: 'current' | 'stale' | 'unknown'
@@ -14,17 +14,25 @@ export interface ReportInfo {
 
 /** Provenance is supplied by the report author, never inferred from file age. */
 export async function readReportInfo(dir: string, topic: Topic): Promise<ReportInfo | null> {
+  let path: ReportInfo['path'] = topic.type === 'design' ? 'design.md' : 'report.md'
   let text: string
   let updated: string
   try {
-    text = await readFile(join(dir, 'report.md'), 'utf8')
-    updated = (await stat(join(dir, 'report.md'))).mtime.toISOString()
+    try {
+      text = await readFile(join(dir, path), 'utf8')
+    } catch (error) {
+      if (path !== 'design.md' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      // Preserve reports written by older hosts using the shared report name.
+      path = 'report.md'
+      text = await readFile(join(dir, path), 'utf8')
+    }
+    updated = (await stat(join(dir, path))).mtime.toISOString()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
   }
   const info: ReportInfo = {
-    path: 'report.md', revision: createHash('sha256').update(text).digest('hex'), updated, status: 'unknown',
+    path, revision: createHash('sha256').update(text).digest('hex'), updated, status: 'unknown',
   }
   const header = /^\s*<!--\s*dsh-pro-report:\s*(\{[^\r\n]*\})\s*-->/.exec(text)
   if (header === null) return info
