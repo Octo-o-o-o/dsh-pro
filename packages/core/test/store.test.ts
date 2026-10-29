@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { unzipSync, zipSync } from 'fflate'
@@ -114,6 +114,20 @@ describe('project store', () => {
     const entries = unzipSync(new Uint8Array(bundle.bytes))
     expect(Object.keys(entries)).toContain('src/App.tsx')
     expect(Object.keys(entries)).toContain('pkg/index.html')
+  })
+
+  it('refuses escaped linked artifacts instead of including outside bytes in a round zip', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-pro-store-links-'))
+    cleanups.push(root)
+    const store = new ResearchStore({ mode: 'project', projectRoot: root, localRoot: root, rawDir: join(root, 'raw'), rawAnswers: 'local' })
+    const { topic, dir } = await store.create(card(), 1, 'pro', 'web')
+    const outside = join(root, 'outside-topic')
+    await mkdir(outside)
+    await writeFile(join(outside, 'private.txt'), 'outside-only-marker', 'utf8')
+    await mkdir(join(dir, 'artifacts', 'round-01'), { recursive: true })
+    await symlink(outside, join(dir, 'artifacts', 'round-01', 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    topic.artifacts.push('artifacts/round-01/linked/private.txt')
+    await expect(store.bundleRound(topic, 1)).rejects.toThrow(/escapes/)
   })
 
   it('keeps the parent link for follow-up topics', async () => {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -72,7 +72,7 @@ function fakeContext(captured: Captured, options: { connection?: boolean } = {})
     inject: (services: string[], callback: (scopedContext: unknown) => void) => {
       if (services.includes('webServer') || services.includes('skills')) callback(scoped)
     },
-    dispose: () => { for (const dispose of disposers.splice(0)) dispose() },
+    dispose: async () => { for (const dispose of disposers.splice(0).reverse()) await dispose() },
   }
   return ctx
 }
@@ -101,7 +101,7 @@ describe('plugin wiring', () => {
         expect(await tool.execute({ action: 'read_round', topic_id: topic.id, round: 1 }, exec)).toMatchObject({ answer: 'the evidence' })
         expect(await tool.execute({ ...args, confirmed: true }, exec)).toMatchObject({ topic_id: topic.id, report: { path: 'report.md', status: 'current' } })
         expect(await tool.execute({ action: 'read_report', topic_id: topic.id }, exec)).toMatchObject({ report: { status: 'current' }, markdown: expect.stringContaining('# Based on the evidence') })
-      } finally { ctx.dispose() }
+      } finally { await ctx.dispose() }
     })
   })
 
@@ -136,7 +136,7 @@ describe('plugin wiring', () => {
           expect(status.last_round).toMatchObject({ n: 1, submissionState: 'not_sent' })
           expect(status.last_round).not.toHaveProperty('submissionId')
           if (mode === 'local') await expect(readFile(join(cwd, 'docs', 'research', 'index.json'))).rejects.toThrow()
-        } finally { ctx.dispose() }
+        } finally { await ctx.dispose() }
       })
     } finally { submit.mockRestore() }
   })
@@ -148,7 +148,7 @@ describe('plugin wiring', () => {
     try {
       const tool = captured.tools[0] as { execute: (args: unknown, exec: unknown) => Promise<unknown> }
       await expect(tool.execute({ action: 'start', confirmed: true, store: 'elsewhere' }, {})).rejects.toThrow(/store.*project.*local/)
-    } finally { ctx.dispose() }
+    } finally { await ctx.dispose() }
   })
 
   it('registers one tool, nine routes and one skill', async () => {
@@ -189,7 +189,7 @@ describe('plugin wiring', () => {
     await Promise.resolve()
     expect(captured.tools).toHaveLength(1)
     expect(captured.skills.map(skill => skill.name)).toEqual(['pro-research'])
-    ctx.dispose()
+    await ctx.dispose()
     expect(captured.toolUnregistered).toBe(1)
     expect(captured.skillUnregistered).toBe(1)
   })
@@ -461,6 +461,61 @@ async function withEnv<T>(home: string, run: () => Promise<T>): Promise<T> {
 }
 
 describe('route hardening', () => {
+  it('refuses topic file and artifact directory links that escape the topic', async () => {
+    const seed = await seedTopic('completed')
+    const outside = join(seed.home, 'outside-topic')
+    await mkdir(outside)
+    await writeFile(join(outside, 'private.txt'), 'outside-only-marker', 'utf8')
+    await mkdir(join(seed.dir, 'artifacts', 'round-01'), { recursive: true })
+    const kind = process.platform === 'win32' ? 'junction' : 'dir'
+    await symlink(outside, join(seed.dir, 'rounds', 'linked'), kind)
+    await symlink(outside, join(seed.dir, 'artifacts', 'round-01', 'linked'), kind)
+    await withEnv(seed.home, async () => {
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      const ctx = fakeContext(captured)
+      apply(ctx as never, { store: 'local' })
+      try {
+        for (const [routeName, path] of [
+          ['file', 'rounds/linked/private.txt'],
+          ['asset', 'artifacts/round-01/linked/private.txt'],
+        ]) {
+          const route = captured.routes.find(item => item.path === `/chatgpt-pro-research/${routeName}`) as Route
+          const response = await call(route, { url: `${route.path}?id=${seed.topicId}&path=${encodeURIComponent(path!)}`, method: 'GET', headers: {} })
+          expect(response.status).toBe(404)
+          expect(response.body).not.toContain('outside-only-marker')
+        }
+        const raw = captured.routes.find(item => item.path === '/chatgpt-pro-research/raw') as Route
+        const response = await call(raw, { url: `${raw.path}/${seed.topicId}/artifacts/round-01/linked/private.txt`, method: 'GET', headers: {} })
+        expect(response.status).toBe(404)
+        expect(response.body).not.toContain('outside-only-marker')
+      } finally {
+        await ctx.dispose()
+      }
+    })
+  })
+
+  it('returns 413 for oversized preview and artifact files without reading their entire bodies', async () => {
+    const seed = await seedTopic('completed')
+    await writeFile(join(seed.dir, 'rounds', 'large.txt'), 'header')
+    await truncate(join(seed.dir, 'rounds', 'large.txt'), 2_000_001)
+    await mkdir(join(seed.dir, 'artifacts', 'round-01'), { recursive: true })
+    await writeFile(join(seed.dir, 'artifacts', 'round-01', 'large.png'), 'header')
+    await truncate(join(seed.dir, 'artifacts', 'round-01', 'large.png'), 100 * 1024 * 1024 + 1)
+    await withEnv(seed.home, async () => {
+      const captured: Captured = { tools: [], routes: [], skills: [] }
+      const ctx = fakeContext(captured)
+      apply(ctx as never, { store: 'local' })
+      try {
+        for (const [name, path] of [['file', 'rounds/large.txt'], ['asset', 'artifacts/round-01/large.png']]) {
+          const route = captured.routes.find(item => item.path === `/chatgpt-pro-research/${name}`) as Route
+          const response = await call(route, { url: `${route.path}?id=${seed.topicId}&path=${encodeURIComponent(path!)}`, method: 'GET', headers: {} })
+          expect(response.status).toBe(413)
+          expect(response.body).not.toContain('header')
+        }
+      } finally { await ctx.dispose() }
+    })
+  })
+
   it('decodes a multibyte note split across body chunks', async () => {
     const seed = await seedTopic('stalled')
     await withEnv(seed.home, async () => {

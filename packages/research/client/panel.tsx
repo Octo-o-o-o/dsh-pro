@@ -732,7 +732,7 @@ function ResearchOverview({ detail, onTab }: { detail: TopicDetail; onTab: (tab:
     const abort = new AbortController()
     setDocument({ source })
     void fetchText(`${config.routes}/file?id=${encodeURIComponent(detail.topic_id)}&path=${encodeURIComponent(path)}`, abort.signal)
-      .then(text => { if (!abort.signal.aborted) setDocument({ source, text: text.replace(/^\s*<!--\s*dsh-pro-report:[\s\S]*?-->\s*/, '') }) })
+      .then(text => { if (!abort.signal.aborted) setDocument({ source, text: text.replace(/^\s*<!--\s*dsh-pro-(?:report|final):[^\r\n]*?-->\s*/, '') }) })
       .catch((error: unknown) => {
         if (!abort.signal.aborted) setDocument({ source, error: error instanceof Error ? error.message : String(error) })
       })

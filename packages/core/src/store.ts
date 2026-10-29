@@ -1,11 +1,12 @@
-import { appendFile, copyFile, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Unzip, UnzipInflate, UnzipPassThrough, zipSync } from 'fflate'
 import type { FetchedAnswer, HumanCheck, MaterialRef, Receipt, ResearchCard, SessionLocator, StoreMode, Topic } from './types.ts'
 import { newTopicId, shortHash, slugifyTitle } from './slug.ts'
 import { STATUSES } from './state.ts'
 import { assertReportFiles, readReportInfo, writeReport, type ReportDraft } from './report.ts'
+import { FileSizeLimitError, readContainedFile, resolveContainedPath, resolveWritablePath } from './files.ts'
 
 export interface StoreOptions {
   mode: StoreMode
@@ -69,7 +70,7 @@ function assertTopicShape(value: unknown, id: string): asserts value is Topic {
   }
   if (topic === null || typeof topic !== 'object') fail('topic')
   if (topic.schema !== 1) fail('schema')
-  if (typeof topic.id !== 'string' || topic.id === '') fail('id')
+  if (typeof topic.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(topic.id)) fail('id')
   if (typeof topic.title !== 'string') fail('title')
   if (topic.type !== 'research' && topic.type !== 'design') fail('type')
   if (!STATUSES.includes(topic.status)) fail('status')
@@ -241,6 +242,7 @@ export class ResearchStore {
   }
 
   rawTopicDir(topicId: string): string {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(topicId)) throw new Error('invalid topic id')
     return join(this.options.rawDir, topicId)
   }
 
@@ -249,16 +251,38 @@ export class ResearchStore {
     return `${base}-${shortHash(projectRoot)}`
   }
 
-  private async atomic(path: string, text: string): Promise<void> {
-    await mkdir(dirname(path), { recursive: true })
-    const temp = `${path}.tmp-${process.pid}-${Date.now()}`
-    await writeFile(temp, text, 'utf8')
-    await replaceFile(temp, path)
+  private async writablePath(path: string): Promise<string> {
+    const absolute = resolve(path)
+    const inside = (root: string): boolean => {
+      const rel = relative(resolve(root), absolute)
+      return rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`)
+    }
+    // Prefer the topic boundary over its containing store. A link into a
+    // different topic is not authorization to overwrite that topic's files.
+    for (const [id, dir] of this.dirs) {
+      if (inside(dir)) return await resolveWritablePath(await this.dirOf(id), relative(dir, absolute))
+    }
+    for (const root of [this.options.rawDir, join(this.options.localRoot, 'sessions'), this.rootDir()]) {
+      if (inside(root)) return await resolveWritablePath(root, relative(resolve(root), absolute))
+    }
+    throw new Error('file path escapes its writable store')
+  }
+
+  private async atomic(path: string, content: string | Uint8Array): Promise<void> {
+    const target = await this.writablePath(path)
+    const temp = `${target}.tmp-${randomUUID()}`
+    let created = false
+    try {
+      await writeFile(temp, content, { flag: 'wx' })
+      created = true
+      await replaceFile(temp, target)
+    } finally {
+      if (created) await rm(temp, { force: true }).catch(() => undefined)
+    }
   }
 
   private async appendJsonLine(path: string, value: unknown): Promise<void> {
-    await mkdir(dirname(path), { recursive: true })
-    await appendFile(path, `${JSON.stringify(value)}\n`, 'utf8')
+    await appendFile(await this.writablePath(path), `${JSON.stringify(value)}\n`, 'utf8')
   }
 
   /** Append one auditable event; callers may treat this as best-effort. */
@@ -355,22 +379,14 @@ export class ResearchStore {
       if (isAbsolute(safePath) || safePath.split('/').includes('..')) {
         throw new Error(`material path escapes the topic: ${ref.path}`)
       }
-      const target = join(dir, 'materials', safePath)
-      let parent = materialsDir
-      for (const part of safePath.split('/').slice(0, -1)) {
-        parent = join(parent, part)
-        await mkdir(parent, { recursive: true })
-        if (!(await realpath(parent)).startsWith(`${root}${sep}`)) throw new Error('material directory escapes the topic')
-      }
-      const existingTarget = await realpath(target).catch(error => { if (isMissing(error)) return undefined; throw error })
-      if (existingTarget !== undefined && !existingTarget.startsWith(`${root}${sep}`)) throw new Error('material file escapes the topic')
-      await copyFile(ref.source, target)
-      const copied = await readFile(target)
+      await resolveWritablePath(materialsDir, safePath)
+      const copied = await readContainedFile(dirname(ref.source), basename(ref.source), ref.bytes).catch(error => {
+        if (error instanceof FileSizeLimitError) throw new Error(`material changed while staging: ${ref.path}`)
+        throw error
+      })
       const digest = createHash('sha256').update(copied).digest('hex')
-      if (copied.byteLength !== ref.bytes || digest !== ref.sha256) {
-        await rm(target, { force: true })
-        throw new Error(`material changed while staging: ${ref.path}`)
-      }
+      if (copied.byteLength !== ref.bytes || digest !== ref.sha256) throw new Error(`material changed while staging: ${ref.path}`)
+      await this.atomic(join(materialsDir, safePath), copied)
       staged.push({ ...ref, path: safePath, source: ref.path })
     }
     return staged
@@ -395,7 +411,7 @@ export class ResearchStore {
       if (!entry.isDirectory()) continue
       const dir = join(root, entry.name)
       try {
-        const parsed = JSON.parse(await readFile(join(dir, 'topic.json'), 'utf8')) as unknown
+        const parsed = JSON.parse((await readContainedFile(dir, 'topic.json', 1024 * 1024)).toString('utf8')) as unknown
         assertTopicShape(parsed, entry.name)
         this.dirs.set(parsed.id, dir)
         topics.push(parsed)
@@ -408,19 +424,25 @@ export class ResearchStore {
 
   async load(id: string): Promise<Topic> {
     const dir = await this.dirOf(id)
-    const parsed = JSON.parse(await readFile(join(dir, 'topic.json'), 'utf8')) as unknown
+    const parsed = JSON.parse((await readContainedFile(dir, 'topic.json', 1024 * 1024)).toString('utf8')) as unknown
     assertTopicShape(parsed, id)
     return parsed
   }
 
   async dirOf(id: string): Promise<string> {
-    const known = this.dirs.get(id)
-    if (known !== undefined) return known
-    const topics = await this.list()
-    const found = topics.find(topic => topic.id === id)
-    if (found === undefined) throw new Error(`unknown topic: ${id}`)
-    const dir = this.dirs.get(id)
+    let dir = this.dirs.get(id)
+    if (dir === undefined) {
+      const found = (await this.list()).find(topic => topic.id === id)
+      if (found === undefined) throw new Error(`unknown topic: ${id}`)
+      dir = this.dirs.get(id)
+    }
     if (dir === undefined) throw new Error(`topic directory missing: ${id}`)
+    const [root, canonical] = await Promise.all([realpath(this.rootDir()), realpath(dir)])
+    // A cached topic may have been replaced by a junction since discovery.
+    // Require the same direct child, not just any path below the store.
+    if (dirname(canonical) !== root || relative(this.rootDir(), dir) !== relative(root, canonical)) {
+      throw new Error('topic directory escapes its store')
+    }
     return dir
   }
 
@@ -438,7 +460,7 @@ export class ResearchStore {
   async readReport(id: string, cwd: string) {
     const dir = await this.reportDir(id, cwd)
     const report = await readReportInfo(dir, await this.load(id))
-    return { report, markdown: report === null ? null : await readFile(join(dir, report.path), 'utf8') }
+    return { report, markdown: report === null ? null : (await readContainedFile(dir, report.path, 1024 * 1024)).toString('utf8') }
   }
 
   async writeReport(id: string, cwd: string, draft: ReportDraft) {
@@ -458,7 +480,7 @@ export class ResearchStore {
       round: record,
       question: await this.readQuestion(topic, round),
       answer: await this.readAnswer(topic, round),
-      verdict: await readFile(join(dir, 'rounds', `${pad(round)}-verdict.md`), 'utf8').catch(error => { if (isMissing(error)) return null; throw error }),
+      verdict: await readContainedFile(dir, `rounds/${pad(round)}-verdict.md`, 1024 * 1024).then(bytes => bytes.toString('utf8')).catch(error => { if (isMissing(error)) return null; throw error }),
     }
   }
 
@@ -470,7 +492,7 @@ export class ResearchStore {
   async readQuestion(topic: Topic, round: number): Promise<string | undefined> {
     try {
       const dir = await this.dirOf(topic.id)
-      return await readFile(join(dir, 'rounds', `${pad(round)}-question.md`), 'utf8')
+      return (await readContainedFile(dir, `rounds/${pad(round)}-question.md`, 2_000_000)).toString('utf8')
     } catch (error) {
       if (isMissing(error)) return undefined
       throw new Error(`cannot read question for round ${round}: ${error instanceof Error ? error.message : String(error)}`)
@@ -478,29 +500,30 @@ export class ResearchStore {
   }
 
   /** Resolve one manifest path and refuse anything outside the staged tree. */
-  private stagedMaterialPath(materialsRoot: string, path: string): string {
-    const resolved = isAbsolute(path) ? resolve(path) : resolve(materialsRoot, path)
-    const rel = relative(materialsRoot, resolved)
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+  private async stagedMaterialPath(materialsRoot: string, path: string): Promise<string> {
+    const rel = isAbsolute(path) ? relative(materialsRoot, resolve(path)) : path
+    if (rel === '' || rel.replace(/\\/g, '/').split('/').includes('..') || isAbsolute(rel)) {
       throw new Error(`material manifest path escapes the topic: ${path}`)
     }
-    return resolved
+    return await resolveContainedPath(materialsRoot, rel)
   }
 
   async readMaterialPaths(topic: Topic): Promise<string[]> {
     let raw: string
+    let manifestRead = false
     try {
       const dir = await this.dirOf(topic.id)
-      raw = await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')
+      raw = (await readContainedFile(dir, 'materials/manifest.json', 1024 * 1024)).toString('utf8')
+      manifestRead = true
       const parsed = JSON.parse(raw) as { materials?: Array<{ path?: unknown }> }
       if (!Array.isArray(parsed.materials)) throw new Error('manifest materials is not an array')
-      const materialsRoot = join(dir, 'materials')
-      return parsed.materials
+      const materialsRoot = await resolveContainedPath(dir, 'materials')
+      return await Promise.all(parsed.materials
         .map(item => item.path)
         .filter((path): path is string => typeof path === 'string' && path !== '')
-        .map(path => this.stagedMaterialPath(materialsRoot, path))
+        .map(path => this.stagedMaterialPath(materialsRoot, path)))
     } catch (error) {
-      if (isMissing(error)) return []
+      if (!manifestRead && isMissing(error)) return []
       throw new Error(`cannot read material manifest: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -535,19 +558,20 @@ export class ResearchStore {
   }
 
   async readRoundMaterials(topic: Topic, round: number): Promise<MaterialRef[] | undefined> {
+    let manifestRead = false
     try {
       const dir = await this.dirOf(topic.id)
-      const parsed = JSON.parse(await readFile(join(dir, 'rounds', `${pad(round)}-materials.json`), 'utf8')) as {
-        materials?: MaterialRef[]
-      }
+      const raw = await readContainedFile(dir, `rounds/${pad(round)}-materials.json`, 1024 * 1024)
+      manifestRead = true
+      const parsed = JSON.parse(raw.toString('utf8')) as { materials?: MaterialRef[] }
       if (!Array.isArray(parsed.materials)) throw new Error('round materials is not an array')
-      const materialsRoot = join(dir, 'materials')
-      return parsed.materials.map(item => ({
+      const materialsRoot = await resolveContainedPath(dir, 'materials')
+      return await Promise.all(parsed.materials.map(async item => ({
         ...item,
-        path: this.stagedMaterialPath(materialsRoot, item.path),
-      }))
+        path: await this.stagedMaterialPath(materialsRoot, item.path),
+      })))
     } catch (error) {
-      if (isMissing(error)) return undefined
+      if (!manifestRead && isMissing(error)) return undefined
       throw new Error(`cannot read round ${round} materials: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -592,8 +616,7 @@ export class ResearchStore {
     for (const [index, image] of images.entries()) {
       const name = artifactFileName(image.name ?? `image-${pad(index + 1)}.png`)
       const target = join(base, name)
-      await mkdir(dirname(target), { recursive: true })
-      await writeFile(target, Buffer.from(image.base64, 'base64'))
+      await this.atomic(target, Buffer.from(image.base64, 'base64'))
       added.push(relative(dir, target).replace(/\\/g, '/'))
     }
     const used = new Set<string>()
@@ -612,8 +635,7 @@ export class ResearchStore {
       }
       used.add(name.toLowerCase())
       const target = join(base, name)
-      await mkdir(dirname(target), { recursive: true })
-      await writeFile(target, block.text, 'utf8')
+      await this.atomic(target, block.text)
       added.push(relative(dir, target).replace(/\\/g, '/'))
     }
     for (const [index, archive] of archives.entries()) {
@@ -622,33 +644,35 @@ export class ResearchStore {
       const archiveName = artifactFileName(archive.name === '' ? `archive-${pad(index + 1)}.zip` : archive.name)
       const zipName = archiveName.toLowerCase().endsWith('.zip') ? archiveName : `${archiveName}.zip`
       const target = join(base, zipName)
-      await mkdir(dirname(target), { recursive: true })
-      await writeFile(target, bytes)
+      await this.atomic(target, bytes)
       added.push(relative(dir, target).replace(/\\/g, '/'))
+      let entries: ReturnType<typeof inflateArchive>
       try {
-        const entries = inflateArchive(new Uint8Array(bytes))
-        if (entries === undefined) throw new Error('not a readable zip')
-        const rootName = zipName.replace(/\.zip$/i, '')
-        const valid = entries.filter(([entry, data]) => {
-          const normalized = entry.replace(/\\/g, '/')
-          return !normalized.endsWith('/')
-            && !normalized.startsWith('/')
-            && !isAbsolute(normalized)
-            && !normalized.split('/').includes('..')
-            && !normalized.startsWith('__MACOSX/')
-            && data.length > 0
-        })
-        const topLevel = new Set(valid.map(([entry]) => entry.replace(/\\/g, '/').split('/')[0]))
-        const useRoot = topLevel.size > 1 || valid.some(([entry]) => !entry.replace(/\\/g, '/').includes('/'))
-        for (const [entry, data] of valid) {
-          const normalized = entry.replace(/\\/g, '/')
-          const nested = join(base, useRoot ? rootName : '', normalized)
-          await mkdir(dirname(nested), { recursive: true })
-          await writeFile(nested, data)
-          added.push(relative(dir, nested).replace(/\\/g, '/'))
-        }
+        entries = inflateArchive(new Uint8Array(bytes))
       } catch {
         // Invalid/encrypted zip: keep the original archive for manual handling.
+        continue
+      }
+      if (entries === undefined) continue
+      const rootName = zipName.replace(/\.zip$/i, '')
+      const valid = entries.filter(([entry, data]) => {
+        const normalized = entry.replace(/\\/g, '/')
+        return !normalized.endsWith('/')
+          && !normalized.startsWith('/')
+          && !isAbsolute(normalized)
+          && !normalized.split('/').includes('..')
+          && !normalized.startsWith('__MACOSX/')
+          && data.length > 0
+      })
+      const topLevel = new Set(valid.map(([entry]) => entry.replace(/\\/g, '/').split('/')[0]))
+      const useRoot = topLevel.size > 1 || valid.some(([entry]) => !entry.replace(/\\/g, '/').includes('/'))
+      for (const [entry, data] of valid) {
+        const normalized = entry.replace(/\\/g, '/')
+        const nested = join(base, useRoot ? rootName : '', normalized)
+        // A filesystem boundary/permission failure is not a bad ZIP. Surface it
+        // instead of silently claiming the round's extracted files were saved.
+        await this.atomic(nested, data)
+        added.push(relative(dir, nested).replace(/\\/g, '/'))
       }
     }
     for (const artifact of added) {
@@ -660,25 +684,23 @@ export class ResearchStore {
   /** Build a downloadable zip for one round without touching the topic files. */
   async bundleRound(topic: Topic, round: number): Promise<{ name: string; bytes: Buffer }> {
     const dir = await this.dirOf(topic.id)
-    const base = resolve(dir, 'artifacts', `round-${pad(round)}`)
     const prefix = `artifacts/round-${pad(round)}/`
-    const files: Record<string, Uint8Array> = {}
+    const base = await resolveContainedPath(dir, prefix)
+    const files: Record<string, Uint8Array> = Object.create(null) as Record<string, Uint8Array>
+    const limit = 100 * 1024 * 1024
     let total = 0
     for (const path of topic.artifacts) {
       if (!path.startsWith(prefix)) continue
-      const target = resolve(dir, path)
-      if (target !== base && !target.startsWith(`${base}${sep}`)) continue
       let bytes: Buffer
       try {
-        bytes = await readFile(target)
-      } catch {
-        // Skip one unreadable file; the rest of the bundle is still useful.
-        continue
+        bytes = await readContainedFile(base, path.slice(prefix.length), limit - total)
+      } catch (error) {
+        if (isMissing(error)) continue
+        if (error instanceof FileSizeLimitError) throw new Error('round artifacts exceed 100 MB')
+        // Never silently export an incomplete bundle after a boundary failure.
+        throw error
       }
       total += bytes.length
-      // Deliberately outside the per-file catch: an over-limit bundle must
-      // fail loudly instead of silently shipping a truncated zip.
-      if (total > 100 * 1024 * 1024) throw new Error('round artifacts exceed 100 MB')
       files[path.slice(prefix.length)] = bytes
     }
     if (Object.keys(files).length === 0) throw new Error(`round ${round} has no artifacts to bundle`)
@@ -700,17 +722,16 @@ export class ResearchStore {
   }
 
   async readAnswer(topic: Topic, round: number): Promise<string | undefined> {
-    const candidates = [
-      join(this.rawTopicDir(topic.id), `${pad(round)}-answer.md`),
-    ]
+    this.rawTopicDir(topic.id) // Validate the id before deriving either candidate.
+    const candidates = [{ root: this.options.rawDir, path: `${topic.id}/${pad(round)}-answer.md` }]
     if (this.options.rawAnswers === 'repo' && this.options.mode === 'project') {
-      candidates.push(join(await this.dirOf(topic.id), 'rounds', `${pad(round)}-answer.md`))
+      candidates.push({ root: await this.dirOf(topic.id), path: `rounds/${pad(round)}-answer.md` })
     }
-    for (const path of candidates) {
+    for (const candidate of candidates) {
       try {
-        return await readFile(path, 'utf8')
-      } catch {
-        // try the next location
+        return (await readContainedFile(candidate.root, candidate.path, 16 * 1024 * 1024)).toString('utf8')
+      } catch (error) {
+        if (!isMissing(error)) throw error
       }
     }
     return undefined
@@ -747,7 +768,9 @@ export class ResearchStore {
     if (topic.generations === undefined) {
       topic.generations = [{ n: 1, createdAt: topic.created, reason: '初始任务' }]
     }
-    const generation = topic.rounds[topic.rounds.length - 1]?.generation ?? topic.generations.at(-1)?.n ?? 1
+    // The current generation may fail before its first RoundRecord exists.
+    // Its accepted final must not overwrite the preceding generation's archive.
+    const generation = topic.generations.at(-1)?.n ?? topic.rounds.at(-1)?.generation ?? 1
     const relative = `finals/attempt-${pad(generation)}.md`
     await this.atomic(join(dir, relative), text)
     const record = topic.generations.find(item => item.n === generation)
@@ -756,9 +779,10 @@ export class ResearchStore {
 
   async readFinal(topic: Topic): Promise<string | undefined> {
     try {
-      return await readFile(join(await this.dirOf(topic.id), 'final.md'), 'utf8')
-    } catch {
-      return undefined
+      return (await readContainedFile(await this.dirOf(topic.id), 'final.md', 2_000_000)).toString('utf8')
+    } catch (error) {
+      if (isMissing(error)) return undefined
+      throw error
     }
   }
 

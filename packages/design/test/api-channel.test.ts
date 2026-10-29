@@ -23,7 +23,7 @@ beforeEach(() => {
 afterEach(async () => {
   // A terminal topic.json can be visible before the final event append finishes.
   // Stop and drain actual runners before removing their storage directories.
-  for (const dispose of disposers.splice(0)) dispose()
+  for (const dispose of disposers.splice(0).reverse()) await dispose()
   for (const engine of engines) engine.dispose()
   await Promise.all([...engines].map(engine => engine.drain()))
   engines.clear()

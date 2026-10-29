@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { MaterialRef } from './types.ts'
 
@@ -73,7 +73,9 @@ export async function buildManifest(
   secretGlobs: readonly string[] = [],
 ): Promise<MaterialRef[]> {
   const refs: MaterialRef[] = []
+  if (relativePaths.length === 0) return refs
   const normalizedRoot = resolve(root)
+  const realRoot = await realpath(normalizedRoot)
   for (const relativePath of relativePaths) {
     if (isAbsolute(relativePath)) throw new Error(`material path must be relative: ${relativePath}`)
     const normalized = relativePath.replace(/\\/g, '/')
@@ -85,14 +87,27 @@ export async function buildManifest(
     if (isSecretPath(normalized, secretGlobs)) {
       throw new Error(`material path matches a secret pattern: ${relativePath}`)
     }
-    const info = await stat(absolute)
+    // Lexical containment alone lets an innocuous alias name a file outside
+    // the workspace (or one under a denied directory such as `secrets/`).
+    const source = await realpath(absolute)
+    const realRelative = relative(realRoot, source)
+    if (realRelative === '..' || realRelative.startsWith(`..${sep}`) || isAbsolute(realRelative)) {
+      throw new Error(`material path escapes the workspace: ${relativePath}`)
+    }
+    if (isSecretPath(realRelative, secretGlobs)) {
+      throw new Error(`material path matches a secret pattern: ${relativePath}`)
+    }
+    const info = await stat(source)
     if (!info.isFile()) throw new Error(`material is not a file: ${relativePath}`)
-    const bytes = await readFile(absolute)
+    const bytes = await readFile(source)
     const text = bytes.toString('utf8')
     const secret = findSecret(text)
     if (secret !== undefined) throw new Error(`material contains a ${secret}: ${relativePath}`)
     refs.push({
       path: relative(normalizedRoot, absolute).replace(/\\/g, '/'),
+      // Keep the display/manifest name, but stage the verified canonical file,
+      // never a link which can be retargeted after the security checks above.
+      source,
       bytes: info.size,
       sha256: createHash('sha256').update(bytes).digest('hex'),
       ...(reasons?.[relativePath] !== undefined ? { reason: reasons[relativePath] } : {}),

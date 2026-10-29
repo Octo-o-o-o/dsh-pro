@@ -107,14 +107,17 @@ export class ResearchEngine {
   }
 
   async cancel(id: string): Promise<Topic> {
-    const topic = await this.options.store.load(id)
-    if (topic.status === 'completed' || topic.status === 'cancelled') return topic
+    // Claim cancellation before the first await: a terminal save can finish
+    // while load() is pending, but the still-owned runner must not win that race.
+    // A queued topic must not become a new un-aborted runner during that read.
+    this.queue = this.queue.filter(queued => queued !== id)
     const run = this.runs.get(id)
+    run?.controller.abort()
+    const topic = await this.options.store.load(id)
     if (run !== undefined) {
       // A submit that has already clicked send cannot be unsent. Let the run
       // record the submission, then cancel it, rather than returning an old
       // "uploading" snapshot while the message and its billing continue.
-      run.controller.abort()
       const last = latestSubmission(topic)
       if (last?.submissionId !== undefined) await this.cancelSubmission(last.submissionId)
       // Waiting is what makes the returned status honest, but a submit can sit
@@ -130,6 +133,7 @@ export class ResearchEngine {
       ])
       return await this.options.store.load(id).catch(() => topic)
     }
+    if (topic.status === 'completed' || topic.status === 'cancelled') return topic
     delete topic.reviewFrom
     delete topic.reviewStopReason
     delete topic.reviewStallReason
@@ -175,7 +179,14 @@ export class ResearchEngine {
       this.enqueue(id)
       return topic
     }
-    if (last?.answeredAt !== undefined && last.judgeSkippedAt !== undefined) {
+    if (last?.answeredAt !== undefined && (last.verdict !== undefined || last.judgeSkippedAt !== undefined)) {
+      // The interrupted work is the next round, not this already answered one.
+      // Reattaching it would leave runTopic in waiting -> uploading when it
+      // creates that next round. Preserve its brief/budget and resume locally.
+      if (topic.status === 'answered') await this.transition(topic, 'adjudicating')
+      delete topic.reviewFrom
+      delete topic.reviewStopReason
+      delete topic.reviewStallReason
       await this.transition(topic, 'queued')
       this.enqueue(id)
       return topic
@@ -313,9 +324,11 @@ export class ResearchEngine {
     delete topic.nextDesigns
     delete topic.nextBaseArtifact
     const existing = await this.options.store.readFinal(topic)
-    const text = existing === undefined
-      ? this.finalDocument(topic, undefined, '人工接受结果', 'completed')
-      : `${existing.replace(/^- 状态：.*$/m, '- 状态：completed').trimEnd()}\n- 人工接受：${new Date().toISOString()}\n`
+    // A failed judge does not write a new final. A previous generation/round's
+    // final may still exist, but its summary must never become this result.
+    const text = existing !== undefined && this.matchesFinalCoverage(topic, existing)
+      ? `${existing.replace(/^- 状态：.*$/m, '- 状态：completed').trimEnd()}\n- 人工接受：${new Date().toISOString()}\n`
+      : this.finalDocument(topic, undefined, '人工接受结果', 'completed')
     const accepted = text.includes('（未生成摘要；见各轮裁决与原始答复）')
       ? `${text}- 人工接受说明：未生成自动摘要，结论见原始答复。\n`
       : text
@@ -464,11 +477,11 @@ export class ResearchEngine {
     if (retryCurrent) {
       // The previous attempt never produced an answer: replace it with the
       // user's feedback instead of appending a round that runTopic would skip.
-      const current = topic.generations?.find(item => item.n === (last.generation ?? 1))
-      const budget = current?.rounds ?? this.generationBudget(topic)
-      topic.roundsCap = Math.max(topic.roundsCap, last.n + budget - 1)
-      // A retry replaces the failed attempt within the same generation budget.
-      topic.runThrough = last.n + budget - 1
+      // This replaces a failed attempt inside its existing authorization. The
+      // stored ceiling already accounts for consumed generation rounds and for
+      // an explicit one-round continue; restarting a full budget at last.n
+      // would silently authorize extra external submissions.
+      topic.runThrough = topic.runThrough ?? topic.roundsCap
       if (last.submissionId !== undefined) {
         // The old attempt may still be generating (a timeout is not proof it
         // stopped); cancel it before the new submit so both are not billed.
@@ -664,7 +677,7 @@ export class ResearchEngine {
         // An answered round whose verdict is missing is adjudicated first.
         const last = topic.rounds[topic.rounds.length - 1]
         if (last !== undefined && last.answeredAt !== undefined && last.verdict === undefined && last.judgeSkippedAt === undefined) {
-          await this.adjudicate(topic, last)
+          await this.adjudicate(topic, last, signal)
           if (signal.aborted) throw new DOMException('aborted', 'AbortError')
           topic = await this.options.store.load(id)
           if (topic.status === 'completed' || topic.status === 'capped' || topic.status === 'reviewing') return
@@ -675,7 +688,7 @@ export class ResearchEngine {
         const n = pending !== undefined ? pending.n : topic.rounds.length + 1
         const effectiveCap = topic.runThrough ?? topic.roundsCap
         if (pending === undefined && n > effectiveCap) {
-          await this.finishCapped(topic, '达到轮次上限')
+          await this.finishCapped(topic, '达到轮次上限', signal)
           return
         }
 
@@ -895,34 +908,46 @@ export class ResearchEngine {
     throw new TransportError(`no completed answer before maxRoundMinutes${diagnostic}`, 'timeout')
   }
 
-  private async adjudicate(topic: Topic, round: RoundRecord): Promise<void> {
+  private async adjudicate(topic: Topic, round: RoundRecord, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
     const answer = await this.options.store.readAnswer(topic, round.n)
+    signal.throwIfAborted()
     if (answer === undefined) {
       throw new TransportError('answer file is missing for adjudication', 'ui')
     }
-    await this.transition(topic, 'adjudicating')
+    await this.transition(topic, 'adjudicating', undefined, signal)
+    signal.throwIfAborted()
     const question = (await this.options.store.readQuestion(topic, round.n)) ?? ''
-    const input = { topic, round: round.n, answer, criteria: topic.successCriteria, question }
+    signal.throwIfAborted()
+    const input = { topic, round: round.n, answer, criteria: topic.successCriteria, question, signal }
     let result: JudgeResult
     try {
       result = await this.options.judge(input)
+      signal.throwIfAborted()
       assertCompletion(input.criteria, result)
     } catch (first) {
+      // Cancellation wins over either a late result or an error. In particular
+      // an aborted provider must not trigger a retry or a review handoff.
+      signal.throwIfAborted()
       // A malformed/transient judge response must not destroy a completed
       // answer. Retry once, then hand the topic to host/human review with the
       // answer and verdict placeholder intact.
       try {
         result = await this.options.judge(input)
+        signal.throwIfAborted()
         assertCompletion(input.criteria, result)
       } catch (second) {
-        await this.parkJudgeFailure(topic, round, second ?? first)
+        signal.throwIfAborted()
+        await this.parkJudgeFailure(topic, round, second ?? first, signal)
         return
       }
     }
+    signal.throwIfAborted()
     delete round.judgeError
     const visualReview = topic.type === 'design' && result.done
     if (visualReview) result = { ...result, done: false, reason: `${result.reason}；文本判据通过，图片视觉效果待人工确认` }
     await this.options.store.writeVerdict(topic, round.n, this.verdictDocument(round, result))
+    signal.throwIfAborted()
     round.verdict = result.verdict
     round.done = result.done
     await this.options.store.appendEvent(topic, {
@@ -931,27 +956,34 @@ export class ResearchEngine {
       verdict: result.verdict,
       done: result.done,
     }).catch(() => undefined)
+    signal.throwIfAborted()
     this.emit({ type: 'round', topicId: topic.id, round: round.n, verdict: result.verdict })
     if (result.done) {
       delete topic.runThrough
       delete topic.nextDesigns
+      signal.throwIfAborted()
       await this.options.store.writeFinal(topic, this.finalDocument(topic, result.summary, result.reason, 'completed'))
-      await this.transition(topic, 'completed', { stopReason: result.reason })
+      signal.throwIfAborted()
+      await this.transition(topic, 'completed', { stopReason: result.reason }, signal)
+      signal.throwIfAborted()
       this.emit({ type: 'finished', topicId: topic.id, status: 'completed' })
       return
     }
     if (visualReview || round.n >= (topic.runThrough ?? topic.roundsCap)) {
       delete topic.runThrough
       delete topic.nextDesigns
+      signal.throwIfAborted()
       await this.options.store.writeFinal(topic, this.finalDocument(topic, result.summary, result.reason, 'capped'))
-      await this.transition(topic, 'capped', { stopReason: result.reason })
+      signal.throwIfAborted()
+      await this.transition(topic, 'capped', { stopReason: result.reason }, signal)
+      signal.throwIfAborted()
       this.emit({ type: 'finished', topicId: topic.id, status: 'capped' })
       return
     }
     this.nextBrief.set(topic.id, result.nextBrief)
     if (result.nextBrief !== undefined && result.nextBrief.trim() !== '') topic.nextBrief = result.nextBrief
     else delete topic.nextBrief
-    await this.transition(topic, 'queued')
+    await this.transition(topic, 'queued', undefined, signal)
   }
 
   private verdictDocument(round: RoundRecord, result: JudgeResult): string {
@@ -985,7 +1017,8 @@ export class ResearchEngine {
    * park in `reviewing` (reviewFrom=answered) instead of failing the topic.
    * Accept/continue/regenerate/resume all remain available from that state.
    */
-  private async parkJudgeFailure(topic: Topic, round: RoundRecord, error: unknown): Promise<void> {
+  private async parkJudgeFailure(topic: Topic, round: RoundRecord, error: unknown, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
     const message = error instanceof Error ? error.message : String(error)
     round.judgeError = message
     const cell = (value: string): string => value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
@@ -1013,15 +1046,18 @@ export class ResearchEngine {
       '',
     ].join('\n')
     await this.options.store.writeVerdict(topic, round.n, verdictText)
+    signal.throwIfAborted()
     await this.options.store.appendEvent(topic, {
       type: 'judge_failed',
       round: round.n,
       message,
     }).catch(() => undefined)
+    signal.throwIfAborted()
     topic.reviewFrom = 'answered'
     topic.reviewStopReason = `自动裁决失败：${message}`
     delete topic.reviewStallReason
-    await this.transition(topic, 'reviewing', { stopReason: `自动裁决失败：${message}` })
+    await this.transition(topic, 'reviewing', { stopReason: `自动裁决失败：${message}` }, signal)
+    signal.throwIfAborted()
     this.emit({ type: 'judge_failed', topicId: topic.id, round: round.n, message })
   }
 
@@ -1051,12 +1087,31 @@ export class ResearchEngine {
     ].join('\n')
   }
 
-  private async finishCapped(topic: Topic, reason: string): Promise<void> {
+  private async finishCapped(topic: Topic, reason: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
     delete topic.runThrough
     delete topic.nextDesigns
     await this.options.store.writeFinal(topic, this.finalDocument(topic, undefined, reason, 'capped'))
-    await this.transition(topic, 'capped', { stopReason: reason })
+    signal.throwIfAborted()
+    await this.transition(topic, 'capped', { stopReason: reason }, signal)
+    signal.throwIfAborted()
     this.emit({ type: 'finished', topicId: topic.id, status: 'capped' })
+  }
+
+  private finalCoverage(topic: Topic): { generation: number; throughRound: number } {
+    return { generation: topic.generations?.at(-1)?.n ?? 1, throughRound: topic.rounds.at(-1)?.n ?? 0 }
+  }
+
+  private matchesFinalCoverage(topic: Topic, text: string): boolean {
+    const header = /^<!-- dsh-pro-final: (\{[^\r\n]*\}) -->\r?\n/.exec(text)
+    if (header === null) return false
+    try {
+      const coverage = JSON.parse(header[1]!) as { generation?: unknown; throughRound?: unknown }
+      const current = this.finalCoverage(topic)
+      return coverage.generation === current.generation && coverage.throughRound === current.throughRound
+    } catch {
+      return false
+    }
   }
 
   private finalDocument(topic: Topic, summary: string | undefined, stopReason: string, status: Status): string {
@@ -1064,6 +1119,7 @@ export class ResearchEngine {
       `| ${round.n} | ${round.verdict ?? '未裁决'} | ${round.files} | ${round.submittedAt ?? '未提交'} | ${round.answeredAt ?? '未完成'} |`,
     )
     return [
+      `<!-- dsh-pro-final: ${JSON.stringify(this.finalCoverage(topic))} -->`,
       `# ${topic.title}`,
       '',
       `- 状态：${status}`,
@@ -1096,19 +1152,27 @@ export class ResearchEngine {
     ].join('\n')
   }
 
+  private ownsAbortedRun(id: string, signal: AbortSignal): boolean {
+    return signal.aborted && (this.runs.get(id)?.controller.signal === signal || this.active?.controller.signal === signal)
+  }
+
   private async handleFailure(id: string, error: unknown, signal: AbortSignal): Promise<void> {
     if (isAbort(error) || signal.aborted) {
       const cancelled = await this.options.store.load(id).catch(() => undefined)
-      if (cancelled !== undefined
-        && cancelled.status !== 'cancelled' && cancelled.status !== 'completed'
-        && cancelled.status !== 'capped' && cancelled.status !== 'reviewing') {
+      const ownsCancellation = this.ownsAbortedRun(id, signal)
+      if (cancelled !== undefined && cancelled.status !== 'cancelled'
+        && (ownsCancellation || !['completed', 'capped', 'reviewing'].includes(cancelled.status))) {
+        delete cancelled.reviewFrom
+        delete cancelled.reviewStopReason
+        delete cancelled.reviewStallReason
+        delete cancelled.stopReason
         const last = latestSubmission(cancelled)
         if (last?.submissionId !== undefined) {
           // The run may have observed the submission just before the abort;
           // stopping it here also releases an API job that would keep billing.
           await this.cancelSubmission(last.submissionId)
         }
-        await this.transition(cancelled, 'cancelled')
+        await this.transition(cancelled, 'cancelled', undefined, signal)
       }
       return
     }
@@ -1134,8 +1198,14 @@ export class ResearchEngine {
     topic: Topic,
     next: Status,
     extra?: { stallReason?: Topic['stallReason']; stopReason?: string },
+    runSignal?: AbortSignal,
   ): Promise<void> {
-    assertTransition(topic.status, next)
+    if (next !== 'cancelled') runSignal?.throwIfAborted()
+    // Only the interrupted owner may retract its just-saved completion. Keep
+    // the global state machine (and completed topics without a runner) strict.
+    const retractCompletion = topic.status === 'completed' && next === 'cancelled'
+      && runSignal !== undefined && this.ownsAbortedRun(topic.id, runSignal)
+    if (!retractCompletion) assertTransition(topic.status, next)
     topic.status = next
     if (extra?.stallReason !== undefined) topic.stallReason = extra.stallReason
     if (extra?.stopReason !== undefined) topic.stopReason = extra.stopReason
@@ -1144,12 +1214,14 @@ export class ResearchEngine {
     }
     if (next !== 'stalled') delete topic.stallReason
     await this.options.store.save(topic)
+    if (next !== 'cancelled') runSignal?.throwIfAborted()
     await this.options.store.appendEvent(topic, {
       type: 'status',
       status: next,
       ...(extra?.stallReason !== undefined ? { reason: extra.stallReason } : {}),
       ...(extra?.stopReason !== undefined ? { stopReason: extra.stopReason } : {}),
     }).catch(() => undefined)
+    if (next !== 'cancelled') runSignal?.throwIfAborted()
     this.emit({
       type: 'status',
       topicId: topic.id,

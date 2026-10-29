@@ -12,6 +12,7 @@ import type {
 } from 'dsh-pro-core'
 import { TransportError } from 'dsh-pro-core'
 import { detectImageMime } from './assets.ts'
+import { readResponseBody, ResponseBodyLimitError } from './response-body.ts'
 
 export interface OpenAIImageOptions {
   /** Base URL including its version prefix, e.g. https://api.openai.com/v1. */
@@ -38,6 +39,10 @@ const MAX_REFERENCES = 4
 const MAX_REFERENCE_BYTES = 25 * 1024 * 1024
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024
 const MAX_BASE64_CHARS = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 4_096
+// Every direction requests n=1: budget one encoded image plus JSON metadata.
+const MAX_IMAGE_JSON_BYTES = MAX_BASE64_CHARS + 64 * 1024
+const MAX_MODELS_JSON_BYTES = 1024 * 1024
+const MAX_ERROR_BYTES = 8 * 1024
 const MIN_IMAGE_BYTES = 1_024
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
 
@@ -133,14 +138,26 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Keep provider bodies useful without echoing an accidental credential. */
-function redact(text: string): string {
-  return text
+/** Keep provider bodies useful without echoing any configured credential. */
+function redact(text: string, apiKey: string): string {
+  // Compatible providers do not all use sk-* keys. Redact the exact key before
+  // truncation, including the common URL/JSON encodings returned in errors.
+  const escaped = JSON.stringify(apiKey).slice(1, -1)
+  let encoded = ''
+  try { encoded = encodeURIComponent(apiKey) } catch { /* malformed Unicode is still redacted literally */ }
+  const variants = new Set([apiKey, encoded, escaped, JSON.stringify(escaped).slice(1, -1)])
+  let safe = text
+  for (const value of [...variants].sort((left, right) => right.length - left.length)) {
+    if (value !== '') safe = safe.split(value).join('***')
+  }
+  return safe
     .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')
     .replace(/(api-key["'\s:=]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')
     .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, 'AIza***')
     .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '***')
+    .replace(/(https?:\/\/[^\s"'<>?#]+)\?[^\s"'<>]*/gi, '$1?***')
+    .replace(/(https?:\/\/)[^/\s@]+@/gi, '$1***@')
     .slice(0, 800)
 }
 
@@ -217,10 +234,19 @@ export class OpenAIImageTransport implements Transport {
     if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
       throw new TransportError('imageBaseUrl 只有本机回环地址允许 http；远程服务商请用 https', 'config')
     }
+    if (url.username !== '' || url.password !== '') {
+      throw new TransportError('imageBaseUrl 不允许 URL 内嵌凭据；请使用 imageApiKey', 'config')
+    }
     if (this.options.apiKey === '') {
       throw new TransportError('imageApiKey 为空：在插件设置里填写，或设置环境变量 GPT_IMAGE_API_KEY', 'config')
     }
     if (this.options.model === '') throw new TransportError('imageModel 为空', 'config')
+    if (!['png', 'jpeg', 'webp'].includes(this.options.format)) throw new TransportError('imageFormat 必须为 png / jpeg / webp', 'config')
+    if (!['bearer', 'api-key'].includes(this.options.auth)) throw new TransportError('imageAuth 必须为 bearer / api-key', 'config')
+    if (!['auto', 'off'].includes(this.options.editMode)) throw new TransportError('imageEdit 必须为 auto / off', 'config')
+    if (!Number.isSafeInteger(this.options.timeoutMs) || this.options.timeoutMs <= 0 || this.options.timeoutMs > 3_600_000) {
+      throw new TransportError('imageTimeoutSeconds 必须为正数且不超过 3600 秒', 'config')
+    }
   }
 
   private origin(): string {
@@ -262,8 +288,12 @@ export class OpenAIImageTransport implements Transport {
     return AbortSignal.any([parent, AbortSignal.timeout(this.options.timeoutMs)])
   }
 
+  private redact(text: string): string {
+    return redact(text, this.options.apiKey)
+  }
+
   private httpError(status: number, body: string): TransportError {
-    const detail = body === '' ? '' : ` 响应：${redact(body)}`
+    const detail = body === '' ? '' : ` 响应：${this.redact(body)}`
     if (status === 401 || status === 403) {
       return new TransportError(`生图 API 鉴权失败（HTTP ${status}）。检查 imageApiKey / imageAuth。${detail}`, 'login')
     }
@@ -276,27 +306,75 @@ export class OpenAIImageTransport implements Transport {
     return new TransportError(`生图 API 拒绝了请求（HTTP ${status}），检查 imageBaseUrl / imageModel / 参数。${detail}`, 'config')
   }
 
-  private async requestJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {
+  /** Never forward a key or replay a billable POST through a redirect. */
+  private async request(url: string, init: RequestInit): Promise<Response> {
     let response: Response
     try {
-      response = await this.fetchImpl(url, init)
+      init.signal?.throwIfAborted()
+      response = await this.fetchImpl(url, { ...init, redirect: 'error' })
+      if (init.signal?.aborted) {
+        void response.body?.cancel().catch(() => undefined)
+        init.signal.throwIfAborted()
+      }
     } catch (error) {
       throw this.networkError(error)
     }
-    if (!response.ok) throw this.httpError(response.status, await response.text().catch(() => ''))
+    // Test substitutes and non-standard fetch implementations may return 3xx
+    // despite redirect:error. Fail closed there too, without echoing Location.
+    if (response.status >= 300 && response.status < 400) {
+      void response.body?.cancel().catch(() => undefined)
+      throw new TransportError('生图 API 返回重定向；为保护密钥与避免重放付费请求，已停止自动跳转', 'config')
+    }
+    return response
+  }
+
+  private async readJson(response: Response, limit: number, signal?: AbortSignal | null): Promise<Record<string, unknown>> {
+    let bytes: Buffer
     try {
-      return (await response.json()) as Record<string, unknown>
+      bytes = await readResponseBody(response, limit, signal ?? undefined)
+    } catch (error) {
+      if (error instanceof ResponseBodyLimitError) {
+        throw new TransportError(`生图 API JSON 响应超过 ${limit} 字节上限，已停止读取`, 'config')
+      }
+      throw this.networkError(error)
+    }
+    let value: unknown
+    try {
+      value = JSON.parse(bytes.toString('utf8'))
     } catch {
       throw new TransportError('生图 API 返回的不是 JSON', 'config')
     }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TransportError('生图 API 返回的 JSON 必须为对象', 'config')
+    }
+    return value as Record<string, unknown>
+  }
+
+  private async readErrorBody(response: Response, signal?: AbortSignal | null): Promise<string> {
+    try {
+      return (await readResponseBody(response, MAX_ERROR_BYTES, signal ?? undefined)).toString('utf8')
+    } catch (error) {
+      if (error instanceof ResponseBodyLimitError) return `错误正文超过 ${MAX_ERROR_BYTES} 字节上限，已停止读取`
+      throw this.networkError(error)
+    }
+  }
+
+  private async requestJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {
+    const response = await this.request(url, init)
+    if (!response.ok) throw this.httpError(response.status, await this.readErrorBody(response, init.signal))
+    return await this.readJson(response, MAX_IMAGE_JSON_BYTES, init.signal)
   }
 
   private networkError(error: unknown): TransportError {
     if (isTimeoutLike(error)) {
       return new TransportError(`单张图片超过 ${Math.round(this.options.timeoutMs / 1000)} 秒仍未返回`, 'timeout')
     }
-    if (isAbortLike(error)) throw error
-    return new TransportError(`无法连接生图 API（${this.origin()}）：${messageOf(error)}`, 'network')
+    if (isAbortLike(error)) throw new DOMException('aborted', 'AbortError')
+    const cause = error instanceof Error ? error.cause : undefined
+    if (/redirect/i.test(messageOf(error)) || (cause instanceof Error && /redirect/i.test(cause.message))) {
+      return new TransportError('生图 API 请求遇到重定向；为保护密钥与避免重放付费请求，已停止自动跳转', 'config')
+    }
+    return new TransportError(`无法连接生图 API（${this.origin()}）：${this.redact(messageOf(error))}`, 'network')
   }
 
   private modelsUrl(): string {
@@ -321,35 +399,42 @@ export class OpenAIImageTransport implements Transport {
       return { ok: false, loggedIn: false, model, available: [], reason: '未配置 imageApiKey（或环境变量 GPT_IMAGE_API_KEY）' }
     }
     try {
-      const response = await this.fetchImpl(this.modelsUrl(), {
+      this.assertReady()
+      const signal = AbortSignal.timeout(20_000)
+      const response = await this.request(this.modelsUrl(), {
         method: 'GET',
         headers: this.headers(),
-        signal: AbortSignal.timeout(20_000),
+        signal,
       })
-      if (response.status === 401 || response.status === 403) {
-        return { ok: false, loggedIn: false, model, available: [], reason: `鉴权失败（HTTP ${response.status}），检查 imageApiKey / imageAuth` }
-      }
-      if (response.status === 404 || response.status === 405) {
-        return { ok: true, loggedIn: true, model, available: [], reason: '服务商未提供 /models，无法预检；直接生图会暴露模型名问题' }
-      }
-      if (!response.ok) {
-        return { ok: false, loggedIn: false, model, available: [], reason: `预检失败（HTTP ${response.status}）` }
-      }
-      const body = await response.json().catch(() => undefined)
-      const available = modelIds(body)
-      const missing = available.length > 0 && !available.includes(model)
-      return {
-        ok: true,
-        loggedIn: true,
-        model,
-        available,
-        ...(missing ? { reason: `模型 ${model} 不在服务商列表里；若报 404 请改 imageModel` } : {}),
+      try {
+        if (response.status === 401 || response.status === 403) {
+          return { ok: false, loggedIn: false, model, available: [], reason: `鉴权失败（HTTP ${response.status}），检查 imageApiKey / imageAuth` }
+        }
+        if (response.status === 404 || response.status === 405) {
+          return { ok: true, loggedIn: true, model, available: [], reason: '服务商未提供 /models，无法预检；直接生图会暴露模型名问题' }
+        }
+        if (!response.ok) {
+          return { ok: false, loggedIn: false, model, available: [], reason: `预检失败（HTTP ${response.status}）` }
+        }
+        const body = await this.readJson(response, MAX_MODELS_JSON_BYTES, signal)
+        const available = modelIds(body)
+        const missing = available.length > 0 && !available.includes(model)
+        return {
+          ok: true,
+          loggedIn: true,
+          model,
+          available,
+          ...(missing ? { reason: `模型 ${model} 不在服务商列表里；若报 404 请改 imageModel` } : {}),
+        }
+      } finally {
+        // Error/fallback probes do not consume the provider body at all.
+        void response.body?.cancel().catch(() => undefined)
       }
     } catch (error) {
-      if (isTimeoutLike(error)) {
-        return { ok: false, loggedIn: false, model, available: [], reason: `预检超时（${this.origin()}）` }
-      }
-      return { ok: false, loggedIn: false, model, available: [], reason: `无法连接 ${this.origin()}：${messageOf(error)}` }
+      const reason = error instanceof TransportError && error.failure === 'timeout'
+        ? `预检超时（${this.origin()}）`
+        : messageOf(error)
+      return { ok: false, loggedIn: false, model, available: [], reason: this.redact(reason) }
     }
   }
 
@@ -372,11 +457,12 @@ export class OpenAIImageTransport implements Transport {
     const controller = new AbortController()
     // A cancelled run must stop billable work even if nobody calls
     // cancelSubmission: the engine's abort is the earliest cancellation signal.
-    request.signal?.addEventListener('abort', () => controller.abort(), { once: true })
+    const onAbort = (): void => controller.abort()
+    request.signal?.addEventListener('abort', onAbort, { once: true })
     if (isAborted(request.signal)) controller.abort()
     const id = randomUUID()
     const job = { request, count, controller, completed: 0, reported: 0 } as Job
-    const generated = this.generate(job, prompt, references)
+    const generated = this.generate(job, prompt, references).finally(() => request.signal?.removeEventListener('abort', onAbort))
     job.settled = generated.then(() => undefined, () => undefined)
     void generated.then(
       result => { job.result = result },
@@ -453,14 +539,17 @@ export class OpenAIImageTransport implements Transport {
   async cancelSubmission(submissionId: string): Promise<void> {
     const job = this.jobs.get(submissionId)
     if (job === undefined) return
-    this.jobs.delete(submissionId)
     job.controller.abort()
+    await job.settled
+    if (this.jobs.get(submissionId) === job) this.jobs.delete(submissionId)
   }
 
   async cancel(): Promise<void> {
-    // Abort only: the next poll/fetch surfaces each job's AbortError (and
-    // releases the job there), which keeps the engine's cancel path intact.
-    for (const job of this.jobs.values()) job.controller.abort()
+    // Keep records until poll/fetch surfaces each AbortError, but wait for the
+    // workers to drain so cancellation cannot leave billable follow-ups alive.
+    const jobs = [...this.jobs.values()]
+    for (const job of jobs) job.controller.abort()
+    await Promise.all(jobs.map(job => job.settled))
   }
 
   dispose(): void {
@@ -518,31 +607,42 @@ export class OpenAIImageTransport implements Transport {
     const prompts: string[] = []
     const failures: string[] = []
     let firstError: unknown
+    let fatal: { error: unknown } | undefined
     let next = 0
     const worker = async (): Promise<void> => {
-      while (true) {
-        if (job.controller.signal.aborted) throw new DOMException('aborted', 'AbortError')
-        const index = next
-        next += 1
-        if (index >= job.count) return
-        const direction = this.directionPrompt(prompt, index, job.count, references.length)
-        prompts[index] = direction
-        try {
-          const produced = await this.generateOne(job, direction, references)
-          results[index] = produced
-          job.completed += 1
-        } catch (error) {
-          if (job.controller.signal.aborted || isAbortLike(error)) throw error
-          if (error instanceof TransportError && (error.failure === 'login' || error.failure === 'config' || error.failure === 'worker')) {
-            throw error
+      try {
+        while (true) {
+          if (job.controller.signal.aborted) throw new DOMException('aborted', 'AbortError')
+          const index = next
+          next += 1
+          if (index >= job.count) return
+          const direction = this.directionPrompt(prompt, index, job.count, references.length)
+          prompts[index] = direction
+          try {
+            const produced = await this.generateOne(job, direction, references)
+            results[index] = produced
+            job.completed += 1
+          } catch (error) {
+            if (job.controller.signal.aborted || isAbortLike(error)) throw error
+            if (error instanceof TransportError && (error.failure === 'login' || error.failure === 'config' || error.failure === 'worker')) {
+              throw error
+            }
+            if (firstError === undefined) firstError = error
+            failures.push(`第 ${index + 1} 个方向失败：${this.redact(messageOf(error))}`)
           }
-          if (firstError === undefined) firstError = error
-          failures.push(`第 ${index + 1} 个方向失败：${messageOf(error)}`)
         }
+      } catch (error) {
+        // Abort before another lane can take its next direction, and preserve
+        // the first fatal failure rather than a sibling's resulting AbortError.
+        fatal ??= { error }
+        job.controller.abort()
+        throw error
       }
     }
     const lanes = Array.from({ length: Math.min(2, job.count) }, () => worker())
-    await Promise.all(lanes)
+    await Promise.allSettled(lanes)
+    if (fatal !== undefined) throw fatal.error
+    if (job.controller.signal.aborted) throw new DOMException('aborted', 'AbortError')
     const images = results.flatMap(result => result ?? [])
     if (images.length === 0) {
       if (firstError instanceof TransportError) throw firstError
@@ -586,19 +686,15 @@ export class OpenAIImageTransport implements Transport {
       copy.set(reference.bytes)
       form.append('image[]', new Blob([copy], { type: reference.mime }), reference.name)
     }
-    let response: Response
-    try {
-      response = await this.fetchImpl(this.endpoint('edits'), {
-        method: 'POST',
-        headers: this.authHeaders(),
-        body: form,
-        signal: this.signalFor(signal),
-      })
-    } catch (error) {
-      throw this.networkError(error)
-    }
+    const requestSignal = this.signalFor(signal)
+    const response = await this.request(this.endpoint('edits'), {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body: form,
+      signal: requestSignal,
+    })
     if (!response.ok) {
-      const detail = redact(await response.text().catch(() => ''))
+      const detail = this.redact(await this.readErrorBody(response, requestSignal))
       if (response.status === 400 || response.status === 404 || response.status === 422) {
         throw new TransportError(
           `参考图接口 /images/edits 被拒（HTTP ${response.status}）：${detail}。若该服务商或模型不支持参考图，把 imageEdit 设为 off 再试。`,
@@ -607,8 +703,7 @@ export class OpenAIImageTransport implements Transport {
       }
       throw this.httpError(response.status, detail)
     }
-    const body = (await response.json().catch(() => undefined)) as Record<string, unknown> | undefined
-    if (body === undefined) throw new TransportError('生图 API 返回的不是 JSON', 'config')
+    const body = await this.readJson(response, MAX_IMAGE_JSON_BYTES, requestSignal)
     return await this.collect(body, signal)
   }
 
@@ -616,8 +711,12 @@ export class OpenAIImageTransport implements Transport {
     const raw = Array.isArray(body.data) ? body.data : Array.isArray(body.images) ? body.images : []
     if (raw.length === 0) {
       const detail = typeof body.error === 'string' ? body.error : JSON.stringify(body).slice(0, 300)
-      throw new TransportError(`生图 API 没有返回图片：${redact(detail)}`, 'config')
+      throw new TransportError(`生图 API 没有返回图片：${this.redact(detail)}`, 'config')
     }
+    if (raw.length > 1) {
+      throw new TransportError('生图 API 每个方向仅请求一张图片，但响应超过 1 个图片条目上限', 'config')
+    }
+    signal.throwIfAborted()
     const images: ImageAsset[] = []
     for (const item of raw as Array<ImagePayload | string>) {
       if (typeof item === 'string') {
@@ -659,30 +758,15 @@ export class OpenAIImageTransport implements Transport {
     return { mime: detectImageMime(bytes) ?? mime, base64 }
   }
 
-  private async readImageBody(response: Response): Promise<Buffer> {
-    const declared = Number(response.headers.get('content-length') ?? '')
-    if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
-      throw new TransportError(`下载的图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
-    }
-    if (response.body === null) return Buffer.alloc(0)
-    const reader = response.body.getReader()
-    const chunks: Buffer[] = []
-    let total = 0
+  private async readImageBody(response: Response, signal: AbortSignal): Promise<Buffer> {
     try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        total += value.byteLength
-        if (total > MAX_IMAGE_BYTES) {
-          await reader.cancel().catch(() => undefined)
-          throw new TransportError(`下载的图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
-        }
-        chunks.push(Buffer.from(value))
+      return await readResponseBody(response, MAX_IMAGE_BYTES, signal)
+    } catch (error) {
+      if (error instanceof ResponseBodyLimitError) {
+        throw new TransportError(`下载的图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限`, 'config')
       }
-    } finally {
-      reader.releaseLock()
+      throw this.networkError(error)
     }
-    return Buffer.concat(chunks)
   }
 
   private async download(url: string, signal: AbortSignal): Promise<ImageAsset> {
@@ -691,25 +775,27 @@ export class OpenAIImageTransport implements Transport {
       target = new URL(url, this.options.baseUrl)
     } catch {
       // Never echo the query string: signed URLs carry credentials in it.
-      throw new TransportError(`生图 API 返回了非法图片地址：${redact(url.split('?')[0] ?? '')}`, 'config')
+      throw new TransportError(`生图 API 返回了非法图片地址：${this.redact(url.split('?')[0] ?? '')}`, 'config')
     }
     if (target.protocol !== 'https:' && !(target.protocol === 'http:' && (isLoopbackHost(target.hostname) || target.origin === this.origin()))) {
       throw new TransportError('生图 API 返回了非 https 的图片地址；只允许 https 或本机/同源地址', 'config')
     }
+    if (target.username !== '' || target.password !== '') {
+      throw new TransportError('生图 API 返回的图片地址包含内嵌凭据，已停止下载', 'config')
+    }
     // Only attach the credential to the configured origin; signed CDN URLs reject it.
     const sameOrigin = target.origin === this.origin()
-    let response: Response
-    try {
-      response = await this.fetchImpl(target.toString(), {
-        method: 'GET',
-        headers: sameOrigin ? this.authHeaders() : { accept: 'image/*' },
-        signal: this.signalFor(signal),
-      })
-    } catch (error) {
-      throw this.networkError(error)
+    const requestSignal = this.signalFor(signal)
+    const response = await this.request(target.toString(), {
+      method: 'GET',
+      headers: sameOrigin ? this.authHeaders() : { accept: 'image/*' },
+      signal: requestSignal,
+    })
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined)
+      throw new TransportError(`下载生成图片失败（HTTP ${response.status}）`, 'network')
     }
-    if (!response.ok) throw new TransportError(`下载生成图片失败（HTTP ${response.status}）`, 'network')
-    const bytes = await this.readImageBody(response)
+    const bytes = await this.readImageBody(response, requestSignal)
     if (bytes.byteLength < MIN_IMAGE_BYTES) {
       throw new TransportError(`下载到的图片过小（${bytes.byteLength} 字节），按失败处理`, 'network')
     }
@@ -731,7 +817,7 @@ export class OpenAIImageTransport implements Transport {
       try {
         bytes = await readFile(file)
       } catch (error) {
-        throw new TransportError(`读取参考图失败：${basename(file)}（${messageOf(error)}）`, 'upload')
+        throw new TransportError(`读取参考图失败：${this.redact(basename(file))}（${this.redact(messageOf(error))}）`, 'upload')
       }
       if (bytes.byteLength > MAX_REFERENCE_BYTES) continue
       const mime = detectImageMime(bytes)

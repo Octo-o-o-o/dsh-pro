@@ -199,7 +199,8 @@ function pushDist (row) {
   const notes = [
     `## ${row.repo} ${row.version}`,
     '',
-    `- Install: \`npx dshpub add ${owner}/${row.repo}\``,
+    `- Install this exact build: \`dsh plugin --profile <profile> add github:${owner}/${row.repo}#${git(row.dir, ['rev-parse', 'HEAD'])}\``,
+    '- GitHub publication does not update npm or community marketplace pins.',
     `- Commit: \`${git(row.dir, ['rev-parse', 'HEAD'])}\``,
     '',
     'Generated from the dsh-pro monorepo; see SYNC.md in the repository.',
@@ -238,7 +239,7 @@ async function main () {
     return
   }
   for (const row of rows) pushDist(row)
-  log('done. Next: submit the new commits to dsh.pub and dsh.so, then update docs/marketplace.md')
+  log('done. GitHub publication does not update npm or marketplace pins; follow docs/RELEASING.md and record independently authorized channel changes.')
 }
 
 main().catch((error) => {

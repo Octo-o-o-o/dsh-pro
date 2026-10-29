@@ -636,13 +636,15 @@ describe('engine', () => {
 
   it('adds an explicit follow-up round to a completed topic', async () => {
     const judge: Judge = async () => ({ verdict: 'accepted', reason: 'enough', done: true, summary: 'done', criteria: [{ criterion: 'one criterion', status: 'met', evidence: 'answer' }] })
-    const { engine, store, transport } = await harness({ doneAt: 1, judge })
-    const topic = await engine.start(card({ materials: [{ path: 'base.md', bytes: 1, sha256: 'b' }] }))
+    const { engine, store, transport, root } = await harness({ doneAt: 1, judge })
+    await writeFile(join(root, 'base.md'), 'base material')
+    const topic = await engine.start(card({ materials: await buildManifest(root, ['base.md']) }))
     await engine.drain()
     expect((await engine.status(topic.id)).status).toBe('completed')
     expect(transport.submits[0]?.files.map(path => basename(path))).toEqual(['base.md'])
 
-    await engine.continue(topic.id, 'follow-up brief', [{ path: 'new.md', bytes: 1, sha256: 'x' }])
+    await writeFile(join(root, 'new.md'), 'new material')
+    await engine.continue(topic.id, 'follow-up brief', await buildManifest(root, ['new.md']))
     await engine.drain()
     const final = await engine.status(topic.id)
     expect(final.status).toBe('completed')

@@ -32,7 +32,7 @@ it.each(['web', 'api'])('preserves failed-judge review and its actions after a %
     expect(actual.rounds[0]?.judgeError).toBe('judge unavailable')
     expect(await store.readAnswer(actual, 1)).toBe('saved response')
   } finally {
-    for (const dispose of disposers) dispose()
+    for (const dispose of [...disposers].reverse()) await dispose()
     if (previous === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previous
     await rm(root, { recursive: true, force: true })

@@ -289,6 +289,8 @@ export interface JudgeInput {
   answer: string
   criteria: string[]
   question?: string
+  /** Cancelling/disposal must stop judging without a retry or review handoff. */
+  signal?: AbortSignal
 }
 
 export interface JudgeResult {

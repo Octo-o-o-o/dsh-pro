@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, open, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Topic } from './types.ts'
+import { readContainedFile } from './files.ts'
 
 export interface ReportInfo {
   path: 'report.md' | 'design.md'
@@ -81,12 +82,12 @@ export async function readReportInfo(dir: string, topic: Topic): Promise<ReportI
   let updated: string
   try {
     try {
-      text = await readFile(join(dir, path), 'utf8')
+      text = (await readContainedFile(dir, path, 1024 * 1024)).toString('utf8')
     } catch (error) {
       if (path !== 'design.md' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       // Preserve reports written by older hosts using the shared report name.
       path = 'report.md'
-      text = await readFile(join(dir, path), 'utf8')
+      text = (await readContainedFile(dir, path, 1024 * 1024)).toString('utf8')
     }
     updated = (await stat(join(dir, path))).mtime.toISOString()
   } catch (error) {

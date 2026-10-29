@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { dirname, extname, isAbsolute, join, resolve } from 'node:path'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -16,6 +16,10 @@ import {
   assertMaterialLimits,
   buildManifest,
   baseImageMaterial,
+  FileSizeLimitError,
+  readContainedFile,
+  readContainedPrefix,
+  resolveContainedPath,
   readReportInfo,
   defaultConfig,
   findSecret,
@@ -45,6 +49,9 @@ export interface PluginSpec {
   storeSubdir: 'research' | 'design'
   skills: ReadonlyArray<{ name: string; dir: string; description: string }>
 }
+
+const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024
+const MAX_PREVIEW_BYTES = 2_000_000
 
 const baseFields = {
   rounds: z.number().step(1).min(1).max(10).default(3).description('每主题默认轮次上限（1–10）。'),
@@ -455,7 +462,7 @@ class ProResearchService {
         // 1,800 tokens truncated real DeepSeek judgments before a complete JSON.
         maxTokens: 8_192,
         ...(route.reasoningEffort ? { reasoningEffort: route.reasoningEffort } : {}),
-        signal: AbortSignal.timeout(180_000),
+        signal: input.signal === undefined ? AbortSignal.timeout(180_000) : AbortSignal.any([input.signal, AbortSignal.timeout(180_000)]),
       })) {
         assembler.push(chunk as never)
         if ((chunk as { type?: string }).type === 'finish') finished = true
@@ -902,13 +909,15 @@ class ProResearchService {
   }
 
   private async artifactDetails(dir: string, topic: Topic): Promise<Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'archive' | 'file' }>> {
-    const root = resolve(dir, 'artifacts')
     const details: Array<{ path: string; kind: 'image' | 'demo' | 'code' | 'archive' | 'file' }> = []
     for (const path of topic.artifacts) {
-      if (path === 'final.md') continue
-      const target = resolve(dir, path)
-      if (target !== root && !target.startsWith(`${root}${sep}`)) continue
-      const extension = extname(target).toLowerCase()
+      if (!path.replace(/\\/g, '/').startsWith('artifacts/')) continue
+      try {
+        await resolveContainedPath(dir, path)
+      } catch {
+        continue
+      }
+      const extension = extname(path).toLowerCase()
       if (/^\.(png|jpe?g|webp|gif|svg)$/.test(extension)) {
         details.push({ path, kind: 'image' })
         continue
@@ -923,7 +932,7 @@ class ProResearchService {
       }
       if (/^\.(txt|md|markdown)$/.test(extension)) {
         try {
-          const head = (await readFile(target, 'utf8')).slice(0, 512)
+          const head = (await readContainedPrefix(dir, path, 512)).toString('utf8')
           details.push({ path, kind: isHtmlSource(head) ? 'demo' : 'code' })
         } catch {
           details.push({ path, kind: 'file' })
@@ -939,18 +948,17 @@ class ProResearchService {
     return details
   }
 
-  /** Serve one recorded artifact; the path must stay inside `<topic>/artifacts/`. */  async readArtifact(id: string, relativePath: string): Promise<{ bytes: Buffer; mime: string }> {
+  /** Serve one artifact, enforcing both physical topic and artifact boundaries. */
+  async readArtifact(id: string, relativePath: string): Promise<{ bytes: Buffer; mime: string }> {
     const entry = await this.entryFor(id)
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
     const store = this.storeAt(entry.root, entry.mode)
     const dir = await store.dirOf(id)
-    const artifactsRoot = resolve(dir, 'artifacts')
-    const target = resolve(dir, relativePath)
-    if (target !== artifactsRoot && !target.startsWith(`${artifactsRoot}${sep}`)) {
-      throw new Error('artifact path escapes the topic')
-    }
-    const bytes = await readFile(target)
-    const textMime = mimeFor(target)
+    const normalized = relativePath.replace(/\\/g, '/')
+    if (!normalized.startsWith('artifacts/')) throw new Error('artifact path escapes the topic')
+    const artifactsRoot = await resolveContainedPath(dir, 'artifacts')
+    const bytes = await readContainedFile(artifactsRoot, normalized.slice('artifacts/'.length), MAX_ARTIFACT_BYTES)
+    const textMime = mimeFor(relativePath)
     if (textMime.startsWith('text/plain') || textMime.startsWith('text/markdown')) {
       const head = bytes.subarray(0, 512).toString('utf8')
       if (isHtmlSource(head)) return { bytes, mime: 'text/html; charset=utf-8' }
@@ -983,13 +991,8 @@ class ProResearchService {
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
     const store = this.storeAt(entry.root, entry.mode)
     const dir = await store.dirOf(id)
-    const target = resolve(dir, relativePath)
-    if (target !== dir && !target.startsWith(`${dir}${sep}`)) {
-      throw new Error('path escapes the topic')
-    }
-    const bytes = await readFile(target)
-    if (bytes.byteLength > 2_000_000) throw new Error('file is too large to preview')
-    return { text: bytes.toString('utf8'), mime: mimeFor(target) }
+    const bytes = await readContainedFile(dir, relativePath, MAX_PREVIEW_BYTES)
+    return { text: bytes.toString('utf8'), mime: mimeFor(relativePath) }
   }
 
   /** Reveal a topic-relative file in the OS file manager. */
@@ -998,11 +1001,7 @@ class ProResearchService {
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
     const store = this.storeAt(entry.root, entry.mode)
     const dir = await store.dirOf(id)
-    const target = resolve(dir, relativePath)
-    if (target !== dir && !target.startsWith(`${dir}${sep}`)) {
-      throw new Error('path escapes the topic')
-    }
-    await access(target)
+    const target = await resolveContainedPath(dir, relativePath)
     const reveal = externalRevealCommand(process.platform, target)
     const child = spawn(reveal.command, reveal.args, { detached: true, stdio: 'ignore' })
     child.on('error', () => undefined)
@@ -1015,11 +1014,7 @@ class ProResearchService {
     if (entry === undefined) throw new Error(`unknown topic: ${id}`)
     const store = this.storeAt(entry.root, entry.mode)
     const dir = await store.dirOf(id)
-    const target = resolve(dir, relativePath)
-    if (target !== dir && !target.startsWith(`${dir}${sep}`)) {
-      throw new Error('path escapes the topic')
-    }
-    await access(target)
+    const target = await resolveContainedPath(dir, relativePath)
     const opener = externalOpenCommand(process.platform, target)
     const child = spawn(opener.command, opener.args, {
       detached: true,
@@ -1299,7 +1294,7 @@ class ProResearchService {
   private withSources(cwd: string, refs: MaterialRef[]): MaterialRef[] {
     return refs.map(ref => ({
       ...ref,
-      source: isAbsolute(ref.path) ? ref.path : resolve(cwd, ref.path),
+      source: ref.source ?? (isAbsolute(ref.path) ? ref.path : resolve(cwd, ref.path)),
     }))
   }
 
@@ -1518,7 +1513,7 @@ class ProResearchService {
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     const engines = [...this.engines.values()]
     for (const engine of engines) engine.dispose()
     this.engines.clear()
@@ -1536,7 +1531,8 @@ class ProResearchService {
     }
     // Let the aborted runs persist `cancelled` before Chrome closes under
     // them; settle() is bounded, so a stuck transport cannot block HMR forever.
-    void Promise.allSettled(engines.map(engine => engine.settle())).then(release)
+    await Promise.allSettled(engines.map(engine => engine.settle()))
+    release()
   }
 }
 
@@ -1744,8 +1740,8 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
         const asset = await service.readArtifact(id, path)
         res.writeHead(200, artifactHeaders(asset.mime))
         res.end(asset.bytes)
-      } catch {
-        sendJson(res, 404, { error: 'unknown artifact' })
+      } catch (error) {
+        sendJson(res, error instanceof FileSizeLimitError ? 413 : 404, { error: error instanceof FileSizeLimitError ? error.message : 'unknown artifact' })
       }
     },
   }), `${spec.name}: asset route`)
@@ -1768,8 +1764,8 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
         res.end(url.searchParams.get('preview') === '1' && asset.mime.startsWith('text/html')
           ? previewHtml(Buffer.from(asset.bytes).toString('utf8'))
           : asset.bytes)
-      } catch {
-        sendJson(res, 404, { error: 'unknown artifact' })
+      } catch (error) {
+        sendJson(res, error instanceof FileSizeLimitError ? 413 : 404, { error: error instanceof FileSizeLimitError ? error.message : 'unknown artifact' })
       }
     },
   }), `${spec.name}: raw artifact route`)
@@ -1834,8 +1830,8 @@ function registerRoutes(scoped: Context, service: ProResearchService, spec: Plug
         // with the same sandbox policy as the artifact routes.
         res.writeHead(200, artifactHeaders(mime))
         res.end(file.text)
-      } catch {
-        sendJson(res, 404, { error: 'unknown file' })
+      } catch (error) {
+        sendJson(res, error instanceof FileSizeLimitError ? 413 : 404, { error: error instanceof FileSizeLimitError ? error.message : 'unknown file' })
       }
     },
   }), `${spec.name}: file route`)
