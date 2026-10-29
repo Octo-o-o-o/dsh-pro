@@ -6,10 +6,12 @@ import { SELECTORS } from '../src/selectors.ts'
 describe.skipIf(process.env.DSH_PRO_TRANSPORT_SMOKE !== '1')('real DOM completion boundaries', () => {
   let browser: Browser
   let page: Page
+  // CI cold-starts Chrome alongside the transport suite; the default 10s hook
+  // must not expire before Playwright's 30s browser launch timeout.
   beforeAll(async () => {
     browser = await chromium.launch({ channel: 'chrome', headless: true })
     page = await browser.newPage()
-  })
+  }, 45_000)
   afterAll(async () => { await browser?.close() })
 
   it.each(['停止流式传输', '停止生成', 'Stop generating', 'Stop streaming'])('sees visible %s after a hidden duplicate', async label => {
