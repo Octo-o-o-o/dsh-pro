@@ -27,6 +27,7 @@
 - `acceptance-smoke`：10 组通过，覆盖首次安装、研究/设计面板、恢复不重发、取消、responsive UI、图片和 HTML 预览、API 请求/编辑/错误恢复。外部服务为测试替身，与上方真实网页和真实裁决证据分开记录。
 - `last_round` 补充后，25 个插件集成测试、typecheck、build、bundle smoke 再次通过。
 - 最终代码提交 `3dab081` 的 [GitHub CI](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40839558237) 通过（Windows / Ubuntu，Node 24）。
+- 后续文档提交触发的 CI 暴露 Design API 测试清理竞态：Ubuntu 在删除临时主题目录时遇到 `ENOTEMPTY`，Windows 全部通过。测试曾在看到终态后立即清理，但引擎仍可能追加最后的事件；现修正测试夹具，执行插件 disposer 并等待真实引擎 drain 后再删除目录。只修改测试生命周期，不改变已发布 0.3.4 运行时代码或 tag。
 
 ## 真实设计闭环
 

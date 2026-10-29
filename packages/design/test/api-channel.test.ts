@@ -4,13 +4,30 @@ import type { AddressInfo } from 'node:net'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { ResearchStore } from '@dsh-pro/core'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ResearchEngine, ResearchStore } from '@dsh-pro/core'
 import { apply } from '../src/index.ts'
 
 const cleanups: Array<() => Promise<void>> = []
+const disposers: Array<() => void> = []
+const engines = new Set<ResearchEngine>()
+const start = ResearchEngine.prototype.start
+
+beforeEach(() => {
+  vi.spyOn(ResearchEngine.prototype, 'start').mockImplementation(function (this: ResearchEngine, ...args) {
+    engines.add(this)
+    return start.apply(this, args)
+  })
+})
 
 afterEach(async () => {
+  // A terminal topic.json can be visible before the final event append finishes.
+  // Stop and drain actual runners before removing their storage directories.
+  for (const dispose of disposers.splice(0)) dispose()
+  for (const engine of engines) engine.dispose()
+  await Promise.all([...engines].map(engine => engine.drain()))
+  engines.clear()
+  vi.restoreAllMocks()
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop()
     if (cleanup !== undefined) await cleanup()
@@ -29,14 +46,19 @@ interface Tool {
 interface Route { path: string; handler: (request: unknown, response: unknown) => Promise<void> }
 
 function fakeContext(tools: Tool[], routes: Route[] = []): unknown {
+  const effect = (fn: () => () => void): (() => void) => {
+    const dispose = fn()
+    disposers.push(dispose)
+    return dispose
+  }
   const skills = { registerProvider: () => () => {} }
   const scoped = {
-    effect: (fn: () => () => void) => fn(),
+    effect,
     get: (name: string) => name === 'connection' ? { requestRejection: () => undefined } : undefined,
     webServer: { register: (route: Route) => { routes.push(route); return () => {} } },
   }
   return {
-    effect: (fn: () => () => void) => fn(),
+    effect,
     tools: { register: (tool: Tool) => { tools.push(tool); return () => {} } },
     get: (name: string) => (name === 'skills' ? skills : undefined),
     inject: (_services: string[], callback: (scopedContext: unknown) => void) => callback(scoped),
