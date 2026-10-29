@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { unzipSync, zipSync } from 'fflate'
@@ -168,7 +168,9 @@ describe('project store', () => {
     }), 3, 'pro', 'web-pro')
 
     const paths = await store.readMaterialPaths(topic)
-    expect(paths).toEqual([join(dir, 'materials', 'src', 'readme.md')])
+    // Windows CI may expose TEMP as RUNNER~1 while realpath returns runneradmin.
+    // The store intentionally returns the exact canonical, contained file.
+    expect(paths).toEqual([await realpath(join(dir, 'materials', 'src', 'readme.md'))])
     expect(await readFile(paths[0] as string, 'utf8')).toBe('hello')
     const manifest = JSON.parse(await readFile(join(dir, 'materials', 'manifest.json'), 'utf8')) as {
       materials: Array<{ path: string; source: string }>

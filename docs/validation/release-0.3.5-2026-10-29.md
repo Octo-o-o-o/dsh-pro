@@ -2,7 +2,7 @@
 
 日期：2026-10-29，Asia/Shanghai。范围：两个插件及共享 core/transport。用户授权了审查、实施、复审、本机部署和三个 GitHub 仓库推送；未授权本轮真实付费生成、npm 或市场重提，因此没有进行这些操作。
 
-> 本记录当前仍在执行中，待最终复审、实体安装和远端回执后补齐；不能把候选构建/磁盘安装说成运行进程已切换。
+> 本机最终复审、实体安装和三个仓库/两个 Release 已完成；当前收尾为远端 CI。运行应用结论来自安装器明确的 applied，不由磁盘版本推断；当前桌面 GUI 视觉及本轮真实服务验证仍明确不覆盖。
 
 ## 基线与环境
 
@@ -30,7 +30,7 @@
 - **最终完整整合连续两遍**：34 文件通过/2 条件文件跳过，每遍 **274 passed / 15 skipped（289 总项）**，相较基线新增 81 项；无改 skip、无删除业务断言。之后 typecheck、build、两个 bundle smoke 全通过，显式 Chrome 与 acceptance 也重跑通过。
 - 显式启用 `DSH_PRO_TRANSPORT_SMOKE=1`：Chrome page-state 11 项与 transport 4 项，共 15 passed（71.99 秒），不再把条件 skip 当通过。
 - 构建后真实 Cordis + Chrome + 替身网页/图片 API 的 acceptance 10 组全通过：首用确认、研究裁决/报告、UI 单轮继续、PNG/HTML 实际按钮、定向改图与窄屏弹窗、进程恢复零重发、显式恢复、取消、检索/明暗/布局、API 进程丢失与明确再生成。证据在忽略的本机临时目录，不提交浏览器/账号数据。
-- 交叉复审补发现并修复：裁决终态 save 挂起时取消，completed/capped/reviewing 三分支仍可能覆盖取消。新增三分支 × save 前/已落盘但返回前共 6 个 barrier 回归，旧实现 6 failed，修复后全通过；无 runner 的已完成主题取消仍幂等。引擎范围 74/74 通过，最终全套重跑中。
+- 交叉复审补发现并修复：裁决终态 save 挂起时取消，completed/capped/reviewing 三分支仍可能覆盖取消。新增三分支 × save 前/已落盘但返回前共 6 个 barrier 回归，旧实现 6 failed，修复后全通过；无 runner 的已完成主题取消仍幂等。引擎范围 74/74 通过，并已纳入最终两遍全套。
 - 归档边界：新代首个 RoundRecord 记入前 I/O 失败再接受，旧代码覆盖上一代 attempt-01；真实目录回归先 red，优先当前 generation 修复后 green，上一代字节与新代 final 指针均验证。
 - 写侧边界：目录链接下的代码/问题/raw 写入、ZIP 解压与暂存材料 5 项，旧实现 4 failed / 1 passed，修复后 5 passed。原子写、返回产物及追加记录采用真实父目录，逐级校验后创建目录，最终文件链接拒绝；ZIP 只容错解析错误，不吞写入边界错误。相关 26/26 通过。
 - 别名项目根正向兼容：复审发现材料先 canonicalize 再按 lexical 根二次授权会误拒正常 junction 项目。新正向回归先 red，维持真实路径预检、原子写入传原词法目标后 green；写边界合计 6/6。
@@ -78,7 +78,15 @@
 
 ## GitHub 回执
 
-待最终同步和推送后记录三个 main SHA、两个全新 v0.3.5 tag/Release 及 GitHub CI。旧 tag 不移动，不提交临时 tarball/用户数据。
+| 仓库 | 对应提交 | 远端结果 |
+| --- | --- | --- |
+| [源码 dsh-pro](https://github.com/Octo-o-o-o/dsh-pro) | 运行源码 `5ccd44d1e50ec3e0800dbcfb37ea10d2f1fd313f`；初次部署回执 `0deb22bf8833b89931daa22c4e06308bbd0c5f6a` | main 已推送；后续只补路径测试期望与本验证记录 |
+| [chatgpt-pro-research](https://github.com/Octo-o-o-o/chatgpt-pro-research) | `78efa99002f7d4843fcf78b876f1c0aada6a7a0c` | main / v0.3.5 同 SHA，[正式 Release](https://github.com/Octo-o-o-o/chatgpt-pro-research/releases/tag/v0.3.5) 已公开 |
+| [gpt-image-design](https://github.com/Octo-o-o-o/gpt-image-design) | `1c23f937cd66c0e90a217cb74e54e36fd0fa4f49` | main / v0.3.5 同 SHA，[正式 Release](https://github.com/Octo-o-o-o/gpt-image-design/releases/tag/v0.3.5) 已公开 |
+
+两个全新 tag 均未修改旧 tag。两个 Release 均非 draft、非 prerelease，并上传了实际安装的 tgz 和 SHA256SUMS；GitHub API 的 asset digest 与上表 tarball SHA256 完全相同。tgz 不进 Git；不提交浏览器/用户数据。npm 官方 registry 再查两包最新仍为 0.3.4，本轮没有 npm 发布或市场重提。
+
+远端首轮 [CI 40903297873](https://github.com/Octo-o-o-o/dsh-pro/actions/runs/40903297873)：Ubuntu 的 npm ci、类型、常规测试、build、bundle smoke、Chrome 15 项和 acceptance 全部通过。Windows 273 passed / 1 failed：旧测试期望 `RUNNER~1` 短路径字符串，新安全接口正确返回规范长路径；失败是期望未 canonicalize，而非越界访问或附件缺失。将期望改为 `await realpath(具体预期文件)` 的精确比较，保留文件内容/manifest 断言；未改运行代码、未 skip、未放宽路径包含判断。后续完整 CI 重跑，结果待核实后补齐。
 
 ## 不覆盖与保留事项
 

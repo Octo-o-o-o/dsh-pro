@@ -21,28 +21,28 @@
 
 | 渠道 | 当前版本 | 状态 |
 |---|---|---|
-| 本仓库源码 | `0.3.5` | 本轮候选构建，验证后发布 |
-| 公开 Git 仓库 | `0.3.4` → `0.3.5` | 本轮验证通过后推送两个全新 `v0.3.5` tag |
+| 本仓库源码 | `0.3.5` | 完整复审通过；本机 desktop 双包安装器均返回 applied |
+| 公开 Git 仓库 | `0.3.5` | 两个 main / 全新 `v0.3.5` tag / GitHub Release 已发布 |
 | npm | `0.3.4` | 已公开；本轮不发布 npm，尚不包含 0.3.5 加固 |
 | 社区市场 | 各渠道独立 | 不能由 Git 发版推定市场更新；见[逐渠道回执](docs/marketplace.md) |
 
-发布仓库（Git/dsh.pub）当前可用的安装方式：
+推荐固定本版 Git commit 安装（`<profile>` 换成你的 profile）：
+
+```bash
+dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#78efa99002f7d4843fcf78b876f1c0aada6a7a0c
+dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#1c23f937cd66c0e90a217cb74e54e36fd0fa4f49
+```
+
+也可使用 dsh.pub，但它安装市场当前固定的 commit，**不保证是 0.3.5**，先核对渠道记录：
 
 ```bash
 npx dshpub add Octo-o-o-o/chatgpt-pro-research
 npx dshpub add Octo-o-o-o/gpt-image-design
 ```
 
-或原生 DSH（把 `<40-char-commit>` 换成公开仓库 Release/提交记录里的完整 SHA）：
-
-```bash
-dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#<40-char-commit>
-dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#<40-char-commit>
-```
-
 已发布的 Git 版本见 [发布记录](docs/RELEASING.md)；版本变更见 [CHANGELOG](CHANGELOG.md)。
 
-安装后重启 DSH，在 **设置 → 插件** 里启用。首次使用先登录一次：
+安装后以安装器结果为准：`applied` 已应用，`restart-required` 才需重启；已有页面刷新后再查看前端变更。在 **设置 → 插件** 里确认启用。首次使用先登录一次：
 
 ```text
 pro_research(action="login")        # 或 gpt_image_design(action="login")
