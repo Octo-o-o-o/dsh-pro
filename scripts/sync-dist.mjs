@@ -18,12 +18,12 @@ const specs = [
   {
     pkg: 'research',
     repo: 'chatgpt-pro-research',
-    description: 'DSH plugin: unattended multi-round research through a real ChatGPT Pro web session.',
+    description: 'DSH plugin: multi-round ChatGPT web research, preferring Pro when available.',
   },
   {
     pkg: 'design',
     repo: 'gpt-image-design',
-    description: 'DSH plugin: images and HTML demos via a real ChatGPT Pro web session or an OpenAI-compatible image API.',
+    description: 'DSH plugin: images and HTML demos via ChatGPT web with Pro preference or an OpenAI-compatible image API.',
   },
 ]
 

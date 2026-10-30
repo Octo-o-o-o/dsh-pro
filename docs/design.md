@@ -139,7 +139,7 @@ worker 每 15 秒发一次 `heartbeat{phase, domFingerprint}`。所有选择器�
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `channel` | `web` | 研究固定 `web`；设计插件可选 `web` / `api` |
-| `model` | `pro` | `pro` / `thinking`；启动时 `probe` 校验，不可用直接拒绝启动，不静默降级 |
+| `model` | `prefer-pro` | 优先使用可用 Pro，否则沿用当前模型；`auto` 保留当前选择，显式指定其他模型在发送前校验 |
 | `rounds` | `3` | 1–10，主题默认轮次上限 |
 | `stallMinutes` | `45` | 无进展判定：仅在生成指示消失且无完整答复时计时 |
 | `maxRoundMinutes` | `90` | 单轮墙钟上限，到点按 `stalled(timeout)` 处理 |

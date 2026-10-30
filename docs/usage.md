@@ -2,6 +2,8 @@
 
 这份文档按「一次配置、四种日常用法、出问题怎么办」组织。设计取舍见 [design.md](design.md)。
 
+0.3.6 默认 `model=prefer-pro`：有可用 Pro 时优先使用 Pro，没有才沿用网页当前模型。禁用、锁定和升级入口不算可用 Pro。已有配置需改为 `prefer-pro` 后新建主题，旧主题保留原模型；显式 `auto` 保留当前选择。
+
 ## 1. 一次性配置
 
 安装后打开 DSH 设置 → 插件 → `chatgpt-pro-research`（显示名 **ChatGPT Pro Research**）：
@@ -9,7 +11,7 @@
 | 设置 | 默认 | 说明 |
 |---|---|---|
 | `rounds` | 3 | 每主题默认轮次上限，1–10 |
-| `model` | pro | 页面上的 Pro / Thinking |
+| `model` | prefer-pro | 优先使用可用 Pro，否则沿用当前模型；auto 保留当前选择，pro / thinking 等指定模型仍须可用 |
 | `store` | project | 记录进仓库 `docs/research/`；`local` 进 `~/.dsh/chatgpt-pro-research/` |
 | `rawAnswers` | local | 原始答复默认只在本机；公开仓库保持 local |
 | `rawAnswersDir` | `~/.dsh/chatgpt-pro-research/raw` | 原文目录，可改绝对路径；设计插件默认 `~/.dsh/gpt-image-design/raw` |
@@ -156,6 +158,6 @@ pro_research(action="delete", topic_id="topic-xxxx", confirmed=true)
 
 ## 7. 边界
 
-- 这是订阅网页自动化，不是官方 API；ToS、风控、账号风险由使用者承担。
+- 这是网页自动化，不是官方 API；ToS、风控、账号风险由使用者承担。
 - 不自动 push、不绕过验证码/2FA、不发送扫描命中的文件。
 - 页面改版可能让它失效；选择器集中在 `packages/transport/src/selectors.ts`。

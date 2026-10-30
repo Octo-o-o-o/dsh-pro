@@ -742,25 +742,55 @@ export class ChatGptWebTransport implements Transport {
   }
 
   private async selectModel(page: Page, model: string): Promise<string> {
-    const picker = await firstVisible(page, SELECTORS.modelPicker, 2_000)
     const wanted = model.trim()
-    if (wanted === '') return await this.readModel(page)
-    if (picker === undefined) throw new TransportError(`cannot verify requested ChatGPT model: ${wanted}`, 'ui')
+    // Free accounts may have only a generic ChatGPT header, or no picker at
+    // all. Auto keeps the site's selection without opening upgrade menus or
+    // inventing a model label when the page does not expose one.
+    if (wanted === '' || /^auto$/i.test(wanted)) return await this.readModel(page)
+    const preferPro = /^prefer-pro$/i.test(wanted)
+    const requested = preferPro ? 'pro' : wanted
+    const picker = await firstVisible(page, SELECTORS.modelPicker, 2_000)
+    const hint = 'set model=prefer-pro in the plugin settings and start a new topic to prefer Pro when available and otherwise use the current model (existing topics keep their model)'
+    if (picker === undefined) {
+      if (preferPro) return ''
+      throw new TransportError(`cannot verify requested ChatGPT model: ${wanted}; message was not sent; ${hint}`, 'ui')
+    }
     // The live picker lists menu items by display name (Pro, GPT-6, ...);
     // "thinking" is an effort on the same picker, so it accepts Pro.
-    const pattern = /^thinking$/i.test(wanted) ? /pro|思考|thinking/i : new RegExp(wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    const pattern = /^pro$/i.test(requested) ? /\bpro\b/i
+      : /^thinking$/i.test(requested) ? /pro|思考|thinking/i : new RegExp(requested.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
     const current = (await picker.innerText()).trim()
-    if (pattern.test(current)) return current
+    const upgradeLabel = /upgrade|unlock|subscribe|升级|解锁|订阅|购买/i
+    if (pattern.test(current) && !upgradeLabel.test(current)) return current
+    let availableOption = false
     try {
-      await picker.click()
-      const option = page.locator('[role="menuitem"], [role="menuitemradio"]').filter({ hasText: pattern }).filter({ visible: true }).first()
-      await option.waitFor({ state: 'visible', timeout: 3_000 })
-      await option.click()
-    } catch {
+      await picker.click({ timeout: 3_000 })
+      const options = page.locator('[role="menuitem"], [role="menuitemradio"], [role="option"]').filter({ hasText: pattern }).filter({ visible: true })
+      await options.first().waitFor({ state: 'visible', timeout: 3_000 }).catch(() => undefined)
+      for (const option of await options.all()) {
+        if (!await option.isEnabled()) continue
+        const available = await option.evaluate(node => {
+          const disabled = node.closest('[aria-disabled="true"], [data-disabled]:not([data-disabled="false"]), [data-locked="true"]')
+          const label = `${node.textContent ?? ''} ${node.getAttribute('aria-label') ?? ''} ${node.getAttribute('title') ?? ''}`
+          const upgrade = /upgrade|unlock|subscribe|升级|解锁|订阅|购买/i.test(label)
+          const upgradeLink = 'a[href*="upgrade" i], a[href*="pricing" i], a[href*="subscribe" i]'
+          return disabled === null && !upgrade && !node.matches(upgradeLink) && node.querySelector(upgradeLink) === null
+        })
+        if (!available) continue
+        availableOption = true
+        await option.click({ timeout: 3_000 })
+        break
+      }
+    } catch (error) {
+      throw new TransportError(`cannot select requested ChatGPT model ${requested}; message was not sent; ${hint}`, 'ui', { cause: error })
+    } finally {
       await page.keyboard.press('Escape').catch(() => undefined)
     }
     const selected = await this.readModel(page)
-    if (!pattern.test(selected)) throw new TransportError(`requested ChatGPT model ${wanted} was not selected (observed: ${selected || 'unknown'}); message was not sent`, 'ui')
+    // Missing/locked/upgrade-only Pro options use the site's current model.
+    // An available option that failed verification must never silently fall back.
+    if (preferPro && !availableOption) return selected
+    if (!pattern.test(selected) || upgradeLabel.test(selected)) throw new TransportError(`requested ChatGPT model ${requested} was not selected (observed: ${selected || 'unknown'}); message was not sent; ${hint}`, 'ui')
     return selected
   }
 

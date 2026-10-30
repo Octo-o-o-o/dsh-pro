@@ -31,6 +31,7 @@ export interface ImageApiConfig {
 export interface ProConfig {
   channel: Channel
   image: ImageApiConfig
+  /** `prefer-pro` selects Pro when available; `auto` keeps the current model. */
   model: string
   rounds: number
   designs: number
@@ -83,7 +84,7 @@ export function defaultConfig(home: string): ProConfig {
       editMode: 'auto',
       timeoutSeconds: 300,
     },
-    model: 'pro',
+    model: 'prefer-pro',
     rounds: 3,
     designs: 3,
     stallMinutes: 45,

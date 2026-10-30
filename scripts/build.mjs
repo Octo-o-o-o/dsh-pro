@@ -1,10 +1,21 @@
-import { build } from 'esbuild'
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { build as esbuildBuild } from 'esbuild'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const p = relative => join(root, relative)
+
+// Keep filesystem writes in Node: the native esbuild writer can be denied on
+// Windows even when this process can write the same files.
+async function build (options) {
+  const result = await esbuildBuild({ ...options, write: false })
+  for (const output of result.outputFiles) {
+    await mkdir(dirname(output.path), { recursive: true })
+    await writeFile(output.path, output.contents)
+  }
+  return result
+}
 
 /** DSH host packages stay external; React comes from the client module table. */
 const external = ['@deepseek-ai/*', 'playwright-core']

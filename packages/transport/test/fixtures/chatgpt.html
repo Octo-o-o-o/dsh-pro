@@ -17,7 +17,51 @@
   <button id="active-stop" aria-label="停止流式传输" style="display:none">Stop</button>
   </form>
   <script>
-    const slow = new URLSearchParams(location.search).has('slow')
+    const params = new URLSearchParams(location.search)
+    const slow = params.has('slow')
+    const picker = document.querySelector('[data-testid="model-switcher-dropdown-button"]')
+    picker.textContent = params.get('model') ?? 'Pro'
+    const menuMode = params.get('menu') ?? ''
+    const menu = document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    menu.hidden = true
+    document.body.append(menu)
+    const addOption = (label, pro = false) => {
+      const option = document.createElement('button')
+      option.setAttribute('role', 'menuitemradio')
+      option.textContent = label
+      option.addEventListener('click', event => {
+        event.preventDefault()
+        if (/upgrade/i.test(label) || menuMode === 'upgrade-link-pro') {
+          document.body.dataset.upgradeClicked = 'true'
+          return
+        }
+        if (pro) document.body.dataset.proClicks = String(Number(document.body.dataset.proClicks ?? '0') + 1)
+        if (menuMode === 'failed-pro') return
+        picker.textContent = pro ? (params.get('pro-label') ?? 'Pro') : label
+        menu.hidden = true
+      })
+      menu.append(option)
+      return option
+    }
+    if (menuMode !== '') {
+      addOption('Instant')
+      if (menuMode !== 'free') {
+        const option = addOption(menuMode === 'upgrade-pro' ? 'Upgrade to Pro' : 'Pro', true)
+        if (menuMode === 'aria-disabled-pro') option.setAttribute('aria-disabled', 'true')
+        if (menuMode === 'data-disabled-pro') option.setAttribute('data-disabled', '')
+        if (menuMode === 'locked-pro') option.setAttribute('data-locked', 'true')
+        if (menuMode === 'button-disabled-pro' || menuMode === 'duplicate-pro') option.disabled = true
+        if (menuMode === 'upgrade-link-pro') option.innerHTML = '<a href="/pricing">Pro</a>'
+        if (menuMode === 'duplicate-pro') addOption('Pro', true)
+      }
+    }
+    picker.addEventListener('click', () => {
+      picker.dataset.clicked = 'true'
+      if (menuMode !== '') menu.hidden = false
+    })
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') menu.hidden = true })
+    if (params.get('picker') === 'none') picker.remove()
     const composer = document.getElementById('prompt-textarea')
     const send = document.getElementById('send-button')
     const messages = document.getElementById('messages')

@@ -3,6 +3,13 @@ import { assertConfig, assertImageApiConfig, defaultConfig, resolveConfig } from
 import { join } from 'node:path'
 
 describe('config', () => {
+  it('defaults to preferring Pro and preserves an explicit model', () => {
+    const config = defaultConfig(join('C:', 'tmp', 'pro'))
+    expect(config.model).toBe('prefer-pro')
+    expect(resolveConfig({ ...config, model: 'auto' }).model).toBe('auto')
+    expect(resolveConfig({ ...config, model: 'pro' }).model).toBe('pro')
+  })
+
   it('applies designs with project < run precedence', () => {
     const profile = defaultConfig(join('C:', 'tmp', 'pro'))
     expect(resolveConfig(profile, { designs: 2 }, { designs: 5 }).designs).toBe(5)

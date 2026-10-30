@@ -2,8 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { apply, resolveDesignConfig } from '../src/index.ts'
-import { resolveResearchConfig } from '../../research/src/index.ts'
+import { apply, Config as DesignConfig, resolveDesignConfig } from '../src/index.ts'
+import { Config as ResearchConfig, resolveResearchConfig } from '../../research/src/index.ts'
 
 const cleanups: string[] = []
 
@@ -31,6 +31,17 @@ function fakeContext(tools: Tool[]): unknown {
 }
 
 describe('design settings', () => {
+  it.each([
+    { name: 'Research', resolve: resolveResearchConfig, schema: ResearchConfig },
+    { name: 'Design', resolve: resolveDesignConfig, schema: DesignConfig },
+  ])('$name prefers Pro by default without overriding a saved model', ({ resolve, schema }) => {
+    expect(schema({}).model).toBe('prefer-pro')
+    expect(resolve().model).toBe('prefer-pro')
+    expect(resolve({ model: 'auto' }).model).toBe('auto')
+    expect(resolve({ model: 'pro' }).model).toBe('pro')
+    expect(resolve({ model: 'thinking' }).model).toBe('thinking')
+  })
+
   it('shares one fixed Chrome profile across both plugins', () => {
     const design = resolveDesignConfig({})
     const research = resolveResearchConfig({})

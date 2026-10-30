@@ -16,7 +16,7 @@ const spec: PluginSpec = {
   skills: [{
     name: 'pro-research',
     dir: 'pro-research',
-    description: '用 ChatGPT Pro 网页会话做无人值守的多轮调研；只在用户明确要求 Pro 调研时使用。',
+    description: '用 ChatGPT 网页会话做无人值守的多轮调研，默认优先 Pro、不可用时沿用当前模型；只在用户明确要求 ChatGPT 调研时使用。',
   }],
 }
 

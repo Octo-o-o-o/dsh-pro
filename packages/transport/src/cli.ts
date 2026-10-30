@@ -5,7 +5,7 @@
  *   node packages/transport/src/cli.ts login
  *   node packages/transport/src/cli.ts probe
  *   node packages/transport/src/cli.ts submit --brief-file brief.md \
- *     --file README.md --file docs/design.md --out answer.md [--model pro]
+ *     --file README.md --file docs/design.md --out answer.md [--model prefer-pro]
  *
  * Node 24 runs the TypeScript directly (type stripping); no build needed.
  */
@@ -50,7 +50,7 @@ try {
     if (briefFile === undefined) usage()
     const brief = await readFile(resolve(briefFile), 'utf8')
     const files = options('file').map(file => resolve(file))
-    const model = option('model') ?? 'pro'
+    const model = option('model') ?? 'prefer-pro'
     const submitted = await transport.submit({ topicId: 'cli', round: 1, brief, files, model })
     console.log(JSON.stringify({ submitted: { ...submitted, page: undefined } }, null, 2))
     let answer = ''

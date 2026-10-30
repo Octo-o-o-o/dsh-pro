@@ -2,6 +2,13 @@
 
 版本以 `packages/*/package.json` 为准；公开仓库由 `scripts/sync-dist.mjs` 生成。
 
+## 0.3.6 — 2026-10-30
+
+- 修复 [Research #1「free 账号不能用」](https://github.com/Octo-o-o-o/chatgpt-pro-research/issues/1)：Research、Design 与传输 CLI 默认 `prefer-pro`，有可用 Pro 时优先选中，没有可用 Pro 才回退到网页当前模型。
+- 跳过禁用、锁定和升级入口；已点击可用 Pro 却未核验选中时停止发送，保留 `not_sent` 与现场。显式 `auto` 保留当前模型，显式指定其他模型仍须核验。
+- 已有配置和主题模型保留。需要自动选择策略时设为 `prefer-pro` 后新建主题；Design API 的 `imageModel` 不受影响。
+- 增加 Pro 选择、免费回退、升级入口与失败状态的 Chrome 回归。构建改由 esbuild 输出到内存、Node 保存文件，使常规构建与 npm prepack 可在本机完成。[验证与发布回执](docs/validation/issue-1-free-account-2026-10-30.md)。
+
 ## 0.3.5 — 2026-10-29
 
 - 材料检查真实路径和敏感原目标，固定已验证来源；上传前再次核对暂存路径，文件缺失不再悄悄作为无附件继续。

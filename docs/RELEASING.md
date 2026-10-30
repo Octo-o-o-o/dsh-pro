@@ -1,6 +1,6 @@
 # 开发与发布指南
 
-更新：2026-10-29。适用于 `dsh-pro` monorepo，以及 `chatgpt-pro-research`、`gpt-image-design` 两个发布仓库。
+更新：2026-10-30。适用于 `dsh-pro` monorepo，以及 `chatgpt-pro-research`、`gpt-image-design` 两个发布仓库。
 
 ## 一句话原则
 
@@ -167,7 +167,13 @@ git -C C:\WorkSpace\dsh-plugins\chatgpt-pro-research push origin vX.Y.Z
 **npm 发布**  
 `npm whoami` 401 时先 `npm login`，然后在 `packages/research` / `packages/design` 分别 `npm publish --access public`。发布仓库的 Git 安装不依赖 npm。
 
-## 当前增量（0.3.5，2026-10-29）
+## 当前增量（0.3.6，2026-10-30）
+
+两个插件默认 `prefer-pro`：优先使用可用 Pro，没有才沿用网页当前模型。显式 `auto` 保留当前选择，显式其他模型仍须核验。用户已授权提交、发布并回复关闭 Research #1；各渠道成功状态以 [本轮记录](validation/issue-1-free-account-2026-10-30.md) 为准。
+
+构建统一使用 esbuild 内存输出与 Node 写出，常规 `npm run build` 和 `npm pack` / prepack 均复用此流程。发布仍通过 `release-dist` 生成两个仓库，npm tarball 独立核对完整性；市场固定版本不随 Git/npm 自动变更。
+
+## 历史增量（0.3.5，2026-10-29）
 
 本轮用户已授权三个 GitHub 仓库推送与本机部署，实施安全/状态一致性修复并递增至 0.3.5。方案见 [双插件审查](review-0.3.5.md)，最终测试、安装包哈希、安装应用结果和远端回执见 [0.3.5 验证记录](validation/release-0.3.5-2026-10-29.md)。npm 和社区市场本轮不发布/不刷新，仍按独立状态记录，不由 Git 发版推定更新。
 

@@ -4,10 +4,10 @@
 
 | 插件 | 包名 | 做什么 | 发布仓库 |
 |---|---|---|---|
-| **ChatGPT Pro Research** | `chatgpt-pro-research` | 用 ChatGPT Pro 网页会话做无人值守多轮调研；按主题记录问题、轮次、裁决、运行汇总与宿主交付稿。 | [chatgpt-pro-research](https://github.com/Octo-o-o-o/chatgpt-pro-research) |
+| **ChatGPT Pro Research** | `chatgpt-pro-research` | 用 ChatGPT 网页会话做无人值守多轮调研；按主题记录问题、轮次、裁决、运行汇总与宿主交付稿。 | [chatgpt-pro-research](https://github.com/Octo-o-o-o/chatgpt-pro-research) |
 | **GPT-Image Design** | `gpt-image-design` | 用同一个网页会话，或 OpenAI 兼容生图 API，生成设计图与单文件 HTML demo；侧边栏画廊预览。 | [gpt-image-design](https://github.com/Octo-o-o-o/gpt-image-design) |
 
-> ⚠️ `web` 通道驱动的是 ChatGPT 网页（订阅额度），不是官方 API。自动化网页可能违反服务条款、触发风控或导致账号受限；页面改版也会让它失效。`api` 通道按服务商条款计费，只产出图片、不产出 HTML demo。请自行评估风险，不要把凭据写进仓库或日志。
+> ⚠️ `web` 通道驱动的是 ChatGPT 网页（账号额度），不是官方 API。自动化网页可能违反服务条款、触发风控或导致账号受限；页面改版也会让它失效。`api` 通道按服务商条款计费，只产出图片、不产出 HTML demo。请自行评估风险，不要把凭据写进仓库或日志。
 
 ## 选哪个
 
@@ -17,23 +17,25 @@
 
 ## 安装
 
-> 当前源码版本为 `0.3.5`：材料与文件真实路径校验、API 密钥/重定向/响应上限、计费任务清理、恢复/预算/取消及汇总归属加固。完整方案见[双插件审查](docs/review-0.3.5.md)，结果见[本轮验证](docs/validation/release-0.3.5-2026-10-29.md)。
+0.3.6 修复 [Free 账号问题](https://github.com/Octo-o-o-o/chatgpt-pro-research/issues/1)：网页模型默认 `prefer-pro`，优先使用可用 Pro，没有可用 Pro 才沿用网页当前模型。已有显式配置需改为 `prefer-pro` 后新建主题；显式 `auto` 保留页面当前选择。
+
+> 当前源码版本为 `0.3.6`：Pro 优先与免费回退、模型选择校验、Windows 构建写出，并包含 0.3.5 的安全与恢复加固。见[验证与发布回执](docs/validation/issue-1-free-account-2026-10-30.md)。
 
 | 渠道 | 当前版本 | 状态 |
 |---|---|---|
-| 本仓库源码 | `0.3.5` | 完整复审通过；本机 desktop 双包安装器均返回 applied |
-| 公开 Git 仓库 | `0.3.5` | 两个 main / 全新 `v0.3.5` tag / GitHub Release 已发布 |
-| npm | `0.3.4` | 已公开；本轮不发布 npm，尚不包含 0.3.5 加固 |
+| 本仓库源码 | `0.3.6` | 312 项测试、typecheck、build、bundle smoke 与模拟验收通过 |
+| 公开 Git 仓库 | `0.3.5` | 0.3.6 发布中，回执另记 |
+| npm | `0.3.4` | 0.3.6 发布中，回执另记 |
 | 社区市场 | 各渠道独立 | 不能由 Git 发版推定市场更新；见[逐渠道回执](docs/marketplace.md) |
 
-推荐固定本版 Git commit 安装（`<profile>` 换成你的 profile）：
+本版发布后可固定 Git tag 安装（`<profile>` 换成你的 profile）：
 
 ```bash
-dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#78efa99002f7d4843fcf78b876f1c0aada6a7a0c
-dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#1c23f937cd66c0e90a217cb74e54e36fd0fa4f49
+dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#v0.3.6
+dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#v0.3.6
 ```
 
-也可使用 dsh.pub，但它安装市场当前固定的 commit，**不保证是 0.3.5**，先核对渠道记录：
+也可使用 dsh.pub，但它安装市场当前固定的 commit，**不保证是 0.3.6**，先核对渠道记录：
 
 ```bash
 npx dshpub add Octo-o-o-o/chatgpt-pro-research
@@ -101,7 +103,11 @@ node scripts/release-dist.mjs --apply    # build + smoke + sync + 本地提交
 node scripts/release-dist.mjs --push     # 推送两个发布仓库 + v<version> tag
 ```
 
-## 当前验证（0.3.5）
+## 当前验证（0.3.6）
+
+模型选择、免费回退、构建及发布状态见 [Research #1 验证记录](docs/validation/issue-1-free-account-2026-10-30.md)。真实账号能力和额度仍由网页服务决定。
+
+## 历史验证（0.3.5）
 
 本轮安全/恢复修复方案见 [审查与实施方案](docs/review-0.3.5.md)，自动回归、Chrome 替身验证、本机部署与 Git 发布回执见 [0.3.5 记录](docs/validation/release-0.3.5-2026-10-29.md)。未因代码加固重新调用真实 ChatGPT 或付费生图服务，不把替身测试冒充真实服务验收。
 

@@ -16,7 +16,7 @@ const spec: PluginSpec = {
   skills: [{
     name: 'pro-design',
     dir: 'pro-design',
-    description: '用 ChatGPT Pro 网页会话或 OpenAI 兼容生图 API 生成设计图与前端 HTML demo，产物保存在本地设计面板；只在用户明确要求设计/出图时使用。',
+    description: '用 ChatGPT 网页会话或 OpenAI 兼容生图 API 生成设计图与前端 HTML demo，产物保存在本地设计面板；只在用户明确要求设计/出图时使用。',
   }],
 }
 

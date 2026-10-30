@@ -18,6 +18,104 @@ const enabled = process.env.DSH_PRO_TRANSPORT_SMOKE === '1'
 const appUrl = new URL('./fixtures/chatgpt.html', import.meta.url).href
 
 describe.skipIf(!enabled)('transport against the local fixture', () => {
+  it.each([
+    { label: 'current Pro', query: '', observed: 'Pro', proClicks: 0 },
+    { label: 'available Pro', query: '?model=ChatGPT&menu=pro', observed: 'Pro', proClicks: 1 },
+    { label: 'versioned Pro', query: '?model=Thinking&menu=pro&pro-label=GPT-6%20Pro', observed: 'GPT-6 Pro', proClicks: 1 },
+    { label: 'missing Pro', query: '?model=ChatGPT&menu=free', observed: 'ChatGPT', proClicks: 0 },
+    { label: 'missing picker', query: '?picker=none', observed: '', proClicks: 0 },
+    { label: 'aria-disabled Pro', query: '?model=ChatGPT&menu=aria-disabled-pro', observed: 'ChatGPT', proClicks: 0 },
+    { label: 'data-disabled Pro', query: '?model=ChatGPT&menu=data-disabled-pro', observed: 'ChatGPT', proClicks: 0 },
+    { label: 'native disabled Pro', query: '?model=ChatGPT&menu=button-disabled-pro', observed: 'ChatGPT', proClicks: 0 },
+    { label: 'locked Pro', query: '?model=ChatGPT&menu=locked-pro', observed: 'ChatGPT', proClicks: 0 },
+    { label: 'Pro upgrade offer', query: '?model=ChatGPT&menu=upgrade-pro', observed: 'ChatGPT', proClicks: 0 },
+    { label: 'Pro pricing link', query: '?model=ChatGPT&menu=upgrade-link-pro', observed: 'ChatGPT', proClicks: 0 },
+    { label: 'enabled Pro after a disabled duplicate', query: '?model=ChatGPT&menu=duplicate-pro', observed: 'Pro', proClicks: 1 },
+    { label: 'upgrade header with an available model', query: '?model=Upgrade%20to%20Pro&menu=pro', observed: 'Pro', proClicks: 1 },
+  ])('prefers Pro with $label and falls back only when unavailable', async ({ label, query, observed, proClicks }) => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dsh-pro-browser-'))
+    const url = `${appUrl}${query}`
+    const transport = new ChatGptWebTransport({ profileDir, headless: true, appUrl: url })
+    try {
+      const submitted = await transport.submit({ topicId: 'prefer-pro', round: 1, brief: 'hello preferred model', files: [], model: ' PREFER-PRO ' })
+      expect(submitted.model).toBe(observed)
+      const context = (transport as unknown as { context: BrowserContext }).context
+      const page = context.pages().find(page => page.url() === url)!
+      expect(await page.locator('[data-message-author-role="user"]').count()).toBe(2)
+      expect(await page.locator('body').getAttribute('data-upgrade-clicked')).toBeNull()
+      expect(Number(await page.locator('body').getAttribute('data-pro-clicks') ?? '0')).toBe(proClicks)
+      expect(await page.getByRole('menu').count()).toBe(0)
+      if (label === 'available Pro') {
+        let polled
+        do { polled = await transport.poll({ submissionId: submitted.submissionId, timeoutMs: 5_000 }) } while (polled.state === 'waiting')
+        expect((await transport.fetch({ submissionId: submitted.submissionId })).answer).toContain('FAKE ANSWER to hello preferred model')
+      }
+    } finally {
+      await transport.close()
+      await rm(profileDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }, 30_000)
+
+  it('does not fall back after an available Pro option fails selection', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dsh-pro-browser-'))
+    const url = `${appUrl}?model=ChatGPT&menu=failed-pro`
+    const transport = new ChatGptWebTransport({ profileDir, headless: true, appUrl: url })
+    try {
+      await expect(transport.submit({ topicId: 'failed-pro', round: 1, brief: 'never sent', files: [], model: 'prefer-pro' }))
+        .rejects.toMatchObject({ failure: 'ui', submissionState: 'not_sent' })
+      const context = (transport as unknown as { context: BrowserContext }).context
+      const page = context.pages().find(page => page.url() === url)!
+      expect(await page.locator('[data-message-author-role="user"]').count()).toBe(1)
+      expect(await page.locator('body').getAttribute('data-pro-clicks')).toBe('1')
+    } finally {
+      await transport.close()
+      await rm(profileDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }, 15_000)
+
+  it.each([
+    { label: 'Free account header', query: '?model=ChatGPT', model: 'auto', observed: 'ChatGPT' },
+    { label: 'paid account selection', query: '', model: ' AUTO ', observed: 'Pro' },
+    { label: 'page without a model picker', query: '?picker=none', model: 'auto', observed: '' },
+    { label: 'legacy blank setting', query: '?picker=none', model: '  ', observed: '' },
+  ])('uses the current model for $label without opening the picker', async ({ query, model, observed }) => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dsh-pro-browser-'))
+    const url = `${appUrl}${query}`
+    const transport = new ChatGptWebTransport({ profileDir, headless: true, appUrl: url })
+    try {
+      expect(await transport.probe()).toMatchObject({ ok: true, model: observed })
+      const submitted = await transport.submit({ topicId: 'auto', round: 1, brief: 'hello auto fixture', files: [], model })
+      expect(submitted.model).toBe(observed)
+      let polled
+      do { polled = await transport.poll({ submissionId: submitted.submissionId, timeoutMs: 5_000 }) } while (polled.state === 'waiting')
+      expect((await transport.fetch({ submissionId: submitted.submissionId })).answer).toContain('FAKE ANSWER to hello auto fixture')
+      const context = (transport as unknown as { context: BrowserContext }).context
+      const page = context.pages().find(page => page.url() === url)!
+      expect(await page.locator('[data-clicked]').count()).toBe(0)
+      expect(await page.locator('[data-message-author-role="user"]').count()).toBe(2)
+    } finally {
+      await transport.close()
+      await rm(profileDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }, 45_000)
+
+  it.each(['?model=ChatGPT', '?picker=none'])('keeps an explicit Pro request unsent on a Free-style page (%s)', async query => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dsh-pro-browser-'))
+    const url = `${appUrl}${query}`
+    const transport = new ChatGptWebTransport({ profileDir, headless: true, appUrl: url })
+    try {
+      await expect(transport.submit({ topicId: 'explicit-pro', round: 1, brief: 'never sent', files: [], model: 'pro' }))
+        .rejects.toMatchObject({ failure: 'ui', submissionState: 'not_sent', message: expect.stringMatching(/model=prefer-pro.*start a new topic/) })
+      const context = (transport as unknown as { context: BrowserContext }).context
+      const page = context.pages().find(page => page.url() === url)!
+      expect(await page.locator('[data-message-author-role="user"]').count()).toBe(1)
+      expect(page.isClosed()).toBe(false)
+    } finally {
+      await transport.close()
+      await rm(profileDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }, 20_000)
+
   it('waits through an introductory pause, then continues in the same conversation', async () => {
     const profileDir = await mkdtemp(join(tmpdir(), 'dsh-pro-browser-'))
     const slowUrl = `${appUrl}?slow=1`

@@ -1,19 +1,19 @@
 # Marketplace and publication receipts
 
-核验日期：2026-10-29（Asia/Shanghai）。本轮已发布 **Git 0.3.5** 安全与恢复更新，测试/部署/发布回执见 [0.3.5 记录](validation/release-0.3.5-2026-10-29.md)；本轮不发布 npm、不刷新市场。以下 0.3.4 的 npm、市场与历史发布回执保留，不能由新 Git tag 推定渠道已更新。投稿、作者实测、市场独立验证是不同状态。
+更新日期：2026-10-30（Asia/Shanghai）。**0.3.6** Pro 优先与免费回退更新正在发布 Git 与 npm，[当前验证及逐渠道回执](validation/issue-1-free-account-2026-10-30.md)另记。本轮不刷新社区市场，以下 0.3.5 / 0.3.4 记录为历史回执，不能由新 Git/npm 发版推定市场版本已更新。
 
 本日后续跟进：已通过 dsh.so 站内反馈入口取得两份“已收到”回执，补交既有条目更新到 0.3.4 的请求。其检查器仍限流/超时；0.3.4 正式扫描与收录尚未确认。[结构化回执及截图](validation/marketplace-0.3.4-2026-10-29/receipts.json)保存本次结果。
 
 开发流程见 [RELEASING.md](RELEASING.md)，真实验证见 [0.3.4 记录](validation/release-0.3.4-2026-10-29.md)，发布文案见 [release notes](release-notes-0.3.4.md)。
 
-## 当前 Git 0.3.5
+## Git 0.3.5 历史回执（2026-10-29）
 
 | 插件 | main / v0.3.5 commit | Release |
 | --- | --- | --- |
 | Research | `78efa99002f7d4843fcf78b876f1c0aada6a7a0c` | [v0.3.5](https://github.com/Octo-o-o-o/chatgpt-pro-research/releases/tag/v0.3.5) |
 | Design | `1c23f937cd66c0e90a217cb74e54e36fd0fa4f49` | [v0.3.5](https://github.com/Octo-o-o-o/gpt-image-design/releases/tag/v0.3.5) |
 
-本机 desktop 两包均为 0.3.5，安装器均返回 `applied`。npm 最新仍为 0.3.4，以下市场记录未据 Git 发版而改写。本轮未再投稿或新建市场 issue/PR。
+当时本机 desktop 两包均为 0.3.5，安装器均返回 `applied`；npm 为 0.3.4，市场记录未据 Git 发版而改写。0.3.5 阶段未再投稿或新建市场 issue/PR。
 
 ## 0.3.4 历史发布与市场对应版本
 

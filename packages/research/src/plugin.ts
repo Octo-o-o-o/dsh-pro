@@ -56,7 +56,7 @@ const MAX_PREVIEW_BYTES = 2_000_000
 const baseFields = {
   rounds: z.number().step(1).min(1).max(10).default(3).description('每主题默认轮次上限（1–10）。'),
   designs: z.number().step(1).min(1).max(6).default(3).description('设计插件每轮生成的方向/图片数（1–6）。'),
-  model: z.string().default('pro').description('ChatGPT 页面上的模型：pro 或 thinking。'),
+  model: z.string().default('prefer-pro').description('ChatGPT 网页模型：prefer-pro（默认，优先 Pro，不可用则沿用页面当前模型）；auto 保留当前模型；pro、thinking 等指定模型须可用。'),
   store: z.string().default('project').description('研究记录位置：project（仓库 docs/research）或 local（DSH 本机）。'),
   autoStart: z.boolean().default(false).description('研究卡是否跳过点击直接开跑。'),
   autoReview: z.boolean().default(true).description('capped 后唤醒原会话检查产物，决定接受或继续；无原会话时只显示待接受。'),
@@ -1869,13 +1869,13 @@ function toolDescription(spec: PluginSpec, config: ProConfig): string {
       ].join(' ')
     }
     return [
-      '用 ChatGPT Pro 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板。',
+      '用 ChatGPT 网页会话生成设计图与前端代码/HTML demo，产物保存到本地并出现在设计面板；默认优先使用可用的 Pro，否则沿用账号当前模型。',
       'start 前必须先展示设计卡（目标、成功判据、材料、轮次、产物路径）；用户确认后传 confirmed=true。',
       'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login | read_round | read_report | write_report。交付：read_round 核对证据，read_report 取 revision，再 write_report 写当前主题固定交付稿（local/project 均支持），不传文件路径。',
     ].join(' ')
   }
   return [
-    '用 ChatGPT Pro 网页会话做无人值守的多轮调研。',
+    '用 ChatGPT 网页会话做无人值守的多轮调研；默认优先使用可用的 Pro，否则沿用账号当前模型。',
     'start 前必须先向用户展示研究卡（问题、成功判据、材料、轮次上限、产物路径）；用户确认后传 confirmed=true。',
     'action: start | continue | status | list | resume | cancel | delete | human_check | accept | review | review_cancel | wake | regenerate | probe | login | read_round | read_report | write_report。交付：read_round 核对证据，read_report 取 revision，再 write_report 写当前主题固定交付稿（local/project 均支持），不传文件路径。',
   ].join(' ')
