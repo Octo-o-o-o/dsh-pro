@@ -24,15 +24,22 @@
 | 渠道 | 当前版本 | 状态 |
 |---|---|---|
 | 本仓库源码 | `0.3.6` | 312 项测试、typecheck、build、bundle smoke 与模拟验收通过 |
-| 公开 Git 仓库 | `0.3.5` | 0.3.6 发布中，回执另记 |
-| npm | `0.3.4` | 0.3.6 发布中，回执另记 |
+| 公开 Git 仓库 | `0.3.6` | 两个 main / 全新 `v0.3.6` tag / GitHub Release 已发布 |
+| npm | `0.3.6` | 两包已公开，latest 与安装包完整性核对通过 |
 | 社区市场 | 各渠道独立 | 不能由 Git 发版推定市场更新；见[逐渠道回执](docs/marketplace.md) |
 
-本版发布后可固定 Git tag 安装（`<profile>` 换成你的 profile）：
+推荐固定本版 Git commit 安装（`<profile>` 换成你的 profile）：
 
 ```bash
-dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#v0.3.6
-dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#v0.3.6
+dsh plugin --profile <profile> add github:Octo-o-o-o/chatgpt-pro-research#4885c28ace9822de6199b8ef33c7fa8189de451d
+dsh plugin --profile <profile> add github:Octo-o-o-o/gpt-image-design#48d02d20f231101d61b5865d0723dddf671aad38
+```
+
+也可固定 npm 版本安装：
+
+```bash
+dsh plugin --profile <profile> add chatgpt-pro-research@0.3.6
+dsh plugin --profile <profile> add gpt-image-design@0.3.6
 ```
 
 也可使用 dsh.pub，但它安装市场当前固定的 commit，**不保证是 0.3.6**，先核对渠道记录：

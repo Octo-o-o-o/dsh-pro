@@ -1,8 +1,17 @@
 # Marketplace and publication receipts
 
-更新日期：2026-10-30（Asia/Shanghai）。**0.3.6** Pro 优先与免费回退更新正在发布 Git 与 npm，[当前验证及逐渠道回执](validation/issue-1-free-account-2026-10-30.md)另记。本轮不刷新社区市场，以下 0.3.5 / 0.3.4 记录为历史回执，不能由新 Git/npm 发版推定市场版本已更新。
+更新日期：2026-10-30（Asia/Shanghai）。**0.3.6** Pro 优先与免费回退更新已发布 Git 与 npm，[验证及逐渠道回执](validation/issue-1-free-account-2026-10-30.md)已记录。两个公开仓库 main / `v0.3.6` / Release 已核对；两个 npm `0.3.6` / latest 与安装包完整性一致，Research #1 已回复并按 completed 关闭。本轮不刷新社区市场，以下 0.3.5 / 0.3.4 为历史回执。
 
-本日后续跟进：已通过 dsh.so 站内反馈入口取得两份“已收到”回执，补交既有条目更新到 0.3.4 的请求。其检查器仍限流/超时；0.3.4 正式扫描与收录尚未确认。[结构化回执及截图](validation/marketplace-0.3.4-2026-10-29/receipts.json)保存本次结果。
+## 当前 0.3.6
+
+| 插件 | main / v0.3.6 commit | GitHub Release | npm |
+| --- | --- | --- | --- |
+| Research | `4885c28ace9822de6199b8ef33c7fa8189de451d` | [v0.3.6](https://github.com/Octo-o-o-o/chatgpt-pro-research/releases/tag/v0.3.6) | [0.3.6](https://www.npmjs.com/package/chatgpt-pro-research/v/0.3.6) |
+| Design | `48d02d20f231101d61b5865d0723dddf671aad38` | [v0.3.6](https://github.com/Octo-o-o-o/gpt-image-design/releases/tag/v0.3.6) | [0.3.6](https://www.npmjs.com/package/gpt-image-design/v/0.3.6) |
+
+[Issue 回复及升级说明](https://github.com/Octo-o-o-o/chatgpt-pro-research/issues/1#issuecomment-6516754525)。社区市场固定版本独立更新；本机 desktop 未在本轮重新部署。
+
+2026-10-29 后续跟进：已通过 dsh.so 站内反馈入口取得两份“已收到”回执，补交既有条目更新到 0.3.4 的请求。其检查器仍限流/超时；0.3.4 正式扫描与收录尚未确认。[结构化回执及截图](validation/marketplace-0.3.4-2026-10-29/receipts.json)保存本次结果。
 
 开发流程见 [RELEASING.md](RELEASING.md)，真实验证见 [0.3.4 记录](validation/release-0.3.4-2026-10-29.md)，发布文案见 [release notes](release-notes-0.3.4.md)。
 
